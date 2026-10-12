@@ -455,12 +455,12 @@ JSON のパース / スキーマ検証に失敗した場合は**リトライ 1 �
 # 初回セットアップ（pre-commit の gitleaks フックを有効化）
 git config core.hooksPath scripts/hooks
 
-# 実行（op run でシークレットを注入）
+# 実行（Keychainのサービスアカウントトークンで op run が注入する。1Passwordアプリの承認画面は出ない）
 ./scripts/run-with-secrets.sh <command>
 
-# launchd / cron からの非対話実行（サービスアカウントトークンを使う）
-./scripts/run-with-secrets.sh --batch <command>
+# 1Passwordアプリ連携で本人が実行する場合だけ
+./scripts/run-with-secrets.sh --app <command>
 ```
 
 前提: `op`（1Password CLI）と `gitleaks` がインストール済みであること。
-`--batch` は `~/.config/laa/op-service-token` を読む。
+`--batch` は互換のため残し、既定と同じ経路で動く。
