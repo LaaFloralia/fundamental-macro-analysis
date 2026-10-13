@@ -204,13 +204,16 @@ def compute_deltas(fedwatch: dict, today: Optional[date] = None, path: Path = HI
         found = _find_snapshot(history, today, window, preferred)
         if found is not None:
             key, snap = found
-            if current_meeting and snap.get("next_fomc_date") and snap["next_fomc_date"] != current_meeting:
+            meeting = snap.get("next_fomc_date")
+            if current_meeting and meeting and meeting != current_meeting:
                 rollover = True
-            else:
+            elif current_meeting and meeting:
+                # 同じ会合の履歴だけを比較元にし、会合を記録する（盤が一致を確かめる）。会合不明の履歴は使わない
                 age = (today - datetime.strptime(key, "%Y-%m-%d").date()).days
                 return {
                     "by_range": _deltas_from_snapshot(current_rates, snap),
                     "source": f"履歴 {age}日前 ({key})",
+                    "meeting": meeting,
                 }
         # フォールバック: Investing 自身の前日/前週値（同一会合ベースで常に整合）
         deltas = _deltas_from_investing(current_rates, investing_field)

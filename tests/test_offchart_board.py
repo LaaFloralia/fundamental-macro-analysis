@@ -719,8 +719,10 @@ def prepared(tmp_path, data, source=SOURCE, mode='daily'):
 def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_path):
     data = sample()
     data['collection_finished_at'] = '2026-10-13T22:20:00+09:00'
-    manifest, figures, source, summary = prepared(tmp_path, data)
-    assert manifest['schemaVersion'] == 3
+    # Levels without their stored bars cannot be rebuilt (test below); this one checks the other figures.
+    del data['xau_levels']
+    manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
+    assert manifest['schemaVersion'] == 4
     bundle.check_regenerated(data, manifest, figures, source, summary)
     assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
     assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source
@@ -729,7 +731,12 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
         ('Figures differ', lambda m, f, s, c: f[1]['items'].pop()),
         ('Bindings differ', lambda m, f, s, c: m['bindings'].pop()),
         ('Bindings differ', lambda m, f, s, c: m.update(missing=['calendar: 図の作成に必要なデータが不足'])),
-        ('Lead chips or limitations', lambda m, f, s, c: c['chips'].pop(0))]
+        ('Lead chips differ', lambda m, f, s, c: c['chips'].pop(0)),
+        # A code-made chip moved into the folded limits is a change too.
+        ('Lead chips differ', lambda m, f, s, c: c['limitations'].append(c['chips'].pop(0))),
+        ('Limitations differ', lambda m, f, s, c: c['limitations'].pop()),
+        ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(text=c['conclusion']['text'] + '（買い優勢）')),
+        ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(source_quote='XAUUSD：別の行'))]
     for message, change in tampered:
         m, f, c = deepcopy(manifest), deepcopy(figures), deepcopy(summary)
         change(m, f, source, c)
@@ -746,7 +753,7 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
     extra['chips'].insert(0, {'text': '過去資料の修正版です。', 'source_quote': '過去資料の修正版です。'})
     extra['limitations'].append({'title': '制約', 'text': '原稿の制約', 'source_quote': '原稿の制約'})
     bundle.check_regenerated(data, manifest, figures, source, extra)
-    old = {**manifest, 'schemaVersion': 2}       # editions drawn by earlier code are not rebuilt
+    old = {**manifest, 'schemaVersion': 3}       # editions drawn by earlier code are not rebuilt
     bundle.check_regenerated(data, old, [], source, summary)
 
 

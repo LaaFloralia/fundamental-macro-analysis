@@ -15,7 +15,8 @@ from zoneinfo import ZoneInfo
 
 JST = ZoneInfo('Asia/Tokyo')
 REQUIRED_FIGURES = ('bias', 'liquidity', 'calendar')
-MANIFEST_VERSION = 3  # 2: release rows carry text bindings; 3: figures are regenerated at validation
+MANIFEST_VERSION = 4  # 2: release rows carry text bindings; 3: figures are regenerated at validation;
+                      # 4: levels carry `confirmed` and the 5-minute publishing lag (v3 editions are not rebuilt)
 APPENDIX = '\n\n## 図表に使用した観測値\n'
 CONCLUSION_MAX = 220  # the master prompts ask for one line of 220 characters
 
@@ -45,14 +46,15 @@ def require_fresh(data, now=None):
 
 
 def analysis_cutoff(data):
-    """The board's "now": the end of collection when recorded (at most an hour after its start),
-    otherwise its start. Releases up to it count as released and windows end there."""
+    """The board's "now": the end of collection when recorded, otherwise its start (older
+    collections). Every adopted value was fetched before it; releases up to it count as released
+    and windows end there. A collection longer than an hour is named in the limits."""
     start = timestamp(data.get('timestamp'))
     try:
         end = timestamp(data['collection_finished_at']) if data.get('collection_finished_at') else None
     except BundleError:
         end = None
-    return end if end and start <= end <= start + timedelta(hours=1) else start
+    return end if end and end >= start else start
 
 
 def number(value, digits=2):
@@ -78,6 +80,11 @@ def quote_snapshot(data):
         raise BundleError('Required XAUUSD quote is missing')
     return {key: quote.get(key) for key in ('symbol', 'close', 'datetime', 'timestamp', 'fetched_at', 'previous_close',
                                             'high', 'low')}
+
+
+GONE_CHIP = {'bias': 'バイアス盤なし（材料がすべて欠測）', 'liquidity': '流動性の位置なし（1時間足から作れない）',
+             'calendar': '米指標の予定を確認できない（カレンダー取得失敗）'}
+COLLECTION_MAX_SECONDS = 3600
 
 
 def _figure_gone(key, data):
@@ -127,6 +134,12 @@ def build_observations(data, mode='daily', source=None):
     nearest = offchart_board.nearest_chip(data)
     if nearest:
         lead.append(nearest)
+    # A figure that could not be drawn is said at the top as well, not only in the folded limits.
+    drawn = {f['id'] for f in figures}
+    lead.extend(GONE_CHIP[key] for key in REQUIRED_FIGURES if key not in drawn)
+    if (stamp - start).total_seconds() > COLLECTION_MAX_SECONDS:
+        limitations.append(f'収集に{int((stamp - start).total_seconds() // 60)}分かかった。'
+                           '判定は収集終了時刻を基準にし、それまでに取得した値を使う')
     rows.extend(lead)
     lead = [{'text': text, 'source_quote': text} for text in lead]
     order = {key: index for index, key in enumerate(REQUIRED_FIGURES)}
@@ -244,8 +257,8 @@ def check_regenerated(data, manifest, figures, source, summary=None):
     (without its appendix) and require the stored ones to be identical: a flipped sign, swapped
     endpoints, another baseline, an edited word or a removed cell is rejected. The liquidity
     levels are recomputed from the stored bars when the edition carries them. Editions before
-    schemaVersion 3 are not regenerated (the code that drew them has changed)."""
-    if manifest.get('schemaVersion', 1) < 3:
+    schemaVersion 4 are not regenerated (the code that drew them has changed)."""
+    if manifest.get('schemaVersion', 1) < MANIFEST_VERSION:
         return
     body = source.split(APPENDIX)[0].rstrip()
     rebuilt = build_observations(data, manifest['kind'], body)
@@ -256,11 +269,22 @@ def check_regenerated(data, manifest, figures, source, summary=None):
     if _plain_json(rebuilt['bindings']) != manifest['bindings'] or rebuilt['missing'] != manifest['missing']:
         raise BundleError('Bindings differ from a rebuild of the collection')
     if summary is not None:
-        # The parent stage may add its own limitations and a notice chip; the code-made ones must all stay.
-        texts = {x.get('text') for x in (summary.get('chips') or []) + (summary.get('limitations') or [])
-                 if isinstance(x, dict)}
-        if not {x['text'] for x in rebuilt['lead']} | set(rebuilt['limitations']) <= texts:
-            raise BundleError('Lead chips or limitations differ from a rebuild of the collection')
+        # The parent stage may add its own limitations and a notice chip; the code-made ones must stay,
+        # each in its place (a lead chip moved into the folded limits is a change).
+        def texts(key):
+            return {x.get('text') for x in summary.get(key) or [] if isinstance(x, dict)}
+        if not {x['text'] for x in rebuilt['lead']} <= texts('chips'):
+            raise BundleError('Lead chips differ from a rebuild of the collection')
+        if not set(rebuilt['limitations']) <= texts('limitations'):
+            raise BundleError('Limitations differ from a rebuild of the collection')
+        conclusion = summary.get('conclusion') or {}
+        quote = str(conclusion.get('source_quote') or '')
+        # The page's conclusion is the report's line with only the plain-text conversion.
+        if not quote or quote not in body or conclusion.get('text') != plain_text(quote):
+            raise BundleError('Conclusion differs from the report line it quotes')
+    levels = data.get('xau_levels') or {}
+    if levels.get('levels') and not levels.get('error') and not data.get('xau_bars_used'):
+        raise BundleError('Liquidity levels are shown without the stored bars they were computed from')
     if data.get('xau_bars_used'):
         from scrapers.xau_levels import recompute
         levels = data.get('xau_levels') or {}
@@ -277,6 +301,12 @@ def check_regenerated(data, manifest, figures, source, summary=None):
             raise BundleError('Liquidity levels differ from a recomputation from the stored bars')
 
 
+def plain_text(text):
+    """Markdown links, bold and code marks removed: the only change the page makes to a quoted line."""
+    text = re.sub(r'\[([^\]\n]+)\]\(https?://[^\s)]+\)', r'\1', text)
+    return text.replace('**', '').replace('`', '')
+
+
 def make_summary(source, mode, as_of, lead=(), cutoff=None):
     """The conclusion quoted from the report; no editorial text is invented here.
 
@@ -291,10 +321,7 @@ def make_summary(source, mode, as_of, lead=(), cutoff=None):
         raise BundleError('Report summary section has no source paragraph')
     lines = [line.strip() for p in paragraphs for line in p.splitlines() if line.strip()]
     conclusion = next((line for line in lines if re.match(r'XAUUSD\s*(?:[:：]|は)', line)), paragraphs[0])
-
-    def plain(text):
-        text = re.sub(r'\[([^\]\n]+)\]\(https?://[^\s)]+\)', r'\1', text)
-        return text.replace('**', '').replace('`', '')
+    plain = plain_text
     if len(plain(conclusion)) > CONCLUSION_MAX:
         raise BundleError(f'Conclusion line is over {CONCLUSION_MAX} characters; shorten it without dropping conditions')
     stamp = timestamp(as_of)

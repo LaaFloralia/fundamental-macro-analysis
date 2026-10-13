@@ -171,3 +171,15 @@ def test_format_delta_lines_renders_both_deltas():
 
 def test_format_delta_lines_without_rates_returns_empty():
     assert format_delta_lines({"target_rates": []}) == []
+
+
+def test_history_deltas_name_their_meeting_and_a_snapshot_without_one_is_no_baseline(tmp_path):
+    """盤は履歴の会合が今の会合と同じことを確かめる。会合の記録がない履歴は比較元にしない。"""
+    path = tmp_path / "fedwatch.json"
+    _write_history(path, {"2026-08-11": _fedwatch([_rate("3.50-3.75", 45.2)])})
+    deltas = compute_deltas(_fedwatch([_rate("3.50-3.75", 50.9)]), date(2026, 8, 12), path)
+    assert deltas["prev_day"]["meeting"] == "Sep 16, 2026"
+    _write_history(path, {"2026-08-11": {**_fedwatch([_rate("3.50-3.75", 45.2)]), "next_fomc_date": None}})
+    deltas = compute_deltas(_fedwatch([_rate("3.50-3.75", 50.9, prev_day=49.0)]), date(2026, 8, 12), path)
+    assert deltas["prev_day"]["source"] == "Investing prev_day"
+    assert "meeting" not in deltas["prev_day"]
