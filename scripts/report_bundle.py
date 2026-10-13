@@ -84,6 +84,10 @@ def quote_snapshot(data):
 
 GONE_CHIP = {'bias': 'バイアス盤なし（材料がすべて欠測）', 'liquidity': '流動性の位置なし（1時間足から作れない）',
              'calendar': '米指標の予定を確認できない（カレンダー取得失敗）'}
+# A calendar fetch that failed or missed a week tab still draws its table (with the recorded results);
+# the page says so at the top as well.
+CALENDAR_CHIP = {'failed': '米指標の予定を確認できない（カレンダー取得失敗）',
+                 'incomplete': '米指標の予定が一部欠けている（カレンダー取得が不完全）'}
 COLLECTION_MAX_SECONDS = 3600
 
 
@@ -137,6 +141,8 @@ def build_observations(data, mode='daily', source=None):
     # A figure that could not be drawn is said at the top as well, not only in the folded limits.
     drawn = {f['id'] for f in figures}
     lead.extend(GONE_CHIP[key] for key in REQUIRED_FIGURES if key not in drawn)
+    if events and events.get('coverage') in CALENDAR_CHIP:
+        lead.append(CALENDAR_CHIP[events['coverage']])
     if (stamp - start).total_seconds() > COLLECTION_MAX_SECONDS:
         limitations.append(f'収集に{int((stamp - start).total_seconds() // 60)}分かかった。'
                            '判定は収集終了時刻を基準にし、それまでに取得した値を使う')

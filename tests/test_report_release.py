@@ -59,9 +59,12 @@ def test_all_figures_derive_from_named_fields():
 def test_missing_figures_not_synthesized():
     data = sample_data(); del data['xau_levels']; data['economic_calendar'] = {'error': 'timeout'}
     result = bundle.observations(data, NOW)
-    assert [entry.split(':')[0] for entry in result['missing']] == ['liquidity', 'calendar']
-    assert [f['id'] for f in result['figures']] == ['bias']
+    assert [entry.split(':')[0] for entry in result['missing']] == ['liquidity']
+    # A failed calendar is a figure that says so (and keeps recorded results), not a missing one.
+    assert [f['id'] for f in result['figures']] == ['bias', 'calendar']
+    assert 'カレンダー取得失敗のため予定を確認できない（Investing.com: timeout）' in result['limitations']
     assert '欠測・除外: liquidity' in result['appendix']
+    assert bundle.GONE_CHIP['liquidity'] in [x['text'] for x in result['lead']]
 
 
 def test_missing_retail_values_are_left_out_not_zeroed():

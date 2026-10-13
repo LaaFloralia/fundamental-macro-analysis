@@ -45,3 +45,16 @@ def test_a_long_collection_is_named_in_the_limits():
     result = bundle.build_observations(data, 'daily', SOURCE)
     assert any(x.startswith('収集に86分かかった') for x in result['limitations'])
     assert result['cutoff'] == '2026-10-13T23:40:00+09:00'
+
+
+def test_a_failed_or_incomplete_calendar_is_named_at_the_top():
+    data = sample()
+    data['economic_calendar'] = {'error': 'timeout', 'events': []}
+    chips = [x['text'] for x in bundle.observations(data, NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
+    assert bundle.CALENDAR_CHIP['failed'] in chips
+    data = sample()
+    data['economic_calendar']['missing_tabs'] = ['nextWeek']
+    chips = [x['text'] for x in bundle.observations(data, NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
+    assert bundle.CALENDAR_CHIP['incomplete'] in chips and bundle.CALENDAR_CHIP['failed'] not in chips
+    chips = [x['text'] for x in bundle.observations(sample(), NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
+    assert not set(bundle.CALENDAR_CHIP.values()) & set(chips)

@@ -211,7 +211,7 @@ def test_display_names_are_short_japanese(indicator, name):
 
 
 def test_nowcast_gap_needs_a_percent_consensus_and_a_mapped_series():
-    nowcast = {'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'}}}}
+    nowcast = {'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'}}}, 'timestamp': '2026-10-09T12:00:00+09:00'}
     event = {'date': 'Wednesday, October 14, 2026', 'time_jst': '21:30', 'country': 'United States',
              'indicator': 'CPI (MoM) (Sep)', 'forecast': '0.6%'}
     assert ue.nowcast_gap(event, nowcast) == {'nowcast': 0.531, 'as_of': '10/09', 'forecast': 0.6, 'gap': -0.069,
@@ -225,7 +225,7 @@ def test_nowcast_gap_needs_a_percent_consensus_and_a_mapped_series():
 
 
 def test_us_event_lines_list_tiers_in_time_order_with_the_nowcast_gap():
-    nowcast = {'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'}}}}
+    nowcast = {'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'}}}, 'timestamp': '2026-10-09T12:00:00+09:00'}
     events = [{'date': 'Wednesday, October 14, 2026', 'time_jst': '21:30', 'country': 'United States',
                'indicator': 'CPI (MoM) (Sep)', 'previous': '0.4%', 'forecast': '0.6%', 'actual': 'N/A'},
               {'date': 'Monday, October 12, 2026', 'time_jst': '21:30', 'country': 'United States',

@@ -12,7 +12,7 @@ from scrapers import macro_surprise as ms
 from scripts import offchart_board as board
 from scripts import offchart_dashboard as dash
 from scripts import report_bundle as bundle
-from tests.test_offchart_board import NOW, SOURCE, ev, prepared, sample
+from tests.test_offchart_board import DRAW_LINE, NOW, SOURCE, ev, prepared, sample
 
 FAILED = 'カレンダー取得失敗のため予定を確認できない（Investing.com: {}）'
 
@@ -111,7 +111,8 @@ def test_the_failure_line_is_in_the_section_the_appendix_and_the_limits_and_vali
 def test_the_failure_figure_is_rebuilt_exactly_at_validation(tmp_path):
     data = sample()
     data['economic_calendar'] = {'error': 'ページ取得失敗: timeout', 'events': []}
-    manifest, figures, source, summary = prepared(tmp_path, data)
+    del data['xau_levels']  # levels need their stored bars to be rebuilt (tests/test_bundle_contract.py)
+    manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
     bundle.check_regenerated(data, manifest, figures, source, summary)
     changed = deepcopy(figures)
     next(f for f in changed if f['id'] == 'calendar')['cautions'] = []
