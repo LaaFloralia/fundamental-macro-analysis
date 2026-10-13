@@ -73,7 +73,7 @@ def test_missing_retail_values_are_left_out_not_zeroed():
     labels = [i['label'] for f in result['figures'] for i in f['items']]
     assert not any('平均建値' in label or '個人のロング比率' in label for label in labels)
     assert result['missing'] == []
-    assert '欠測: 個人の比率（MyFXBook・ロング・ショート比率か百分位の値なし）。短期（当日〜1、2日）の集計に入れていない' in result['limitations']  # named, not zeroed
+    assert '欠測: 個人の比率（MyFXBook・ロング・ショート比率の値なし）。短期（当日〜1、2日）の集計に入れていない' in result['limitations']  # named, not zeroed
     bundle.check_bindings(data, result, result['figures'])
 
 

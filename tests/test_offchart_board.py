@@ -231,6 +231,12 @@ def test_missing_materials_are_listed_and_an_empty_group_is_not_neutral():
     (lambda d: d['retail_sentiment']['XAUUSD'].update(short_pct=40.0), '個人の比率（MyFXBook・ロングとショートの合計が100%でない）'),
     (lambda d: d['retail_sentiment']['XAUUSD'].update(timestamp='2026-10-11T09:00:00Z'),
      '個人の比率（MyFXBook・取得 10/11 18:00 JST・24時間より前）'),
+    # The fallback source is named; a ratio without enough own history is not "no value".
+    (lambda d: d['retail_sentiment']['XAUUSD'].update(source='FXSSI') or
+     d['offchart_features']['positioning']['retail']['XAUUSD'].update(percentile=None, history_n=12),
+     '個人の比率（FXSSI・同じ取得元の自前履歴12件で百分位なし（20件・5種以上で判定））'),
+    (lambda d: d['offchart_features']['positioning']['cot_gold_mm'].update(percentile=None, history_n=8),
+     '投機筋の建玉（CFTC COT・自前履歴8週で百分位なし（20週以上で判定））'),
     (lambda d: d['cot_disaggregated']['data']['managed_money'].update(short=40000), '投機筋の建玉（CFTC COT・買い−売り＝差引が合わない）'),
     (lambda d: d['offchart_features']['positioning']['cot_gold_mm'].update(report_date='2026-09-29'),
      '投機筋の建玉（CFTC COT・百分位と建玉の報告日が違う）'),

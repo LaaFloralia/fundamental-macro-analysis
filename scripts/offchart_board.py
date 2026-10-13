@@ -19,6 +19,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_sign
+from scrapers.positioning_history import MIN_DISTINCT, MIN_SAMPLES
 from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, NOWCAST_MAX_PER_WINDOW, adopted_nowcasts,
                                  display_name, event_window, gap_display, nowcast_age, nowcast_fetch_problem,
                                  nowcast_gap, results_start, tier, window_label)
@@ -371,7 +372,7 @@ MATERIALS = {
 def bias_rows(data, stamp, mode, source=None):
     """Rows for the board. Returns (items, bindings, notes); notes list the missing materials and why.
     Each row records its material and factor (FACTOR)."""
-    items, bindings, notes, why = [], [], [], {}
+    items, bindings, notes, why, origins = [], [], [], {}, {}
     weekly = mode == 'weekly'
     long_g, short_g = GROUPS['long'], GROUPS['short'][mode]
     fred = data.get('fred') or {}
@@ -559,8 +560,10 @@ def bias_rows(data, stamp, mode, source=None):
     mm = ((cot.get('data') or {}).get('managed_money')) if present(cot) else None
     p = positioning.get('cot_gold_mm') or {}
     cot_date = (cot.get('data') or {}).get('date')
-    if not isinstance(mm, dict) or num(mm.get('net')) is None or num(p.get('percentile')) is None:
-        skip('投機筋の建玉', '取得失敗' if not present(cot) else '買い越しか百分位の値なし')
+    if not isinstance(mm, dict) or num(mm.get('net')) is None:
+        skip('投機筋の建玉', '取得失敗' if not present(cot) else '買い越しの値なし')
+    elif num(p.get('percentile')) is None:
+        skip('投機筋の建玉', f'自前履歴{p.get("history_n") or 0}週で百分位なし（{MIN_SAMPLES}週以上で判定）')
     elif not 0 <= p['percentile'] <= 100:
         skip('投機筋の建玉', '百分位が0〜100の外')
     elif any(num(mm.get(k)) is None or mm[k] < 0 for k in ('long', 'short')) or abs(mm['long'] - mm['short'] - mm['net']) > 0.5:
@@ -591,8 +594,15 @@ def bias_rows(data, stamp, mode, source=None):
     r = (data.get('retail_sentiment') or {}).get('XAUUSD') or {}
     pr = (positioning.get('retail') or {}).get('XAUUSD') or {}
     long_pct, short_pct = num(r.get('long_pct')), num(r.get('short_pct'))
-    if not present(r) or long_pct is None or short_pct is None or num(pr.get('percentile')) is None:
-        skip('個人の比率', '取得失敗' if not present(r) else 'ロング・ショート比率か百分位の値なし')
+    if present(r) and r.get('source'):
+        origins['個人の比率'] = str(r['source'])  # FXSSI when MyFXBook failed
+    if not present(r):
+        skip('個人の比率', '取得失敗')
+    elif long_pct is None or short_pct is None:
+        skip('個人の比率', 'ロング・ショート比率の値なし')
+    elif num(pr.get('percentile')) is None:
+        skip('個人の比率', f'同じ取得元の自前履歴{pr.get("history_n") or 0}件で百分位なし'
+                        f'（{MIN_SAMPLES}件・{MIN_DISTINCT}種以上で判定）')
     elif not (0 <= long_pct <= 100 and 0 <= short_pct <= 100) or abs(long_pct + short_pct - 100) > 0.5:
         skip('個人の比率', 'ロングとショートの合計が100%でない')
     elif not 0 <= pr['percentile'] <= 100:
@@ -614,6 +624,7 @@ def bias_rows(data, stamp, mode, source=None):
     for group, materials in MATERIALS.items():
         for name, origin in materials:
             if name not in got:
+                origin = origins.get(name, origin)
                 detail = f'{origin}・{why[name]}' if why.get(name) else origin
                 notes.append(f'欠測: {name}（{detail}）。{GROUPS["long"] if group == "long" else short_g}の集計に入れていない')
     reason = nowcast_missing(data, stamp, mode)
