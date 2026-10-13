@@ -14,15 +14,23 @@ NOW = datetime.fromisoformat('2026-09-09T18:00:00+09:00')
 
 
 def sample_data():
-    return {'timestamp': NOW.isoformat(), 'report_quote': {'close': 3400.5},
-            'retail_sentiment': {'XAUUSD': {'long_pct': 40, 'short_pct': 60, 'avg_long_entry': 3500,
-                                          'avg_short_entry': 3300, 'timestamp': NOW.isoformat()}},
-            'gold_etf': {'as_of_date': '2026-09-08', 'change_5d_t': -3.5, 'change_20d_t': 17.8},
-            'cot_disaggregated': {'data': {'date': '2026-09-01',
-                  **{key: {'long': 10, 'short': 20, 'net': -10} for key in
-                     ['managed_money', 'swap_dealers', 'producer_merchant', 'other_reportables']}}},
+    return {'timestamp': NOW.isoformat(), 'report_quote': {'close': 3400.5, 'datetime': '2026-09-09'},
+            'retail_sentiment': {'XAUUSD': {'source': 'MyFXBook', 'long_pct': 40, 'short_pct': 60, 'avg_long_entry': 3500,
+                                          'avg_short_entry': 3300, 'timestamp': '2026-09-09T08:30:00Z'}},
+            'gold_etf': {'tonnes': 980.0, 'as_of_date': '2026-09-08', 'change_5d_t': -3.5, 'change_20d_t': 17.8},
+            'xau_levels': {'price': 3400.5, 'last_bar_utc': '2026-09-09 08:00', 'levels': [
+                {'key': 'PDH', 'name': '前日高値（09/08）', 'side': 'high', 'price': 3420.0, 'state': 'resting',
+                 'state_word': '未到達', 'touched_at': None, 'touched_session': None, 'note': ''},
+                {'key': 'PDL', 'name': '前日安値（09/08）', 'side': 'low', 'price': 3380.0, 'state': 'swept',
+                 'state_word': '掃引済み', 'touched_at': '09/09 10:00', 'touched_session': 'アジア', 'note': ''}]},
+            'liquidity_levels': {'price': 3400.5, 'gvz': 23.0, 'gvz_as_of': '2026-09-08', 'expected_move_1sd': 49.3},
             'economic_calendar': {'events': [{'date': 'Thursday, September 10, 2026', 'time_jst': '21:30',
-                                             'country': 'United States', 'indicator': 'PPI (MoM)'}]}}
+                                             'country': 'United States', 'indicator': 'PPI (MoM) (Aug)',
+                                             'previous': '0.2%', 'forecast': '0.3%', 'actual': 'N/A'}]}}
+
+
+def figure(result, ident):
+    return next(f for f in result['figures'] if f['id'] == ident)
 
 
 @pytest.mark.parametrize('stamp', ['2026-09-08T18:00:00+09:00', '2026-09-09T11:59:00+09:00', '2026-09-09T18:01:00+09:00', None])
@@ -41,30 +49,29 @@ def test_missing_price_stops_generation():
 def test_all_figures_derive_from_named_fields():
     data = sample_data(); result = bundle.observations(data, NOW)
     assert result['missing'] == []
-    assert {f['id'] for f in result['figures']} == set(bundle.REQUIRED_FIGURES)
+    assert [f['id'] for f in result['figures']] == list(bundle.REQUIRED_FIGURES) == ['bias', 'liquidity', 'calendar']
     bundle.check_bindings(data, result, result['figures'])
-    result['figures'][0]['items'][0]['value'] = 3500  # another real price must not pass
+    next(i for i in figure(result, 'liquidity')['items'] if i['label'] == '前日高値（09/08）')['value'] = 3500  # another real price
     with pytest.raises(bundle.BundleError, match='does not match'):
         bundle.check_bindings(data, result, result['figures'])
 
 
 def test_missing_figures_not_synthesized():
-    data = sample_data(); data['gold_etf']['change_5d_t'] = None
+    data = sample_data(); del data['xau_levels']; data['economic_calendar'] = {'error': 'timeout'}
     result = bundle.observations(data, NOW)
-    assert any('etf' in entry for entry in result['missing'])
-    assert 'etf' not in {f['id'] for f in result['figures']}
+    assert [entry.split(':')[0] for entry in result['missing']] == ['liquidity', 'calendar']
+    assert [f['id'] for f in result['figures']] == ['bias']
+    assert '欠測・除外: liquidity' in result['appendix']
 
 
-def test_missing_percentages_are_not_zero():
-    data = sample_data(); data['retail_sentiment']['XAUUSD']['short_pct'] = None
+def test_missing_retail_values_are_left_out_not_zeroed():
+    data = sample_data(); data['retail_sentiment']['XAUUSD'].update(avg_long_entry=None, avg_short_entry=None, long_pct=None)
     result = bundle.observations(data, NOW)
-    assert 'retail' not in {f['id'] for f in result['figures']}
-
-
-def test_inconsistent_cot_is_not_plotted():
-    data = sample_data(); data['cot_disaggregated']['data']['managed_money']['net'] = 999
-    result = bundle.observations(data, NOW)
-    assert 'cot' not in {f['id'] for f in result['figures']}
+    labels = [i['label'] for f in result['figures'] for i in f['items']]
+    assert not any('平均建値' in label or '個人のロング比率' in label for label in labels)
+    assert result['missing'] == []
+    assert '欠測: 個人の比率（MyFXBook・ロング・ショート比率か百分位の値なし）。短期（当日〜1、2日）の集計に入れていない' in result['limitations']  # named, not zeroed
+    bundle.check_bindings(data, result, result['figures'])
 
 
 class MemoryStorage:
@@ -375,83 +382,29 @@ def test_wrong_mode_stops_before_network(inputs, tmp_path, monkeypatch):
     assert upload_report.upload(p,'daily',publish=True) is None
 
 
-def test_optional_average_entries_are_explicitly_unavailable():
-    data=sample_data(); data['retail_sentiment']['XAUUSD'].update(avg_long_entry=None, avg_short_entry=None)
-    result=bundle.observations(data,NOW)
-    assert result['missing']==[]
-    assert any('方向判断は行いません' in note for note in result['limitations'])
-    price=next(f for f in result['figures'] if f['id']=='price')
-    assert price['title'].startswith('価格帯の目安') and '取得できず' in price['caption']
-    assert len(price['items'])==1 and price['items'][0]['value']==3400.5 and price['availability']=='partial'
-    assert price['items'][0]['label']=='現在値' and price['items'][0]['tone']=='current'
-    assert 'retail' in {f['id'] for f in result['figures']}
-    bundle.check_bindings(data,result,result['figures'])
-
-
-def test_price_figure_maps_expected_range_and_round_levels():
-    data=sample_data()
-    data['liquidity_levels']={'price':3400.5,'gvz':23.0,'gvz_as_of':'2026-09-28','band_lower':3351.23,
-                              'band_upper':3449.77,'nearest_below':3400.0,'nearest_above':3450.0}
-    result=bundle.observations(data,NOW)
-    price=next(f for f in result['figures'] if f['id']=='price')
-    labels=[i['label'] for i in price['items']]
-    assert labels[:5]==['現在値','想定変動 上限（+1σ）','想定変動 下限（−1σ）','キリ番（下）','キリ番（上）']
-    assert 'availability' not in price and 'GVZ 23.0' in price['caption']
-    assert price['band']=={'lower':3351.23,'upper':3449.77,'label':'想定変動 ±1σ'}
-    assert [i['tone'] for i in price['items'][:5]]==['current','reference','reference','caution','caution']
-    assert [i['label'] for i in price['items'] if i.get('offscale')]==['個人Long平均建値（上）','個人Short平均建値（下）']  # 2.9% away
-    bundle.check_bindings(data,result,result['figures'])
-
-
-def test_price_figure_plots_every_round_level_by_index_and_lists_far_levels():
-    data=sample_data()
-    data['liquidity_levels']={'price':3400.5,'gvz':23.0,'gvz_as_of':'2026-09-28','band_lower':3351.23,'band_upper':3449.77,
-                              'nearest_below':3400.0,'nearest_above':3450.0,
-                              'levels':[{'level':3350.0,'major':False,'distance':-50.5,'distance_pct':-1.48},
-                                        {'level':3400.0,'major':True,'distance':-0.5,'distance_pct':-0.01},
-                                        {'level':3450.0,'major':False,'distance':49.5,'distance_pct':1.46}]}
-    data['retail_sentiment']['XAUUSD'].update(avg_long_entry=3600.0,avg_short_entry=3390.0)
-    result=bundle.observations(data,NOW)
-    price=next(f for f in result['figures'] if f['id']=='price')
-    labels=[i['label'] for i in price['items']]
-    assert labels[3:6]==['キリ番 3,350（下）','キリ番 3,400（下）','キリ番 3,450（上）']
-    assert labels[6:]==['個人Long平均建値（上）','個人Short平均建値（下）']
-    assert [i.get('offscale') for i in price['items'][6:]]==[True,None]
-    paths={b['label']:b['path'] for b in result['bindings'] if b['figure']=='price'}
-    assert paths['キリ番 3,400（下）']=='liquidity_levels.levels.1.level'
-    assert '想定変動の範囲外' in price['items'][3]['detail'] and '想定変動の範囲内' in price['items'][4]['detail']
-    assert 'ショートの損切り' in price['items'][5]['detail'] and 'ロングの損切り' in price['items'][3]['detail']
-    bundle.check_bindings(data,result,result['figures'])
-    data['liquidity_levels']['levels'][1]['level']=3401.0  # a changed source value must no longer match the figure
-    with pytest.raises(bundle.BundleError, match='does not match'):
-        bundle.check_bindings(data,result,result['figures'])
-
-
-def test_price_figure_average_entries_carry_their_own_observation_time():
-    data=sample_data()
-    data['retail_sentiment']['XAUUSD'].update(avg_long_entry=3500.25,avg_short_entry=3300.75,as_of_date=None,source='MyFXBook')
-    result=bundle.observations(data,NOW)
-    price=next(f for f in result['figures'] if f['id']=='price')
-    entries=[i for i in price['items'] if '平均建値' in i['label']]
-    assert len(entries)==2
-    for item in entries:
-        assert '観測時刻は未確認 / 記録 '+NOW.isoformat() in item['source_quote']
-    quote_time=next(i for i in price['items'] if i['label']=='現在値')['source_quote'].split('観測: ')[1]
-    assert all(quote_time.split('。')[0] not in i['source_quote'] for i in entries)
-    assert '価格の観測: ' in price['subtitle'] and '平均建値は' in price['caption']
-    assert '観測時刻は未確認 / 記録 '+NOW.isoformat() in price['caption']
-    assert any(link['url'].startswith('https://') and link['label']==data['retail_sentiment']['XAUUSD']['source']
-               for link in price['source_links'])
-    bundle.check_bindings(data,result,result['figures'])
-
-
-def test_retail_metadata_timestamp_is_not_claimed_as_observed_or_fetched_time():
+def test_liquidity_map_uses_named_levels_and_ignores_saved_round_numbers():
     data = sample_data()
+    data['liquidity_levels']['levels'] = [{'level': 3400.0, 'major': True, 'distance': -0.5, 'distance_pct': -0.01}]
     result = bundle.observations(data, NOW)
-    retail = next(figure for figure in result['figures'] if figure['id'] == 'retail')
-    assert '観測時刻は未確認 / 記録 ' + NOW.isoformat() in retail['subtitle']
-    assert '取得 ' + NOW.isoformat() not in retail['subtitle']
-    assert data['retail_sentiment']['XAUUSD']['timestamp'] == NOW.isoformat()
+    liquidity = figure(result, 'liquidity')
+    assert [i['label'] for i in liquidity['items']] == ['前日高値（09/08）', '現在値', '前日安値（09/08）']
+    assert [i['label'] for i in liquidity['aux']] == ['個人ロングの平均建値', '個人ショートの平均建値']
+    assert 'キリ' not in json.dumps(result, ensure_ascii=False) and '3,400.00' not in str(liquidity['band'])
+    assert liquidity['band'] == {'lower': 3351.2, 'upper': 3449.8, 'label': '想定変動 ±1σ（1日・±49.3ドル）'}
+    paths = {b['label']: b['path'] for b in result['bindings'] if b['figure'] == 'liquidity'}
+    assert paths['前日安値（09/08）'] == 'xau_levels.levels.1.price' and paths['現在値'] == 'report_quote.close'
+    bundle.check_bindings(data, result, result['figures'])
+    data['xau_levels']['levels'][1]['price'] = 3381.0  # a changed source value must no longer match the figure
+    with pytest.raises(bundle.BundleError, match='does not match'):
+        bundle.check_bindings(data, result, result['figures'])
+
+
+def test_average_entries_carry_their_own_provider_and_time():
+    result = bundle.observations(sample_data(), NOW)
+    liquidity = figure(result, 'liquidity')
+    aux = {i['label']: i for i in liquidity['aux']}
+    assert aux['個人ロングの平均建値']['state_word'] == aux['個人ショートの平均建値']['state_word'] == 'MyFXBook・09/09 17:30 JST'
+    assert next(i for i in liquidity['items'] if i['label'] == '現在値')['state_word'] == '取得時刻の記録なし'  # not the collection time
 
 
 def test_in_progress_edition_stays_fresh_across_midnight_without_relabeling():
@@ -471,84 +424,43 @@ def test_next_24h_calendar_coverage_keeps_ecb_and_jobless_claims():
     assert not any('CPI' in e for e in result)
 
 
-def test_etf_countertrend_is_retained_in_figure_and_summary_source():
-    data=sample_data();data['gold_etf'].update(streak_days=3,streak_direction='outflow')
-    result=bundle.observations(data,NOW)
-    figure=next(f for f in result['figures'] if f['id']=='etf')
-    assert '3営業日連続の保有減' in figure['caption']
-    assert any('3営業日連続の保有減' in note for note in result['limitations'])
+def test_etf_row_keeps_the_20_day_context_next_to_the_5_day_vote():
+    result = bundle.observations(sample_data(), NOW)
+    etf = next(i for i in figure(result, 'bias')['items'] if i['label'] == 'GLD保有量（5営業日）')
+    assert etf['symbol'] == '▼' and etf['note'] == '棒は左から5営業日・20営業日。20営業日 +17.80 t'
+    assert [b['value'] for b in etf['viz']['items']] == [-3.5, 17.8]
 
 
-def test_summary_preserves_observation_deadline_and_both_plan_conditions():
-    source = '''# Report
+SUMMARY_SOURCE = '''# Report
 ## セクション0: エグゼクティブサマリー
 
-信頼度: Low ｜ スコア 0
-XAUUSD: プランAは未成立。方向未設定。
-観察時間: 9/10 01:00まで。執行は保留。
-最大リスク: 構造の欠測。
+信頼度: Low
+時間軸別の向き: 長期 下向き・弱｜短期 中立｜総合 下向き・弱
+XAUUSD：長期は下向き・弱。短期は中立で、9/10 21:30 JSTの米PPIが分岐。
+反証・無効化条件：米2年債が−10bp以上低下すれば見直す。
+判断から除外する材料：注文板の集計。
 
 ## セクション1: 今夜の執行プラン
 ### 1-1. プランA（本命）
 
 D1・H1構造が取得不可のため、方向は未設定。
-
-執行再検討時はCBDR / Asian Rangeを確認する。
-
-### 1-2. プランB（同一銘柄・逆条件シナリオ）
-
-D1・H1取得後に逆方向の構造を確認できた場合は再評価する。
-確認できなければ様子見を継続する。
-
-### 1-3. スコア
-
-合計0。
 '''
-    summary = bundle.make_summary(source, 'daily', NOW.isoformat())
-    conditions = summary['conditions']
-    assert len(conditions) == 4
-    assert conditions[0]['text'] == '9/10 01:00まで。執行は保留。'
-    assert 'プランA' in conditions[2]['title']
-    assert 'CBDR / Asian Range' in conditions[2]['text']
-    assert '取得不可' in conditions[2]['text']
-    assert 'プランB' in conditions[3]['title']
-    assert conditions[3]['text'].endswith('確認できなければ様子見を継続する。')
-    assert all(c['source_quote'] in source for c in conditions)
 
 
-def test_weekly_plan_tables_keep_invalidation_and_counter_scenario():
-    source = '''# Weekly
-## セクション0: エグゼクティブサマリー
-
-来週の方向は未設定。条件の取得後に再評価する。
-
-## セクション8: 来週の注目シナリオ
-### 8-1. プラン1
-
-| 項目 | 内容 |
-|---|---|
-| 方向 | 未設定 |
-| 無効化レベル | 構造未取得のため未設定 |
-| チャート確認 | D1 / H1の取得後に再評価 |
-
-**スコア内訳表（必須）:**
-
-| # | 項目 | 点 |
-|---|---|---|
-| 1 | 構造 | 0 |
-
-### 8-2. プラン2
-
-プラン1の構造を確認するまで対抗シナリオも未設定。
-確認できなければ様子見を継続する。
-'''
-    result = bundle.make_summary(source, 'weekly', NOW.isoformat())['conditions']
-    assert len(result) == 2
-    assert result[0]['text'].find('無効化レベル: 構造未取得のため未設定') >= 0
-    assert 'D1 / H1の取得後に再評価' in result[0]['text']
-    assert '|' not in result[0]['text']
-    assert result[1]['text'].endswith('確認できなければ様子見を継続する。')
-    assert all(c['source_quote'] in source for c in result)
+def test_summary_quotes_the_xauusd_line_and_leaves_plans_and_conditions_in_the_markdown():
+    summary = bundle.make_summary(SUMMARY_SOURCE, 'daily', NOW.isoformat(), [{'text': 'chip', 'source_quote': 'chip'}])
+    assert summary['conclusion']['text'] == 'XAUUSD：長期は下向き・弱。短期は中立で、9/10 21:30 JSTの米PPIが分岐。'
+    assert summary['conclusion']['source_quote'] == summary['conclusion']['text']
+    assert summary['as_of_label'] == '09/09（水）18:00 JST 収集' and summary['chips'][0]['text'] == 'chip'
+    assert 'conditions' not in summary and 'metrics' not in summary
+    assert '反証' not in json.dumps(summary, ensure_ascii=False) and 'プランA' not in json.dumps(summary, ensure_ascii=False)
+    line = 'XAUUSD：長期は下向き・弱。短期は中立で、9/10 21:30 JSTの米PPIが分岐。'
+    exact = 'XAUUSD：' + 'あ' * (bundle.CONCLUSION_MAX - len('XAUUSD：'))
+    assert bundle.make_summary(SUMMARY_SOURCE.replace(line, exact), 'daily', NOW.isoformat())['conclusion']['text'] == exact
+    with pytest.raises(bundle.BundleError, match='over 220 characters'):
+        bundle.make_summary(SUMMARY_SOURCE.replace(line, exact + 'あ'), 'daily', NOW.isoformat())
+    with pytest.raises(bundle.BundleError, match='no source paragraph'):
+        bundle.make_summary('# Report\n## セクション0: エグゼクティブサマリー\n\n| 表 |\n', 'daily', NOW.isoformat())
 
 
 def test_weekly_cover_quotes_the_complete_xau_decision_line():
@@ -561,8 +473,7 @@ def test_weekly_cover_quotes_the_complete_xau_decision_line():
               '前回Weeklyの比較は照合不能。\n')
     result = bundle.make_summary(source, 'weekly', NOW.isoformat())
     assert result['conclusion']['text'] == lead
-    assert result['conclusion']['source_quote'] in source
-    assert '前回Weeklyの比較は照合不能' in result['conclusion']['source_quote']
+    assert result['conclusion']['source_quote'] == lead and lead in source
 
 
 def test_plain_cover_labels_hide_markdown_link_syntax_and_preserve_source_url():

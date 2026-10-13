@@ -24,7 +24,7 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from scripts.report_acceptance import CHECKS
-from scripts.report_bundle import check_bindings, timestamp as collection_timestamp
+from scripts.report_bundle import check_bindings, check_regenerated, timestamp as collection_timestamp
 
 ROOT = Path('/Users/laa/.codex/jobs/chart-intel')
 PUBLIC_BASE = 'https://reports-data.laa-inc.com'
@@ -157,6 +157,7 @@ def validate_edition(edition_path, root=ROOT, now=None):
     if bundle.get('missing') or set(bundle['figureIds']) != set(bundle['requiredFigures']):
         raise PublicationError('Required figures missing')
     check_bindings(data, bundle, figures)
+    check_regenerated(data, bundle, figures, sidecars['source'].decode('utf-8'), json.loads(sidecars['summary']))
     html_file = files['html_path']
     audit = read(local_file(html_file.with_suffix('.presentation.audit.json'), folder))
     if (audit.get('source_sha256') != hashes['sourceSha256']
@@ -229,10 +230,13 @@ def validate_review(candidate, review_path=None, now=None):
     if any(expected.get(item['path']) != item.get('sha256') for item in inspected):
         raise PublicationError('Inspected images not bound to browser evidence')
     names = {Path(item['path']).name for item in inspected}
+    # Every capture is required, the explanations-open tiles included; the single tall '-full.png'
+    # of editions before 2026-10-14 stays optional.
     required = {Path(path).name for path in expected if not Path(path).name.endswith('-full.png')}
+    # Page tiles of the one-page dashboard; source tiles in editions before 2026-10-13.
+    tiles = lambda view: any(name.startswith((f'{view}-page-', f'{view}-source-')) for name in names)
     if (not required <= names or not {'desktop-overview.png', 'mobile-overview.png'} <= names
-            or not any(name.startswith('desktop-source-') for name in names)
-            or not any(name.startswith('mobile-source-') for name in names)):
+            or not tiles('desktop') or not tiles('mobile')):
         raise PublicationError('Independent visual inspection incomplete')
     return review
 

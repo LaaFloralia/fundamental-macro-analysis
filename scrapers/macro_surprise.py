@@ -115,7 +115,7 @@ def archive_forecasts(events: list, captured_at: datetime, path: Path = FORECAST
         if (when is None or when <= captured_at or parse_value(ev.get("forecast")) is None
                 or parse_value(ev.get("actual")) is not None):
             continue
-        rows.append({"key": _event_key(ev, when), "forecast": ev.get("forecast"),
+        rows.append({"key": _event_key(ev, when), "forecast": ev.get("forecast"), "previous": ev.get("previous"),
                      "source": ev.get("forecast_source") or "Investing.com", "captured_at": captured_at.isoformat()})
     if rows:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,6 +181,40 @@ def load_forecast_history(path: Path = FORECAST_HISTORY) -> dict:
         if prior is None or row["_captured"] >= prior["_captured"]:
             latest[row.get("key")] = row
     return latest
+
+
+def history_events(since: datetime, until: datetime, forecast_history: Optional[dict] = None,
+                   actual_history: Optional[dict] = None, countries=("United States",)) -> list[dict]:
+    """Released events rebuilt from the archive (calendar_forecasts.jsonl), for the releases a
+    calendar page no longer lists (Monday's Daily looking back at Friday). Only releases whose
+    result was recorded; the forecast and previous are the last pre-release record, else N/A."""
+    out = []
+    for key, first in (actual_history or {}).items():
+        try:
+            country, rest = key.split("|", 1)
+            indicator, iso = rest.rsplit("|", 1)
+            when = datetime.fromisoformat(iso).astimezone(JST)
+        except (AttributeError, ValueError):
+            continue
+        if country not in countries or not since <= when <= until or parse_value(first.get("actual")) is None:
+            continue
+        prior = (forecast_history or {}).get(key) or {}
+        before = prior.get("_captured") is not None and prior["_captured"] < when
+        out.append({"date": f"{when:%A}, {when:%B} {when.day}, {when.year}", "time_jst": f"{when:%H:%M}",
+                    "country": country, "indicator": indicator,
+                    "previous": (prior.get("previous") if before else None) or "N/A",
+                    "forecast": (prior.get("forecast") if before else None) or "N/A",
+                    "actual": first["actual"], "from_history": True})
+    return sorted(out, key=event_datetime_jst)
+
+
+def merge_history_events(events: list, since: datetime, until: datetime, path: Path = FORECAST_HISTORY) -> int:
+    """Adds archived released events the calendar does not list (same country, name and time); returns the count."""
+    have = {_event_key(ev, when) for ev in events if (when := event_datetime_jst(ev)) is not None}
+    added = [ev for ev in history_events(since, until, load_forecast_history(path), load_actual_history(path))
+             if _event_key(ev, event_datetime_jst(ev)) not in have]
+    events.extend(added)
+    return len(added)
 
 
 def released_surprises(events: list, now: datetime, lookback_hours: int = 36,
@@ -282,8 +316,11 @@ def fill_missing_forecasts(events: list, ff_events: list) -> int:
     return filled
 
 
-def format_surprise_lines(surprises: list, lookback_hours: int = 36) -> list[str]:
-    span = "直近36時間" if lookback_hours == 36 else f"直近{lookback_hours // 24}日"
+def format_surprise_lines(surprises: list, lookback_hours: int = 36, since: Optional[datetime] = None) -> list[str]:
+    if since is not None:
+        span = f"{since.astimezone(JST):%m/%d %H:%M} JST以降"
+    else:
+        span = "直近36時間" if lookback_hours == 36 else f"直近{lookback_hours // 24}日"
     lines = [f"### 指標サプライズ（発表済み・{span}）"]
     if not surprises:
         lines.append(f"- 該当なし（{span}に結果が出た★★★指標なし、または結果未取得）")

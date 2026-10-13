@@ -1,46 +1,65 @@
-"""Deterministic off-chart bias board and economic-event table for the report figures.
+"""Deterministic figures for the off-chart dashboard: bias board, liquidity map, US event table.
 
-Every row compares one observation with its stated baseline and maps the change to a
-gold direction with the general reaction rules the pipeline already uses
-(scrapers.macro_surprise.US_GOLD_SIGN, the master-prompt thresholds). The rules are
-presentation rules written into each row; they are not trading rules, and the
-verdict tiles only count the rows shown. No collection, LLM, Brain or network here.
+Every board row compares one observation with its stated baseline and maps the change to a
+gold direction with the general reaction rules (scrapers.macro_surprise.US_GOLD_SIGN, the
+master-prompt thresholds). Directions are judged on the unrounded values (only binary
+floating-point noise is ignored); the shown value carries enough digits to sit on the same
+side of zero and of each threshold. Rows without fresh data are left out and listed as
+missing with the reason; nothing is invented and no row is "pending". Rows that measure the
+same driver are counted as one vote (FACTOR).
+The report's own per-horizon verdict is quoted from its fixed lines and marked when it
+differs from the rule tally. No collection, LLM, Brain or network access here.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from collections import OrderedDict
+from datetime import date, datetime, timedelta
 import math
 import re
 from zoneinfo import ZoneInfo
 
-from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_sign, parse_value
+from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_sign
+from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, adopted_nowcasts, display_name, event_window,
+                                 results_start, tier, window_label)
 from scripts.report_bundle import number
 
 JST = ZoneInfo('Asia/Tokyo')
-COUNTRY = {'United States': '米国', 'Euro Zone': 'ユーロ圏', 'Germany': '独', 'United Kingdom': '英',
-           'Japan': '日本', 'China': '中国', 'Australia': '豪', 'Canada': '加', 'Switzerland': 'スイス',
-           'New Zealand': 'NZ', 'France': '仏', 'Italy': '伊', 'Spain': '西'}
-LONG_WINDOW_WORDS = ('interest rate decision', 'press conference', 'fomc', 'monetary policy statement')
 SYMBOL = {('up', 'strong'): '▲', ('up', 'weak'): '△', ('down', 'strong'): '▼', ('down', 'weak'): '▽',
-          ('flat', 'none'): '—', ('unknown', 'none'): '？'}
-WORD = {'up': '上向き', 'down': '下向き', 'flat': '中立', 'unknown': '判定保留'}
-TONE = {'up': 'positive', 'down': 'negative', 'flat': 'neutral', 'unknown': 'caution'}
-LONG_GROUP = '長期（構造: 実質金利・ドル・ETF・中銀フロー）'
-SHORT_GROUP = {'daily': '短期（当日の材料と今後24時間）', 'weekly': '今週の材料と来週の予定'}
-TALLY_RULE = '強い向き（▲▼）1票・弱い向き（△▽）0.5票で比べ、差が1票未満なら中立、2票以上で強い向き'
+          ('flat', 'none'): '—'}
+WORD = {'up': '上向き', 'down': '下向き', 'flat': '中立'}
+TONE = {'up': 'positive', 'down': 'negative', 'flat': 'neutral'}
+GROUPS = {'long': '長期（数週間〜）', 'short': {'daily': '短期（当日〜1、2日）', 'weekly': '短期（今後1週間）'}}
+VERDICTS = {'上向き・強': ('up', 'strong'), '上向き・弱': ('up', 'weak'), '下向き・強': ('down', 'strong'),
+            '下向き・弱': ('down', 'weak'), '中立': ('flat', 'none')}
+TALLY_RULE = ('同じ要因の行は1票にまとめる（米2年債・政策金利の織り込み・指標の結果＝金利・織り込み、'
+              'COT・個人の比率＝建玉の偏り、nowcastとの差＝発表前の予測）。まとめた票は向きが揃えば強い方、食い違えば0で、'
+              '建玉の偏りと発表前の予測は最大0.5票。▲▼は1票、△▽は0.5票。上向きと下向きの差が1票未満なら中立、'
+              '2票以上で強、それ以外は弱')
+BLEND_RULE = '原稿に総合の記載がない場合: 長期と短期が同じ向きならその向き、片方が中立ならもう片方の向き（弱）、逆向きなら中立'
+CAVEAT = ('金利・ドル・織り込みは同じ材料で同時に動きやすいため、同じ要因の行は1票にまとめています。'
+          '閾値と票の重みは経験則の目安で、予測力は検証していません')
+LADDER_RANGE_PCT = {'daily': 2.5, 'weekly': 5.0}
+STATE_ICON = {'resting': '●', 'swept': '✓', 'broken': '×', 'forming': '◌'}
+BEYOND_ICON = {'high': '↗', 'low': '↘'}  # 抜けて推移: the side the price left through
+FLOAT_NOISE = 1e-9  # binary floating-point error only; the inputs carry at most four decimals
+# Oldest observation still used, in days before the stamp's date (publication lags included).
+MAX_AGE_DAYS = {'DFII10': 7, 'DGS2': 7, 'DXY': 7, 'DTWEXBGS': 14, 'GLD': 7, 'COT': 14}
+CB_MAX_MONTHS = 4                  # IMF IRFCL is one to two months behind
+QUOTE_MAX_HOURS = 24               # FedWatch table, DXY quote and retail ratio come from this collection
+FEDWATCH_HISTORY_DAYS = {'daily': 4, 'weekly': 10}  # own-history baseline when the table has no column
+# Rows that measure the same driver give one vote: the larger vote when they agree, none when they disagree.
+FACTOR = {'実質金利': '実質金利', 'ドル（20営業日）': 'ドル', 'ニュース・地政学': 'ニュース・地政学', '中銀の金購入': '中銀',
+          '米2年債': '金利・織り込み', '政策金利の織り込み': '金利・織り込み', '指標の結果': '金利・織り込み',
+          'ドル（短期）': 'ドル', '予測との差': '発表前の予測', 'GLD保有量': 'ETF',
+          '投機筋の建玉': '建玉の偏り', '個人の比率': '建玉の偏り'}
+FACTOR_CAP = {'発表前の予測': 0.5, '建玉の偏り': 0.5}
+VOTE = {'▲': 1.0, '△': 0.5, '▼': -1.0, '▽': -0.5, '—': 0.0}
+# Killzones in each market's clock (JST: London 16-19 in UK summer time, 17-20 in winter; NY 21-01 / 22-02).
+KILLZONES = (('London KZ', ZoneInfo('Europe/London'), 8, 11), ('NY KZ', ZoneInfo('America/New_York'), 8, 12))
+FEDWATCH_STRONG_BP = {'daily': 1.25, 'weekly': 2.5}  # a 5pp / 10pp shift between adjacent 25bp ranges
 
 
-def stamp_text(value):
-    """Readable JST time for a recorded ISO timestamp; other strings pass through."""
-    try:
-        from datetime import datetime
-        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-    except (TypeError, ValueError):
-        return str(value or '時点未取得')
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=JST)
-    return parsed.astimezone(JST).strftime('%Y-%m-%d %H:%M') + ' JST'
-
+# ------------------------------------------------------------------ helpers
 
 def num(value):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -48,8 +67,23 @@ def num(value):
     return float(value)
 
 
+def _float(value):
+    """Numbers and numeric strings ('4177.47'); None otherwise."""
+    if isinstance(value, str):
+        try:
+            value = float(value.replace(',', ''))
+        except ValueError:
+            return None
+    return num(value)
+
+
 def usable(value):
     return isinstance(value, dict) and not value.get('error') and value.get('stale') is not True
+
+
+def present(value):
+    """A non-empty record without an error (stale flags are judged by each row's own date)."""
+    return isinstance(value, dict) and bool(value) and not value.get('error')
 
 
 def fmt(value, digits=2, sign=False, suffix=''):
@@ -57,62 +91,45 @@ def fmt(value, digits=2, sign=False, suffix=''):
     return f'{value:+,.{digits}f}{suffix}' if sign else f'{value:,.{digits}f}{suffix}'
 
 
+def shown(raw, digits, *cuts, below=()):
+    """(value, digits): the raw value rounded for display. More digits are used when rounding would
+    move it onto zero or across a threshold (|x| >= cut, or x <= a `below` cut), so the shown value
+    agrees with the verdict."""
+    raw = float(raw)
+
+    def classes(x):
+        return _zero(x), tuple(_reaches(x, c) for c in cuts), tuple(x <= c + FLOAT_NOISE for c in below)
+    want = classes(raw)
+    for places in range(digits, 11):
+        value = number(raw, places)
+        if classes(value) == want:
+            return value, places
+    return number(raw, 10), 10
+
+
+def _zero(x):
+    return abs(x) < FLOAT_NOISE
+
+
+def _reaches(x, cut):
+    return abs(x) >= cut - FLOAT_NOISE
+
+
 def judge(change, threshold, sign):
-    """Map a change to (side, strength). sign=+1: a rise is gold-positive; -1: a rise is gold-negative."""
-    if change is None:
-        return 'unknown', 'none'
-    if change == 0:
+    """(side, strength) on the unrounded change; only floating-point noise (< 1e-9) is ignored.
+    sign=+1: a rise is gold-positive; -1: a rise is gold-negative."""
+    if change is None or _zero(change):
         return 'flat', 'none'
     side = 'up' if change * sign > 0 else 'down'
-    return side, ('strong' if abs(change) >= threshold else 'weak')
+    return side, ('strong' if _reaches(change, threshold) else 'weak')
 
 
 def mark(side, strength):
-    if side in ('flat', 'unknown'):
-        strength = 'none'
-    return SYMBOL[(side, strength)]
+    return SYMBOL[(side, 'none' if side == 'flat' else strength)]
 
 
-def row(group, label, display, baseline, change, side, strength, asof, rule, *, word=None,
-        value=None, path=None, digits=2, unit=''):
-    if side in ('flat', 'unknown'):
-        strength = 'none'
-    word = word or WORD[side]
-    symbol = mark(side, strength)
-    quote = (f'{group}｜{label}: {display}（{asof}）｜基準: {baseline}｜変化: {change}'
-             f'｜向き: {symbol} {word}｜規則: {rule}')
-    item = {'group': group, 'label': label, 'display': display, 'baseline': baseline, 'change': change,
-            'direction': word, 'symbol': symbol, 'side': side, 'strength': strength,
-            'tone': TONE[side], 'asof': asof, 'rule': rule, 'source_quote': quote}
-    binding = None
-    if value is not None and path:
-        item['value'] = number(value, digits)
-        binding = {'path': path, 'value': item['value'], 'digits': digits, 'unit': unit, 'observedAt': asof}
-    return item, binding
-
-
-def _series(fred, key):
-    s = (fred or {}).get(key)
-    if not isinstance(s, dict) or num(s.get('value')) is None or s.get('error'):
-        return None
-    return s
-
-
-def _asof(series):
-    return f"{series.get('as_of_date') or '時点未取得'}{'・古い値' if series.get('stale') else ''}"
-
-
-def _fresh(series, side, strength):
-    """Stale FRED observations stay visible but do not vote."""
-    if series.get('stale'):
-        return 'unknown', 'none', '古い値・判定保留'
-    return side, strength, None
-
-
-def _bounded(value):
-    """Probabilities and percentiles are only meaningful within 0-100."""
-    p = num(value)
-    return p if p is not None and 0.0 <= p <= 100.0 else None
+def word_of(side, strength):
+    return WORD[side] + ('' if side == 'flat' or strength == 'strong' else '（弱）')
 
 
 def _parse_jst(value):
@@ -123,424 +140,1096 @@ def _parse_jst(value):
     return t.replace(tzinfo=JST) if t.tzinfo is None else t.astimezone(JST)
 
 
-def _lowest_range(fedwatch):
-    rates = fedwatch.get('target_rates') or []
-    parsed = []
-    for index, rate in enumerate(rates):
-        try:
-            parsed.append((float(str(rate.get('range')).split('-')[0]), index, rate))
-        except (TypeError, ValueError):
-            continue
-    if not parsed:
-        return None, None
-    _, index, rate = min(parsed)
-    return index, rate
+def _md(day):
+    """'2026-10-08' -> '10/08'; other text unchanged."""
+    match = re.fullmatch(r'\d{4}-(\d{2})-(\d{2})', str(day or ''))
+    return f'{match.group(1)}/{match.group(2)}' if match else str(day or '日付不明')
 
 
-def _fedwatch_row(group, data, key, threshold, label, rule_window):
-    fw = data.get('fedwatch') or {}
-    if not usable(fw):
-        return None
-    index, rate = _lowest_range(fw)
-    if rate is None or _bounded(rate.get('current')) is None:
-        return None
-    current = number(rate['current'], 1)
-    previous = _bounded(rate.get(key))  # the provider table's own "1 day ago" / "1 week ago" column
-    if previous is not None:
-        change = number(current - previous, 1)
-        baseline = f'{rule_window} {previous:.1f}%（提供表の{rule_window}列）'
-        change_text = f'{change:+.1f}pp'
-    else:
-        delta = (fw.get('deltas') or {}).get(key) or {}
-        change = num((delta.get('by_range') or {}).get(rate.get('range')))
-        if change is None or _bounded(current - change) is None:
-            change, baseline, change_text = None, f'{rule_window}の確率は取得不可', '—'
-        else:
-            change = number(change, 1)
-            baseline = f'{rule_window} {current - change:.1f}%（自前履歴 {delta.get("source") or "出所未記載"}）'
-            change_text = f'{change:+.1f}pp'
-    side, strength = judge(change, threshold, +1)
-    return row(group, label, f'{rate["range"]}: {current:.1f}%', baseline, change_text, side, strength,
-               f'次回FOMC {fw.get("next_fomc_date") or "未取得"}',
-               f'低い方の金利レンジの確率上昇は緩和方向の織り込みで金に追い風。{rule_window}±{threshold:.0f}pp未満は弱',
-               value=rate['current'], path=f'fedwatch.target_rates.{index}.current', digits=1, unit='%')
-
-
-def bias_rows(data, stamp, mode):
-    """Rows for the board. Returns (items, bindings, limitations)."""
-    items, bindings, limitations = [], [], []
-    weekly = mode == 'weekly'
-    short = SHORT_GROUP['weekly' if weekly else 'daily']
-    fred = data.get('fred') or {}
-
-    def keep(result):
-        if result:
-            item, binding = result
-            items.append(item)
-            if binding:
-                bindings.append({'figure': 'bias', 'label': item['label'], **binding})
-
-    s = _series(fred, 'DFII10')
-    if s and num(s.get('change_20obs')) is not None and num(s.get('value_20obs_ago')) is not None:
-        change = number(s['change_20obs'], 2)
-        side, strength, word = _fresh(s, *judge(change, 0.10, -1))
-        keep(row(LONG_GROUP, '実質金利（米10年TIPS）', f'{fmt(s["value"])}%',
-                 f'20営業日前 {fmt(s["value_20obs_ago"])}%（{s.get("as_of_20obs_ago") or "日付未取得"}）',
-                 f'{change:+.2f}pp', side, strength, _asof(s), '上昇は金の逆風、低下は追い風。±0.10pp未満は弱。古い値は判定保留',
-                 word=word, value=s['change_20obs'], path='fred.DFII10.change_20obs', unit='pp'))
-    s = _series(fred, 'DTWEXBGS')
-    if s and num(s.get('change_20obs')) is not None and (num(s.get('value_20obs_ago')) or 0) > 0:
-        change = number(s['change_20obs'], 2)
-        pct = number(change / s['value_20obs_ago'] * 100, 2)
-        side, strength, word = _fresh(s, *judge(pct, 1.0, -1))
-        keep(row(LONG_GROUP, 'ドル（FRB広義ドル指数）', fmt(s['value']),
-                 f'20営業日前 {fmt(s["value_20obs_ago"])}（{s.get("as_of_20obs_ago") or "日付未取得"}）',
-                 f'{change:+.2f}（{pct:+.2f}%）', side, strength, _asof(s),
-                 'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%未満は弱。古い値は判定保留',
-                 word=word, value=s['change_20obs'], path='fred.DTWEXBGS.change_20obs', unit='index'))
-    etf = data.get('gold_etf')
-    if usable(etf) and num(etf.get('change_20d_t')) is not None:
-        change = number(etf['change_20d_t'], 2)
-        tonnes = num(etf.get('tonnes'))
-        display = f'{fmt(tonnes)} t' if tonnes is not None else '保有量は未取得'
-        baseline = f'20営業日前 {fmt(tonnes - change)} t' if tonnes is not None else '20営業日前の保有量'
-        side, strength = judge(change, 5.0, +1)
-        keep(row(LONG_GROUP, 'GLD保有量（20営業日累計）', display, baseline, f'{change:+.2f} t', side, strength,
-                 str(etf.get('as_of_date') or '時点未取得'), '保有増は機関の買い、減は売り。20営業日で±5t未満は弱',
-                 value=etf['change_20d_t'], path='gold_etf.change_20d_t', unit='t'))
-    cb = data.get('gold_cb')
-    if usable(cb) and num(cb.get('cumulative_3m_t')) is not None:
-        change = number(cb['cumulative_3m_t'], 1)
-        regime = {'net_buying': '買い越し', 'net_selling': '売り越し', 'neutral': '中立'}.get(cb.get('regime'), str(cb.get('regime') or '判定なし'))
-        side, strength = judge(change, 20.0, +1)
-        keep(row(LONG_GROUP, '中銀の金購入（IMF報告国・確定3ヶ月累計）', f'{change:+.1f} t', 'ゼロ（買い越しと売り越しの境）',
-                 f'レジーム {regime}', side, strength, str(cb.get('as_of_date') or '時点未取得'),
-                 '純購入は構造的な下支え、純売却は逆風。月次で1〜2ヶ月遅れ。±20t未満は弱',
-                 value=cb['cumulative_3m_t'], path='gold_cb.cumulative_3m_t', digits=1, unit='t'))
-
-    if not weekly:
-        s = _series(fred, 'DGS2')
-        if s and num(s.get('change')) is not None and num(s.get('prev_value')) is not None:
-            change = number(s['change'], 2)
-            side, strength, word = _fresh(s, *judge(change, 0.05, -1))
-            keep(row(short, '米2年債利回り（前営業日比）', f'{fmt(s["value"])}%',
-                     f'前営業日 {fmt(s["prev_value"])}%（{s.get("prev_as_of_date") or "日付未取得"}）', f'{change:+.2f}pp',
-                     side, strength, _asof(s), '上昇は金の逆風。FREDは1〜2営業日遅れ。±0.05pp未満は弱。古い値は判定保留',
-                     word=word, value=s['change'], path='fred.DGS2.change', unit='pp'))
-        dxy = data.get('dxy')
-        if usable(dxy) and num(dxy.get('change_pct')) is not None and num(dxy.get('current_price')) is not None:
-            pct = number(dxy['change_pct'], 2)
-            side, strength = judge(pct, 0.3, -1)
-            change = f'{fmt(dxy["change"], sign=True)}（{pct:+.2f}%）' if num(dxy.get('change')) is not None else f'{pct:+.2f}%'
-            keep(row(short, 'ドル指数DXY（前日比）', fmt(dxy['current_price']),
-                     f'前日終値 {fmt(dxy["prev_close"])}' if num(dxy.get('prev_close')) is not None else '前日終値は未取得',
-                     change, side, strength, f'記録 {stamp_text(dxy.get("timestamp"))}',
-                     'ドル高は金の逆風、ドル安は追い風。±0.3%未満は弱',
-                     value=dxy['change_pct'], path='dxy.change_pct', unit='%'))
-        keep(_fedwatch_row(short, data, 'prev_day', 5.0, '政策金利の織り込み（前日比）', '前日'))
-    else:
-        keep(_fedwatch_row(short, data, 'prev_week', 10.0, '政策金利の織り込み（前週比）', '前週'))
-
-    hours = int(data.get('macro_surprise_hours') or (7 * 24 if weekly else 36))
-    span = f'直近{hours // 24}日' if hours % 24 == 0 and hours >= 48 else f'直近{hours}時間'
-    surprises = []
-    for ev in data.get('macro_surprises') or []:
-        released_at = _parse_jst(ev.get('released_at_jst'))
-        if (ev.get('country') != 'United States' or released_at is None
-                or not (stamp - timedelta(hours=hours) <= released_at <= stamp)
-                or not str(ev.get('forecast_provenance', '')).startswith('発表前記録')):
-            continue
-        s = compute_surprise(ev)  # recomputed from the record's own actual/forecast, never a cached difference
-        if s is not None:
-            surprises.append((released_at, ev, s))
-    surprises.sort(key=lambda x: x[0], reverse=True)
-    for released_at, ev, s in surprises[:4]:
-        sign, diff = gold_sign(ev), s['diff']
-        side, strength = ('flat', 'none') if diff == 0 or sign == 0 else ('up' if diff * sign > 0 else 'down', 'strong')
-        word = {'flat': '予想どおり' if sign else '規則なし（この指標は対象外）'}.get(side)
-        released = released_at.strftime('%Y-%m-%d %H:%M')
-        keep(row(short, f'指標サプライズ: {re.sub(r"\s+", " ", str(ev.get("indicator", "")))}', f'結果 {ev.get("actual")}',
-                 f'予想 {ev.get("forecast")}（発表前記録）', f'結果−予想 {diff:+g}{s["unit"]}', side, strength,
-                 f'{released} JST 発表', '米指標の一般則: 予想より強い結果はドル・金利高で金に逆風。実際の反応は別に確認', word=word))
-    if not surprises and items:  # placeholder only when the board has real rows
-        keep(row(short, f'指標サプライズ（発表前記録のある米指標・{span}）', '該当なし', '—', '—', 'flat', 'none',
-                 f'収集 {stamp.strftime("%Y-%m-%d %H:%M")} JST', '該当がなければ票なし', word='材料なし'))
-
-    horizon = timedelta(days=7) if weekly else timedelta(hours=24)
-    upcoming = []
-    for ev in (data.get('economic_calendar') or {}).get('events') or []:
-        when = event_datetime_jst(ev)
-        if when is None or ev.get('country') != 'United States' or not (stamp < when <= stamp + horizon):
-            continue
-        forecast, previous = parse_value(ev.get('forecast')), parse_value(ev.get('previous'))
-        if forecast is None or previous is None or forecast[1] != previous[1]:
-            continue
-        upcoming.append((when, ev, round(forecast[0] - previous[0], 6), 'pp' if forecast[1] == '%' else forecast[1]))
-    for when, ev, diff, unit in sorted(upcoming, key=lambda x: x[0])[:5 if weekly else 3]:
-        sign = gold_sign(ev)
-        side, strength = ('flat', 'none') if diff == 0 or sign == 0 else ('up' if diff * sign > 0 else 'down', 'weak')
-        word = {'flat': '予想は前回並み' if sign else '規則なし（この指標は対象外）'}.get(side) or f'予想どおりなら{WORD[side]}'
-        keep(row(short, f'予想 vs 前回: {re.sub(r"\s+", " ", str(ev.get("indicator", "")))}', f'予想 {ev.get("forecast")}',
-                 f'前回 {ev.get("previous")}', f'予想−前回 {diff:+g}{unit}', side, strength,
-                 f'{when.strftime("%Y-%m-%d %H:%M")} JST 発表予定',
-                 '市場は予想を先に織り込む。予想が前回より強ければ金に逆風（米指標の一般則）。発表前の弱い票', word=word))
-    if usable(etf) and num(etf.get('change_5d_t')) is not None:
-        change = number(etf['change_5d_t'], 2)
-        tonnes = num(etf.get('tonnes'))
-        side, strength = judge(change, 2.0, +1)
-        keep(row(short, 'GLD保有量（5営業日累計）', f'{fmt(tonnes)} t' if tonnes is not None else '保有量は未取得',
-                 f'5営業日前 {fmt(tonnes - change)} t' if tonnes is not None else '5営業日前の保有量', f'{change:+.2f} t',
-                 side, strength, str(etf.get('as_of_date') or '時点未取得'), '保有増は機関の買い、減は売り。5営業日で±2t未満は弱',
-                 value=etf['change_5d_t'], path='gold_etf.change_5d_t', unit='t'))
-    positioning = (data.get('offchart_features') or {}).get('positioning') or {}
-    r = (data.get('retail_sentiment') or {}).get('XAUUSD')
-    if usable(r) and num(r.get('long_pct')) is not None:
-        p = (positioning.get('retail') or {}).get('XAUUSD') or {}
-        pct, n = _bounded(p.get('percentile')), p.get('history_n')
-        asof = f'観測日 {r["as_of_date"]}' if r.get('as_of_date') else f'記録 {stamp_text(r.get("timestamp"))}'
-        if pct is None:
-            keep(row(short, '個人のロング比率', f'ロング {fmt(r["long_pct"], 1)}%（{r.get("source") or "提供元未確認"}）',
-                     f'自前履歴{n if n is not None else "不明"}件・判定保留', '百分位なし', 'unknown', 'none', asof,
-                     '百分位90以上・10以下だけ多数派と逆の票。履歴不足は票なし'))
-            limitations.append('個人ロング比率の百分位は履歴不足で判定保留。偏りの有無は未判定です')
-        else:
-            pct = number(pct, 1)
-            side = 'down' if pct >= 90 else 'up' if pct <= 10 else 'flat'
-            word = None if side != 'flat' else '極端値なし'
-            keep(row(short, '個人のロング比率', f'ロング {fmt(r["long_pct"], 1)}%（{r.get("source") or "提供元未確認"}）',
-                     f'自前履歴{n}件の百分位 {pct:.1f}', '極端値（90以上・10以下）に該当' if side != 'flat' else '90以上・10以下に該当せず',
-                     side, 'strong', asof, '百分位90以上は多数派ロングの逆で下向き、10以下は上向き。それ以外は票なし', word=word,
-                     value=p.get('percentile'), path='offchart_features.positioning.retail.XAUUSD.percentile', digits=1, unit='百分位'))
-    cot = data.get('cot_disaggregated')
-    mm = ((cot or {}).get('data') or {}).get('managed_money') if usable(cot) else None
-    if isinstance(mm, dict) and num(mm.get('net')) is not None:
-        p = positioning.get('cot_gold_mm') or {}
-        pct, n = _bounded(p.get('percentile')), p.get('history_n')
-        net = number(mm['net'], 0)
-        change = num(mm.get('net_change'))
-        oi = f'（OI比 {fmt(mm["net_pct_oi"], 1)}%）' if num(mm.get('net_pct_oi')) is not None else ''
-        change_text = f'前週比 {change:+,.0f}枚' if change is not None else '前週比は未取得'
-        baseline = f'前週 {net - change:,.0f}枚' if change is not None else '前週値は未取得'
-        asof = f'観測 {cot["data"].get("date") or "日付未取得"}'
-        rule = '投機筋の純ロング。百分位90以上は買いの混雑で下向きの警告、10以下は上向き。それ以外は票なし。週次で遅れる'
-        if pct is None:
-            keep(row(short, '投機筋（COT Managed Money 純ロング）', f'純ロング {net:,.0f}枚{oi}',
-                     f'{baseline}／百分位は判定保留（履歴{n if n is not None else "不明"}週）', change_text, 'unknown', 'none', asof, rule))
-        else:
-            pct = number(pct, 1)
-            side = 'down' if pct >= 90 else 'up' if pct <= 10 else 'flat'
-            keep(row(short, '投機筋（COT Managed Money 純ロング）', f'純ロング {net:,.0f}枚{oi}',
-                     f'{baseline}／{n}週の百分位 {pct:.1f}', change_text, side, 'strong', asof, rule,
-                     word=None if side != 'flat' else '極端値なし',
-                     value=p.get('percentile'), path='offchart_features.positioning.cot_gold_mm.percentile', digits=1, unit='百分位'))
-    return items, bindings, limitations
-
-
-def tally(items, group):
-    counts = {'▲': 0, '△': 0, '▼': 0, '▽': 0}
-    for item in items:
-        if item['group'] == group and item['symbol'] in counts:
-            counts[item['symbol']] += 1
-    up = counts['▲'] + counts['△'] / 2
-    down = counts['▼'] + counts['▽'] / 2
-    diff = up - down
-    if not any(counts.values()):
-        side, strength, word = 'flat', 'none', '中立（材料なし）'
-    elif abs(diff) < 1:
-        side, strength, word = 'flat', 'none', '中立（拮抗）'
-    else:
-        side = 'up' if diff > 0 else 'down'
-        strength = 'strong' if abs(diff) >= 2 else 'weak'
-        word = WORD[side] + ('' if strength == 'strong' else '（弱）')
-    detail = ' '.join(f'{k}{v}' for k, v in counts.items())
-    return {'side': side, 'strength': strength, 'symbol': mark(side, strength), 'word': word, 'detail': detail,
-            'tone': TONE[side]}
-
-
-def source_verdict(source):
-    """The report's own verdict for the third tile, quoted from a fixed-format line when present."""
-    if not source:
-        return None
-    match = re.search(r'^(時間軸別の向き[:：].+)$', source, re.M)
-    if match:
-        line = match.group(1).strip()
-        body = re.split(r'[:：]', line, maxsplit=1)[-1]
-        found = dict(re.findall(r'(長期|短期|総合)\s*[:：]?\s*([^｜|]+)', body))
-        if '総合' in found:
-            cut = body.find('総合')
-            detail = (body[:cut] if cut > 0 else '').strip().rstrip('｜| ').strip()  # verbatim slice of the quoted line
-            return _verdict_tile(found['総合'].strip(), detail, line)
-    match = re.search(r'^(方向付与[:：].+)$', source, re.M)
-    if match:
-        line = match.group(1).strip()
-        head = re.split(r'[｜|]', line)[0]
-        text = re.split(r'[:：]', head, maxsplit=1)[-1].strip()
-        inner = re.search(r'可\s*[（(]([^）)]*)[）)]', text)
-        overall = inner.group(1) if inner else text.split('（')[0].split('(')[0].strip() or text
-        return _verdict_tile(overall, head.strip(), line)
-    match = re.search(r'^(XAUUSD\s*[:：]\s*[^\n]+)$', source, re.M)
-    if match:
-        line = match.group(1).strip()
-        overall = re.split(r'[:：]', line, maxsplit=1)[-1].split('。')[0].strip()
-        return _verdict_tile(overall, '', line)
-    return None
-
-
-def _verdict_tile(overall, detail, quote):
-    side = 'up' if '上向き' in overall or 'Bullish' in overall else 'down' if '下向き' in overall or 'Bearish' in overall \
-        else 'flat' if '中立' in overall or 'Neutral' in overall else 'unknown'
-    return {'label': '原稿の判断（分析本文の結論）', 'direction': overall, 'symbol': mark(side, 'strong'),
-            'tone': TONE[side], 'detail': detail, 'source_quote': quote}
-
-
-def bias_figure(data, stamp, mode, source=None):
-    items, bindings, limitations = bias_rows(data, stamp, mode)
-    if not items:
-        return None
-    rows = []
-    verdicts = []
-    for group, label in ((LONG_GROUP, '長期の向き（規則集計）'), (SHORT_GROUP['weekly' if mode == 'weekly' else 'daily'], '短期の向き（規則集計）')):
-        t = tally(items, group)
-        quote = f'集計｜{group}: {t["symbol"]} {t["word"]}（{t["detail"]}）｜規則: {TALLY_RULE}'
-        rows.append(quote)
-        verdicts.append({'label': label, 'direction': t['word'], 'symbol': t['symbol'], 'tone': t['tone'],
-                         'detail': t['detail'], 'source_quote': quote})
-    own = source_verdict(source)
-    if own is None:
-        quote = '原稿の判断: ？ 記載なし（原稿に固定形式の向きの行がありません）'
-        rows.append(quote)
-        own = {'label': '原稿の判断（分析本文の結論）', 'direction': '記載なし', 'symbol': '？', 'tone': 'caution',
-               'detail': '原稿に固定形式の向きの行がありません', 'source_quote': quote}
-    verdicts.append(own)
-    figure = {'id': 'bias', 'type': 'bias_board', 'placement': 'band', 'kicker': '一目で見る向き',
-              'title': 'チャート外バイアス盤（長期・短期）',
-              'subtitle': f'向きは金（XAUUSD）に対する方向 / 収集: {stamp.strftime("%Y-%m-%d %H:%M")} JST（各行の時点は右端）',
-              'caption': ('各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は規則の閾値以上、△▽は閾値未満の弱い向き、'
-                          '—は中立・票なし、？は判定保留。閾値の判定は表示桁に丸めた値で行います。集計は表示した行だけを数え、確率や的中率ではありません。'
-                          '比率（個人・COT）は極端値のときだけ逆方向の票で、通常は警告用です。原稿の判断は分析本文の結論で、規則集計と食い違うことがあります。'),
-              'source_label': 'FRED / Investing.com / CME FedWatch / SPDR / IMF / CFTC / MyFXBook', 'source_url': 'https://fred.stlouisfed.org/',
-              'verdicts': verdicts, 'items': items}
-    return {'figure': figure, 'rows': [i['source_quote'] for i in items] + rows, 'bindings': bindings,
-            'limitations': limitations}
-
-
-def _killzone(when):
-    hour = when.hour
-    if 16 <= hour < 19:
-        return 'London KZ'
-    if hour >= 21 or hour < 1:
-        return 'NY KZ'
-    return 'KZ外'
-
-
-def _stop_window(ev, when, blackouts):
-    found = blackouts.get((str(ev.get('country', '')), _norm(ev.get('indicator')), when.isoformat()))
-    if found and found.get('window_start') and found.get('window_end'):
-        start, end = found['window_start'][11:16], found['window_end'][11:16]
-    else:
-        after = 120 if any(w in str(ev.get('indicator', '')).lower() for w in LONG_WINDOW_WORDS) else 60
-        start = (when - timedelta(minutes=30)).strftime('%H:%M')
-        end = (when + timedelta(minutes=after)).strftime('%H:%M')
-    return f'停止 {start}〜{end}'
-
-
-def _norm(text):
+def _clean(text):
     return re.sub(r'\s+', ' ', str(text or '')).strip()
 
 
-def _direction(sign, diff, country):
-    """Glyph, word and tone for a released US surprise; the sign already encodes the country rule."""
-    if sign == 0:
-        return '—', ('規則なし（この指標は対象外）' if country == 'United States' else '規則なし（米指標以外）'), 'neutral'
-    if diff == 0:
-        return '—', '予想どおり', 'neutral'
-    side = 'up' if diff * sign > 0 else 'down'
-    return mark(side, 'strong'), WORD[side], TONE[side]
+def _stamp(value):
+    t = _parse_jst(value)
+    return t.strftime('%m/%d %H:%M') + ' JST' if t else '時点不明'
+
+
+def _utc_label(value):
+    """'2026-10-13 12:00' (UTC) -> '10/13 21:00 JST'; '' when unparsable."""
+    try:
+        t = datetime.strptime(str(value), '%Y-%m-%d %H:%M').replace(tzinfo=ZoneInfo('UTC'))
+    except ValueError:
+        return ''
+    return t.astimezone(JST).strftime('%m/%d %H:%M') + ' JST'
+
+
+def stale_day(value, stamp, days):
+    """None when the observation date ('2026-10-08…') is at most `days` before the stamp; else why not."""
+    try:
+        day = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return '観測日の記録なし'
+    age = (stamp.date() - day).days
+    if age < 0:
+        return f'観測日 {day.strftime("%m/%d")} が収集日より後'
+    return None if age <= days else f'最新 {day.strftime("%m/%d")}・{days}日より古い'
+
+
+def stale_time(value, stamp, hours=QUOTE_MAX_HOURS):
+    """None when the record time is within `hours` before the stamp (or up to an hour after it)."""
+    t = _parse_jst(value)
+    if t is None:
+        return '取得時刻の記録なし'
+    if t > stamp + timedelta(hours=1):
+        return f'取得 {t.strftime("%m/%d %H:%M")} JST が収集時刻より後'
+    if t < stamp - timedelta(hours=hours):
+        return f'取得 {t.strftime("%m/%d %H:%M")} JST・{hours}時間より前'
+    return None
+
+
+def stale_month(value, stamp, months):
+    """None when a monthly period ('2026-M08') is at most `months` before the stamp's month."""
+    match = re.fullmatch(r'(\d{4})-M(\d{2})', str(value or ''))
+    if not match:
+        return '対象月の記録なし'
+    age = (stamp.year - int(match.group(1))) * 12 + stamp.month - int(match.group(2))
+    return None if 0 <= age <= months else f'最新 {int(match.group(2))}月分・{months}ヶ月より古い'
+
+
+def _meeting(text):
+    """'Oct 28, 2026' -> '10/28'; other text unchanged."""
+    try:
+        return datetime.strptime(_clean(text), '%b %d, %Y').strftime('%m/%d')
+    except ValueError:
+        return _clean(text)
+
+
+# ------------------------------------------------------------------ board rows
+
+def row(group, label, value, base, change, side, strength, asof, rule, *, note='', word=None,
+        viz=None, bind=None, digits=2, unit='', kind='value'):
+    strength = 'none' if side == 'flat' else strength
+    word = word or word_of(side, strength)
+    symbol = mark(side, strength)
+    quote = (f'{group}｜{label}: {value}（{asof}）｜基準: {base}｜変化: {change}｜向き: {symbol} {word}'
+             + (f'｜{note}' if note else '') + f'｜規則: {rule}')
+    item = {'group': group, 'label': label, 'display': value, 'baseline': base, 'change': change,
+            'direction': word, 'symbol': symbol, 'side': side, 'strength': strength, 'tone': TONE[side],
+            'asof': asof, 'note': note, 'rule': rule, 'source_quote': quote, 'kind': kind}
+    if viz:
+        item['viz'] = viz
+    binding = None
+    if bind is not None:
+        path, raw = bind
+        item['value'] = number(raw, digits)
+        binding = {'path': path, 'value': item['value'], 'digits': digits, 'unit': unit, 'observedAt': asof}
+    return item, binding
+
+
+def _series_change(points, back):
+    """Last value and the value `back` observations earlier, from [[date, value], ...] (oldest first)."""
+    pts = [(d, num(v)) for d, v in (points or []) if num(v) is not None]
+    if len(pts) <= back:
+        return None
+    return pts[-1], pts[-1 - back]
+
+
+def _spark(points, invert, back, path=None):
+    """The judged window only: the last back+1 observations."""
+    vals = [num(v) for _, v in points or [] if num(v) is not None][-(back + 1):]
+    if len(vals) < 3:
+        return None
+    viz = {'type': 'spark', 'values': vals, 'invert': invert}
+    if path:
+        viz['path'], viz['count'] = path, len(vals)
+    return viz
+
+
+def _correlation_note(data, series_id):
+    for pair in (data.get('correlation') or {}).get('pairs') or []:
+        r = num(pair.get('r_20d'))
+        if pair.get('series_id') == series_id and r is not None:
+            state = '通常どおり逆方向' if r <= -0.3 else '同じ向き（通常と逆）' if r >= 0.3 else '連動が弱い'
+            return f'金との20日相関 {r:+.2f}（{state}）'
+    return ''
+
+
+def _expected_rate(rates, key):
+    """Probability-weighted midpoint (%) over the ranges, or None unless the column sums to about 100."""
+    pairs = []
+    for rate in rates:
+        p = num(rate.get(key)) if key != 'derived' else rate.get('_prev')
+        if p is None or not 0 <= p <= 100:
+            return None
+        pairs.append((rate['_mid'], p))
+    total = sum(p for _, p in pairs)
+    if not pairs or abs(total - 100) > 1.5:
+        return None
+    return sum(m * p for m, p in pairs) / total
+
+
+def _fedwatch(data, mode, stamp):
+    """(row, None) or (None, reason): change of the probability-weighted policy rate for the next
+    FOMC (a fall prices easing). The baseline is the table's own column, else our history of the
+    same meeting with the same set of ranges, no older than FEDWATCH_HISTORY_DAYS."""
+    weekly = mode == 'weekly'
+    key, window_name = ('prev_week', '前週') if weekly else ('prev_day', '前日')
+    fw = data.get('fedwatch') or {}
+    if not present(fw):
+        return None, '取得失敗'
+    late = stale_time(fw.get('timestamp'), stamp)
+    if late:
+        return None, late
+    meeting = _clean(fw.get('next_fomc_date'))
+    if not meeting:
+        return None, '次回FOMCの日付なし'
+    rates = []
+    for rate in fw.get('target_rates') or []:
+        try:
+            low, high = (float(x) for x in str(rate.get('range')).split('-'))
+        except (TypeError, ValueError):
+            return None, '確率表を読めない'
+        rates.append({**rate, '_low': low, '_mid': (low + high) / 2})
+    rates.sort(key=lambda r: r['_low'])
+    now = _expected_rate(rates, 'current')
+    if now is None:
+        return None, '確率の合計が100%前後でない'
+    label = f'政策金利の織り込み（{window_name}比）'
+    before, origin = _expected_rate(rates, key), f'提供表の{window_name}列'
+    if before is None:
+        history = (fw.get('deltas') or {}).get(key) or {}
+        by_range = history.get('by_range') or {}
+        found = re.search(r'(\d{4}-\d{2}-\d{2})', str(history.get('source') or ''))
+        if set(by_range) != {r.get('range') for r in rates} or any(num(v) is None for v in by_range.values()):
+            return None, f'{window_name}比の比較元なし（同じレンジ構成の履歴がない）'
+        if history.get('meeting') and _clean(history['meeting']) != meeting:
+            return None, f'{window_name}比の比較元なし（別の会合の履歴）'
+        late = stale_day(found.group(1), stamp, FEDWATCH_HISTORY_DAYS[mode]) if found else '履歴の日付なし'
+        if late:
+            return None, f'{window_name}比の比較元が古い（{late}）'
+        for r in rates:
+            r['_prev'] = r['current'] - by_range[r['range']]
+        before = _expected_rate(rates, 'derived')
+        if before is None:
+            return None, f'{window_name}比の比較元の確率が合わない'
+        day = _md(found.group(1))
+        label, origin = f'政策金利の織り込み（{day}比）', f'自前履歴 {day}'
+    raw = (now - before) * 100  # basis points
+    threshold = FEDWATCH_STRONG_BP[mode]
+    change, places = shown(raw, 1, threshold)
+    side, strength = judge(raw, threshold, -1)
+    distribution = '・'.join(f'{r["range"]} {r["current"]:.1f}%' for r in rates)
+    segments = [{'label': r['range'], 'value': number(r['current'], 1)} for r in rates]
+    return row(GROUPS['short'][mode], label, f'期待 {now:.3f}%', f'{before:.3f}%（{origin}）', f'{change:+.{places}f}bp',
+               side, strength, f'次回FOMC {_meeting(meeting)}',
+               '確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。'
+               f'±{threshold:g}bp以上で強（隣のレンジへ確率{4 * threshold:g}ppの移動に相当）。'
+               '確率の合計が100%前後でない表と、次回会合の日付がない表は使わない',
+               note=f'確率 {distribution}', viz={'type': 'probs', 'segments': segments}), None
+
+
+MATERIALS = {
+    'long': (('実質金利', 'FRED DFII10'), ('ドル（20営業日）', 'DXY・FRB広義ドル指数'), ('中銀の金購入', 'IMF IRFCL')),
+    'short': (('米2年債', 'CNBC・FRED DGS2'), ('ドル（短期）', 'DXY'), ('政策金利の織り込み', 'Fed Rate Monitor'),
+              ('GLD保有量', 'SPDR'), ('投機筋の建玉', 'CFTC COT'), ('個人の比率', 'MyFXBook')),
+}
+
+
+def bias_rows(data, stamp, mode, source=None):
+    """Rows for the board. Returns (items, bindings, notes); notes list the missing materials and why.
+    Each row records its material and factor (FACTOR)."""
+    items, bindings, notes, why = [], [], [], {}
+    weekly = mode == 'weekly'
+    long_g, short_g = GROUPS['long'], GROUPS['short'][mode]
+    fred = data.get('fred') or {}
+
+    def keep(name, result):
+        if result:
+            item, binding = result
+            item['material'], item['factor'] = name, FACTOR[name]
+            items.append(item)
+            if binding:
+                bindings.append({'figure': 'bias', 'label': item['label'], 'index': len(items) - 1, **binding})
+
+    def skip(name, reason):
+        why.setdefault(name, reason)
+
+    # --- long: real rates, dollar, news / geopolitics, central-bank buying
+    s = fred.get('DFII10') or {}
+    late = stale_day(s.get('as_of_date'), stamp, MAX_AGE_DAYS['DFII10']) if present(s) else '取得失敗'
+    if late:
+        skip('実質金利', late)
+    elif num(s.get('change_20obs')) is not None and num(s.get('value_20obs_ago')) is not None:
+        change, places = shown(s['change_20obs'], 2, 0.10)
+        side, strength = judge(s['change_20obs'], 0.10, -1)
+        keep('実質金利', row(long_g, '実質金利（米10年TIPS）', f'{fmt(s["value"])}%',
+                          f'20営業日前 {fmt(s["value_20obs_ago"])}%（{_md(s.get("as_of_20obs_ago"))}）', f'{change:+.{places}f}pp',
+                          side, strength, _md(s.get('as_of_date')), '上昇は金の逆風、低下は追い風。20営業日で±0.10pp以上で強',
+                          note=_correlation_note(data, 'DFII10'), viz=_spark(s.get('recent'), True, 20, 'fred.DFII10.recent'),
+                          bind=('fred.DFII10.change_20obs', s['change_20obs']), digits=places, unit='pp'))
+    else:
+        skip('実質金利', '20営業日前の値なし')
+    dxy = data.get('dxy') or {}
+    closes = dxy.get('recent_closes') if present(dxy) else None
+    pair = _series_change(closes, 20) if closes else None
+    late = stale_day(pair[0][0], stamp, MAX_AGE_DAYS['DXY']) if pair else 'データなし'
+    if not late:
+        (d1, v1), (d0, v0) = pair
+        raw = (v1 / v0 - 1) * 100
+        pct, places = shown(raw, 2, 1.0)
+        side, strength = judge(raw, 1.0, -1)
+        keep('ドル（20営業日）', row(long_g, 'ドル指数DXY（20営業日）', fmt(v1, 3), f'20営業日前 {fmt(v0, 3)}（{_md(d0)}）',
+                                f'{pct:+.{places}f}%', side, strength, _md(d1),
+                                'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強',
+                                viz=_spark(closes, True, 20, 'dxy.recent_closes'),
+                                bind=(f'dxy.recent_closes.{len(closes) - 1}.1', v1), digits=3, unit='index'))
+    else:
+        s = fred.get('DTWEXBGS') or {}
+        broad = stale_day(s.get('as_of_date'), stamp, MAX_AGE_DAYS['DTWEXBGS']) if present(s) else '取得失敗'
+        if not broad and num(s.get('change_20obs')) is not None and (num(s.get('value_20obs_ago')) or 0) > 0:
+            raw = s['change_20obs'] / s['value_20obs_ago'] * 100
+            pct, places = shown(raw, 2, 1.0)
+            side, strength = judge(raw, 1.0, -1)
+            keep('ドル（20営業日）', row(long_g, 'ドル（FRB広義ドル指数・20営業日）', fmt(s['value']),
+                                    f'20営業日前 {fmt(s["value_20obs_ago"])}（{_md(s.get("as_of_20obs_ago"))}）',
+                                    f'{pct:+.{places}f}%', side, strength, _md(s.get('as_of_date')),
+                                    'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強',
+                                    viz=_spark(s.get('recent'), True, 20, 'fred.DTWEXBGS.recent'),
+                                    bind=('fred.DTWEXBGS.change_20obs', s['change_20obs']), unit='index'))
+        else:
+            skip('ドル（20営業日）', f'DXY {late}／広義ドル指数 {broad or "20営業日前の値なし"}')
+    news = news_verdict(source)
+    if news:
+        keep('ニュース・地政学', row(long_g, 'ニュース・地政学（原稿の判断）', news['summary'], '直近のニュース・要人発言・地政学', '—',
+                                news['side'], news['strength'], '本文', '原稿が見出し・本文の確認結果から付けた向き。'
+                                '金利・ドルの動きそのものは別の行で数えるため、それ以外の材料で判断する',
+                                word=news['word'], kind='text'))
+    cb = data.get('gold_cb') or {}
+    late = stale_month(cb.get('as_of_date'), stamp, CB_MAX_MONTHS) if present(cb) else '取得失敗'
+    if late:
+        skip('中銀の金購入', late)
+    elif num(cb.get('cumulative_3m_t')) is not None:
+        change, places = shown(cb['cumulative_3m_t'], 1, 20.0)
+        side, strength = judge(cb['cumulative_3m_t'], 20.0, +1)
+        months = [m for m in cb.get('months') or [] if num(m.get('net_tonnes')) is not None][:3]
+        span = f'{cb["cumulative_periods"][-1][-2:].lstrip("0")}〜{cb["cumulative_periods"][0][-2:].lstrip("0")}月' \
+            if len(cb.get('cumulative_periods') or []) >= 2 else '直近3ヶ月'
+        bars = [{'label': str(m['period'])[-2:].lstrip('0') + '月', 'value': number(m['net_tonnes'], 1)}
+                for m in reversed(months)]
+        keep('中銀の金購入', row(long_g, '中銀の金購入（IMF報告国・3ヶ月）', f'{change:+.{places}f} t（{span}）',
+                              'ゼロ（買い越しと売り越しの境）', f'{change:+.{places}f} t', side, strength,
+                              str(cb.get('as_of_date') or '時点不明').replace('-M', '年') + '月分',
+                              '純購入は構造的な下支え、純売却は逆風。月次で1〜2ヶ月遅れ。3ヶ月で±20t以上で強',
+                              note='月別（棒は左から） ' + '・'.join(f'{b["label"]} {b["value"]:+.1f} t' for b in bars) if bars else '',
+                              viz={'type': 'bars', 'items': bars} if bars else None,
+                              bind=('gold_cb.cumulative_3m_t', cb['cumulative_3m_t']), digits=places, unit='t'))
+    else:
+        skip('中銀の金購入', '3ヶ月合計なし')
+
+    # --- short: same-day rates and dollar, policy pricing, surprises, nowcast, ETF, positioning
+    yields = data.get('us_yields') or {}
+    us2y = yields.get('US2Y') if isinstance(yields, dict) else None
+    # Only a quote from the current US trading date is "today"; otherwise FRED with its own date.
+    if not weekly and isinstance(us2y, dict) and us2y.get('stale') is False and \
+            all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close')):
+        change, places = shown(us2y['change'], 3, 0.05)
+        side, strength = judge(us2y['change'], 0.05, -1)
+        keep('米2年債', row(short_g, '米2年債利回り（当日）', f'{us2y["value"]:.3f}%', f'前日終値 {us2y["prev_close"]:.3f}%',
+                         f'{change:+.{places}f}pp', side, strength, f'{us2y["as_of_jst"][5:].replace("-", "/")} JST',
+                         '上昇は金の逆風、低下は追い風。前日比±0.05pp以上で強（CNBCの当日値）',
+                         viz={'type': 'delta', 'from': number(us2y['prev_close'], 3), 'to': number(us2y['value'], 3),
+                              'invert': True, 'scale': 0.05},
+                         bind=('us_yields.US2Y.change', us2y['change']), digits=places, unit='pp'))
+    else:
+        s = fred.get('DGS2') or {}
+        back = 5 if weekly else 1
+        pair = _series_change(s.get('recent'), back) if present(s) else None
+        late = (stale_day(pair[0][0], stamp, MAX_AGE_DAYS['DGS2']) if pair
+                else ('取得失敗' if not present(s) else f'直近{back + 1}観測なし'))
+        if late:
+            skip('米2年債', late)
+        else:
+            (d1, v1), (d0, v0) = pair
+            threshold = 0.10 if weekly else 0.05
+            change, places = shown(v1 - v0, 2, threshold)
+            side, strength = judge(v1 - v0, threshold, -1)
+            viz = _spark(s.get('recent'), True, back, 'fred.DGS2.recent') if weekly else \
+                {'type': 'delta', 'from': number(v0, 2), 'to': number(v1, 2), 'invert': True, 'scale': threshold}
+            keep('米2年債', row(short_g, f'米2年債利回り（{"5営業日" if weekly else "前営業日比"}）', f'{fmt(v1)}%',
+                             f'{_md(d0)} {fmt(v0)}%', f'{change:+.{places}f}pp', side, strength, _md(d1),
+                             f'上昇は金の逆風、低下は追い風。±{threshold:.2f}pp以上で強（FRED DGS2）', viz=viz,
+                             bind=(f'fred.DGS2.recent.{len(s["recent"]) - 1}.1', v1), unit='%'))
+    if weekly:
+        pair = _series_change(closes, 5) if closes else None
+        late = stale_day(pair[0][0], stamp, MAX_AGE_DAYS['DXY']) if pair else 'データなし'
+        if late:
+            skip('ドル（短期）', late)
+        else:
+            (d1, v1), (d0, v0) = pair
+            raw = (v1 / v0 - 1) * 100
+            pct, places = shown(raw, 2, 0.7)
+            side, strength = judge(raw, 0.7, -1)
+            keep('ドル（短期）', row(short_g, 'ドル指数DXY（5営業日）', fmt(v1, 3), f'{_md(d0)} {fmt(v0, 3)}', f'{pct:+.{places}f}%',
+                                side, strength, _md(d1), 'ドル高は金の逆風、ドル安は追い風。5営業日で±0.7%以上で強',
+                                viz={'type': 'delta', 'from': number(v0, 3), 'to': number(v1, 3), 'invert': True,
+                                     'scale': number(v0 * 0.007, 3)},
+                                bind=(f'dxy.recent_closes.{len(closes) - 1}.1', v1), digits=3, unit='index'))
+    else:
+        # The EUR/USD estimate is not on the index's scale, so it is never shown as DXY.
+        late = ('取得失敗' if not present(dxy) else 'EUR/USDからの推定値のみ（DXYの当日値なし）' if dxy.get('estimated')
+                else '提供元が古い値と表示' if dxy.get('stale') is True else stale_time(dxy.get('timestamp'), stamp))
+        if late or num(dxy.get('change_pct')) is None or num(dxy.get('current_price')) is None:
+            skip('ドル（短期）', late or '当日の値なし')
+        else:
+            pct, places = shown(dxy['change_pct'], 2, 0.3)
+            side, strength = judge(dxy['change_pct'], 0.3, -1)
+            has_prev = num(dxy.get('prev_close')) is not None
+            keep('ドル（短期）', row(short_g, 'ドル指数DXY（当日）', fmt(dxy['current_price'], 3),
+                                f'前日終値 {fmt(dxy["prev_close"], 3)}' if has_prev else '前日終値',
+                                f'{pct:+.{places}f}%', side, strength, f'記録 {_stamp(dxy.get("timestamp"))}',
+                                'ドル高は金の逆風、ドル安は追い風。前日比±0.3%以上で強',
+                                viz={'type': 'delta', 'from': number(dxy['prev_close'], 3), 'to': number(dxy['current_price'], 3),
+                                     'invert': True, 'scale': number(dxy['prev_close'] * 0.003, 3)} if has_prev else None,
+                                bind=('dxy.change_pct', dxy['change_pct']), digits=places, unit='%'))
+    result, reason = _fedwatch(data, mode, stamp)
+    if result:
+        keep('政策金利の織り込み', result)
+    else:
+        skip('政策金利の織り込み', reason)
+    for result in surprise_rows(data, stamp, mode):
+        keep('指標の結果', result)
+    for result in nowcast_rows(data, stamp, mode):
+        keep('予測との差', result)
+    etf = data.get('gold_etf') or {}
+    late = stale_day(etf.get('as_of_date'), stamp, MAX_AGE_DAYS['GLD']) if present(etf) else '取得失敗'
+    if late:
+        skip('GLD保有量', late)
+    elif num(etf.get('change_5d_t')) is not None:
+        change, places = shown(etf['change_5d_t'], 2, 2.0)
+        side, strength = judge(etf['change_5d_t'], 2.0, +1)
+        has_20 = num(etf.get('change_20d_t')) is not None
+        bars = [{'label': '5営業日', 'value': change}] + ([{'label': '20営業日', 'value': number(etf['change_20d_t'], 2)}]
+                                                        if has_20 else [])
+        tonnes = num(etf.get('tonnes'))
+        keep('GLD保有量', row(short_g, 'GLD保有量（5営業日）', f'{fmt(tonnes)} t' if tonnes is not None else '保有量',
+                            f'5営業日前 {fmt(tonnes - etf["change_5d_t"])} t' if tonnes is not None else '5営業日前',
+                            f'{change:+.{places}f} t', side, strength, _md(etf.get('as_of_date')),
+                            '保有量の増加（設定超過）は追い風、減少（解約超過）は逆風。5営業日で±2t以上で強。20営業日は参考',
+                            note=f'棒は左から5営業日・20営業日。20営業日 {fmt(etf["change_20d_t"], sign=True)} t' if has_20 else '',
+                            viz={'type': 'bars', 'items': bars}, bind=('gold_etf.change_5d_t', etf['change_5d_t']),
+                            digits=places, unit='t'))
+    else:
+        skip('GLD保有量', '5営業日の変化なし')
+    positioning = (data.get('offchart_features') or {}).get('positioning') or {}
+    cot = data.get('cot_disaggregated') or {}
+    mm = ((cot.get('data') or {}).get('managed_money')) if present(cot) else None
+    p = positioning.get('cot_gold_mm') or {}
+    cot_date = (cot.get('data') or {}).get('date')
+    if not isinstance(mm, dict) or num(mm.get('net')) is None or num(p.get('percentile')) is None:
+        skip('投機筋の建玉', '取得失敗' if not present(cot) else '買い越しか百分位の値なし')
+    elif not 0 <= p['percentile'] <= 100:
+        skip('投機筋の建玉', '百分位が0〜100の外')
+    elif any(num(mm.get(k)) is None or mm[k] < 0 for k in ('long', 'short')) or abs(mm['long'] - mm['short'] - mm['net']) > 0.5:
+        skip('投機筋の建玉', '買い−売り＝差引が合わない')
+    elif str(p.get('report_date')) != str(cot_date):
+        skip('投機筋の建玉', '百分位と建玉の報告日が違う')
+    elif stale_day(cot_date, stamp, MAX_AGE_DAYS['COT']):
+        skip('投機筋の建玉', stale_day(cot_date, stamp, MAX_AGE_DAYS['COT']))
+    else:
+        pct, places = shown(p['percentile'], 1, 90, below=(10,))
+        side = 'down' if p['percentile'] >= 90 - FLOAT_NOISE else 'up' if p['percentile'] <= 10 + FLOAT_NOISE else 'flat'
+        change = num(mm.get('net_change'))
+        span = [str(x)[:10] for x in p.get('window') or []]
+        span = (f'（{span[0].replace("-", "/")}〜{span[1].replace("-", "/")}）' if span[0][:4] != span[1][:4]
+                else f'（{_md(span[0])}〜{_md(span[1])}）') if len(span) == 2 else ''
+        share = num(p.get('mm_net_pct_oi'))
+        keep('投機筋の建玉', row(short_g, '投機筋の買い越し（COT Managed Money）', f'{mm["net"]:,.0f}枚',
+                              (f'建玉比 {share:.1f}%の' if share is not None else '') + f'{p.get("history_n")}週百分位 '
+                              f'{pct:.{places}f}{span}',
+                              f'前週比 {change:+,.0f}枚' if change is not None else '前週比なし', side, 'weak',
+                              _md(cot_date),
+                              '百分位90以上は買いの混み合い（反転注意）で下向き、10以下は上向き。どちらも弱（0.5票）で、'
+                              '反転の確認ではない。週次で数日遅れる',
+                              word=None if side != 'flat' else '中立（偏りなし）',
+                              viz={'type': 'track', 'value': pct, 'low': 10, 'high': 90},
+                              bind=('offchart_features.positioning.cot_gold_mm.percentile', p['percentile']), digits=places,
+                              unit='百分位'))
+    r = (data.get('retail_sentiment') or {}).get('XAUUSD') or {}
+    pr = (positioning.get('retail') or {}).get('XAUUSD') or {}
+    long_pct, short_pct = num(r.get('long_pct')), num(r.get('short_pct'))
+    if not present(r) or long_pct is None or short_pct is None or num(pr.get('percentile')) is None:
+        skip('個人の比率', '取得失敗' if not present(r) else 'ロング・ショート比率か百分位の値なし')
+    elif not (0 <= long_pct <= 100 and 0 <= short_pct <= 100) or abs(long_pct + short_pct - 100) > 0.5:
+        skip('個人の比率', 'ロングとショートの合計が100%でない')
+    elif not 0 <= pr['percentile'] <= 100:
+        skip('個人の比率', '百分位が0〜100の外')
+    elif stale_time(r.get('timestamp'), stamp):
+        skip('個人の比率', stale_time(r.get('timestamp'), stamp))
+    else:
+        pct, places = shown(pr['percentile'], 1, 90, below=(10,))
+        side = 'down' if pr['percentile'] >= 90 - FLOAT_NOISE else 'up' if pr['percentile'] <= 10 + FLOAT_NOISE else 'flat'
+        keep('個人の比率', row(short_g, f'個人のロング比率（{r.get("source") or "提供元不明"}）',
+                            f'ロング {fmt(long_pct, 1)}%・ショート {fmt(short_pct, 1)}%',
+                            f'自前履歴{pr.get("history_n")}件の百分位 {pct:.{places}f}', '—', side, 'weak',
+                            f'記録 {_stamp(r.get("timestamp"))}',
+                            '多数派の逆。百分位90以上（ロング過多）は下向き、10以下は上向き。どちらも弱（0.5票）。その間は中立',
+                            word=None if side != 'flat' else '中立（偏りなし）',
+                            viz={'type': 'split', 'left': number(long_pct, 1), 'right': number(short_pct, 1), 'track': pct},
+                            bind=('retail_sentiment.XAUUSD.long_pct', long_pct), digits=1, unit='%'))
+    got = {item['material'] for item in items}
+    for group, materials in MATERIALS.items():
+        for name, origin in materials:
+            if name not in got:
+                detail = f'{origin}・{why[name]}' if why.get(name) else origin
+                notes.append(f'欠測: {name}（{detail}）。{GROUPS["long"] if group == "long" else short_g}の集計に入れていない')
+    if source is not None and 'ニュース・地政学' not in got:
+        notes.append(f'欠測: ニュース・地政学（原稿の「ニュース・地政学:」行）。{long_g}の集計に入れていない')
+    return items, bindings, notes
+
+
+def surprise_rows(data, stamp, mode):
+    """Released US Tier A/B releases with a pre-release forecast record: one row per release time,
+    from the previous weekday (Daily) or the past seven days (Weekly).
+
+    Releases at the same time (CPI and core CPI, payrolls and unemployment) are one shock:
+    the majority of the members gives the direction; strong only when two or more members all agree
+    (one series alone is weak evidence, however large its miss).
+    """
+    start = results_start(stamp, mode)
+    groups = OrderedDict()
+    records = data.get('macro_surprises') or []
+    for k, ev in sorted(enumerate(records), key=lambda x: str(x[1].get('released_at_jst'))):
+        released = _parse_jst(ev.get('released_at_jst'))
+        if (released is None or tier(ev) is None or not (start <= released <= stamp)
+                or not str(ev.get('forecast_provenance', '')).startswith('発表前記録')):
+            continue
+        s = compute_surprise(ev)
+        sign = gold_sign(ev)
+        if s is None or sign == 0:
+            continue
+        groups.setdefault(released, []).append((ev, s, sign, k))
+    out = []
+    for released in sorted(groups, reverse=True)[:3]:
+        members = groups[released]
+        sides = ['flat' if s['diff'] == 0 else ('up' if s['diff'] * sign > 0 else 'down') for _, s, sign, _ in members]
+        up, down, flat = sides.count('up'), sides.count('down'), sides.count('flat')
+        if up == down:
+            side, strength = 'flat', 'none'
+        else:
+            side = 'up' if up > down else 'down'
+            strength = 'strong' if len(members) >= 2 and max(up, down) == len(members) else 'weak'
+        names = '・'.join(dict.fromkeys(display_name(ev.get('indicator')).split('（')[0] for ev, _, _, _ in members))
+        if len(members) == 1:
+            ev, s, sign, _ = members[0]
+            display, base, change = f'結果 {ev.get("actual")}', f'予想 {ev.get("forecast")}（発表前記録）', f'{s["diff"]:+g}{s["unit"]}'
+            viz = {'type': 'gap', 'value': s['diff'] * sign, 'scale': max(abs(s['diff']), 0.1)}
+        else:
+            display = f'{len(members)}系列: 追い風 {up}・逆風 {down}・予想どおり {flat}'
+            base = '予想（発表前記録）'
+            change = '／'.join(f'{display_name(ev.get("indicator"))} {s["diff"]:+g}{s["unit"]}' for ev, s, _, _ in members)
+            viz = {'type': 'votes', 'up': up, 'down': down, 'flat': flat}
+        word = '予想どおり（中立）' if side == 'flat' and up == down == 0 else ('追い風と逆風が同数（中立）' if side == 'flat' else None)
+        item, _ = row(GROUPS['short'][mode], f'指標の結果: {names}', display, base, change, side, strength,
+                      f'{released.strftime("%m/%d %H:%M")} JST',
+                      '予想より強い米指標はドル・金利高で金の逆風、弱ければ追い風（一般則）。同時発表は1行にまとめ、'
+                      '2系列以上がすべて同じ向きなら強、1系列だけの場合・予想どおりの系列を含む場合・多数決は弱',
+                      word=word, viz=viz)
+        # A text binding: check_bindings re-reads each record (actual, forecast, difference).
+        out.append((item, {'members': [f'macro_surprises.{k}' for *_, k in members]}))
+    return out
+
+
+def nowcast_rows(data, stamp, mode):
+    """Upcoming CPI / PCE (month-over-month) inside the event-table window: Cleveland Fed nowcast
+    minus the consensus, a weak forecast-based vote. us_events.adopted_nowcasts decides which."""
+    events = (data.get('economic_calendar') or {}).get('events') or []
+    out = []
+    for when, ev, gap in adopted_nowcasts(events, data.get('inflation_nowcast'), stamp, mode)[:3]:
+        value, places = shown(gap['gap'], 2, GAP_NEUTRAL_PP)
+        side = 'flat' if abs(gap['gap']) < GAP_NEUTRAL_PP else ('up' if gap['gap'] < 0 else 'down')
+        out.append(row(GROUPS['short'][mode], f'予測との差: {display_name(ev.get("indicator"))}',
+                       f'nowcast {gap["nowcast"]:.2f}%', f'市場予想 {gap["forecast"]:g}%', f'{value:+.{places}f}pp', side, 'weak',
+                       f'{when.strftime("%m/%d %H:%M")} JST 発表・nowcast {gap["as_of"]}時点',
+                       'Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。'
+                       f'発表前の参考で、票は弱（0.5）。{NOWCAST_MAX_AGE_DAYS}日より古い予測は使わない',
+                       word='中立（予想並み）' if side == 'flat' else None,
+                       viz={'type': 'gap', 'value': -value, 'scale': max(abs(value), 0.2)},
+                       bind=(f'inflation_nowcast.months.{gap["month"]}.{gap["series"]}.value', gap['nowcast']),
+                       digits=2, unit='%'))
+    return out
+
+
+def factor_votes(items, group):
+    """[(factor, vote)] in first-row order: rows of one factor give one vote, the larger one when
+    they agree and none when they disagree; FACTOR_CAP limits a factor's vote."""
+    factors = OrderedDict()
+    for item in items:
+        if item['group'] == group and item['symbol'] in VOTE:
+            factors.setdefault(item.get('factor') or item['label'], []).append(VOTE[item['symbol']])
+    out = []
+    for name, votes in factors.items():
+        signs = {(v > 0) - (v < 0) for v in votes if v}
+        vote = max(votes, key=abs) if len(signs) == 1 else 0.0
+        cap = FACTOR_CAP.get(name, 1.0)
+        out.append((name, max(-cap, min(cap, vote))))
+    return out
+
+
+def vote_mark(vote):
+    return {1.0: '▲', 0.5: '△', -1.0: '▼', -0.5: '▽'}.get(vote, '—')
+
+
+def tally(items, group):
+    factors = factor_votes(items, group)
+    if not factors:
+        return {'side': 'flat', 'strength': 'none', 'symbol': '—', 'word': '材料なし', 'detail': '材料なし',
+                'tone': 'neutral', 'factors': []}
+    up = sum(v for _, v in factors if v > 0)
+    down = -sum(v for _, v in factors if v < 0)
+    diff = up - down
+    if abs(diff) < 1:
+        side, strength = 'flat', 'none'
+    else:
+        side, strength = ('up' if diff > 0 else 'down'), ('strong' if abs(diff) >= 2 else 'weak')
+    detail = '・'.join(f'{name} {vote_mark(v)}' for name, v in factors)
+    return {'side': side, 'strength': strength, 'symbol': mark(side, strength), 'word': word_of(side, strength),
+            'detail': detail, 'tone': TONE[side], 'factors': factors}
+
+
+def _verdict_word(text):
+    """(side, strength) for exactly one of the five verdict words; None otherwise."""
+    return VERDICTS.get(_clean(text))
+
+
+def _one_line(pattern, source, what):
+    """The single match of a line pattern; ValueError when the report repeats the line."""
+    found = list(re.finditer(pattern, source or '', re.M))
+    if len(found) > 1:
+        raise ValueError(f'Report repeats the {what} line')
+    return found[0] if found else None
+
+
+def source_verdicts(source):
+    """{'長期': (side, strength, text), ...} from the one line
+    「時間軸別の向き: 長期 上向き・強｜短期 …｜総合 …」. A repeated line or horizon is an error."""
+    match = _one_line(r'^時間軸別の向き[:：](.+)$', source, '時間軸別の向き')
+    if not match:
+        return {}
+    out = {}
+    for part in re.split(r'[｜|]', match.group(1)):
+        found = re.match(r'\s*(長期|短期|総合)\s*[:：]?\s*(.+)$', part)
+        if found:
+            if found.group(1) in out:
+                raise ValueError(f'時間軸別の向き repeats {found.group(1)}')
+            parsed = _verdict_word(found.group(2))
+            if parsed:
+                out[found.group(1)] = (*parsed, _clean(found.group(2)))
+    return out
+
+
+def news_verdict(source):
+    """「ニュース・地政学: 上向き・弱｜要旨」 -> side, strength, word and the summary text."""
+    match = _one_line(r'^ニュース・地政学[:：]\s*([^｜|\n]+)[｜|]\s*(.+)$', source, 'ニュース・地政学')
+    if not match:
+        return None
+    parsed = _verdict_word(match.group(1))
+    if not parsed:
+        return None
+    side, strength = parsed
+    return {'side': side, 'strength': strength, 'word': _clean(match.group(1)), 'summary': _clean(match.group(2))}
+
+
+def reason_line(source):
+    """The report's one-line reason for a verdict that differs from the rule tally."""
+    match = _one_line(r'^集計と違う理由[:：]\s*(.+)$', source, '集計と違う理由')
+    return match.group(0).strip() if match and _clean(match.group(1)) else None
+
+
+def blend(long_t, short_t):
+    a, b = long_t['side'], short_t['side']
+    if a == b:
+        strength = 'strong' if long_t['strength'] == short_t['strength'] == 'strong' else 'weak'
+        return a, ('none' if a == 'flat' else strength)
+    if a == 'flat':
+        return b, 'weak'
+    if b == 'flat':
+        return a, 'weak'
+    return 'flat', 'none'
+
+
+def rule_verdicts(items, mode):
+    """{'長期': tally, '短期': tally, '総合': (side, strength)} from the rows alone."""
+    long_t, short_t = tally(items, GROUPS['long']), tally(items, GROUPS['short'][mode])
+    return {'長期': long_t, '短期': short_t, '総合': blend(long_t, short_t)}
+
+
+def _rule_pair(rules, name):
+    rule = rules[name]
+    return (rule['side'], rule['strength']) if isinstance(rule, dict) else rule
+
+
+def verdict_mismatches(data, stamp, mode, source):
+    """Horizons where the report's verdict differs from the rule tally (with the news row)."""
+    items, _, _ = bias_rows(data, stamp, mode, source)
+    rules = rule_verdicts(items, mode)
+    own = source_verdicts(source)
+    return [name for name in ('長期', '短期', '総合') if name in own and own[name][:2] != _rule_pair(rules, name)]
+
+
+def bias_figure(data, stamp, mode, source=None):
+    items, bindings, notes = bias_rows(data, stamp, mode, source)
+    if not items:
+        return None
+    groups = {'長期': GROUPS['long'], '短期': GROUPS['short'][mode]}
+    rules = rule_verdicts(items, mode)
+    own = source_verdicts(source)
+    reason = reason_line(source)
+    missing = {name: [n.split('（')[0].removeprefix('欠測: ') for n in notes if f'{group}の集計' in n]
+               for name, group in groups.items()}
+    verdicts, rows = [], []
+    for name in ('長期', '短期', '総合'):
+        side, strength = _rule_pair(rules, name)
+        rule_word = rules[name]['word'] if name in groups else word_of(side, strength)
+        short = ''
+        if name in own:
+            o_side, o_strength, text = own[name]
+            differs = (o_side, o_strength) != (side, strength)
+            main = {'symbol': mark(o_side, o_strength), 'word': text, 'tone': TONE[o_side],
+                    'origin': '原稿の判断・集計と異なる' if differs else '原稿の判断'}
+        else:
+            differs = False
+            main = {'symbol': mark(side, strength) if rule_word != '材料なし' else '—', 'word': rule_word,
+                    'tone': TONE[side], 'origin': '規則集計' if name in groups else '長期×短期の規則'}
+        if name in groups:
+            factors = rules[name]['factors']
+            sub = (f'規則の集計: {rule_word}' + (f'（{rules[name]["detail"]}）' if factors else '')
+                   + (f'。欠測: {"・".join(missing[name])}' if missing[name] else ''))
+            short = f'規則の集計 {rule_word}' + (f'・要因{len(factors)}' if factors else '')
+        else:
+            sub = f'長期×短期の規則: {rule_word}'
+        quote = f'バイアス｜{name}: {main["symbol"]} {main["word"]}（{main["origin"]}）｜{sub}' + (f'｜{short}' if short else '')
+        rows.append(quote)
+        # The detail is shown when the verdict differs, when a horizon has no material, or when one is missing.
+        show = differs or (name in groups and (rule_word == '材料なし' or bool(missing[name])))
+        # A verdict that follows the tally only names what is missing (the tally is in the group header).
+        detail = (f'欠測: {"・".join(missing[name])}' if name in groups and missing[name] and not differs
+                  and rule_word != '材料なし' else sub)
+        verdicts.append({'label': name, 'group': groups.get(name), 'symbol': main['symbol'], 'direction': main['word'],
+                         'tone': main['tone'], 'origin': main['origin'], 'detail': detail, 'short': short,
+                         'mismatch': differs, 'show_detail': show, 'source_quote': quote})
+    legend = ('各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は閾値以上の強い向き、△▽は閾値未満の弱い向き、'
+              '—は中立です。向きは丸める前の値で判定します。データがない材料と古い材料は行ごと省き、欠測として理由と一緒に示します。'
+              + TALLY_RULE + '。' + BLEND_RULE + '。' + CAVEAT + '。'
+              '小図は、線が基準から現在値への動き（傾きは閾値に対する大きさ）、棒が期間ごとの量、帯が百分位や比率です。'
+              '大きな記号は原稿（分析本文）の判断で、規則の集計と違う場合は「集計と異なる」と理由を示します。')
+    rows.append('バイアス盤の読み方: ' + legend)
+    figure = {'id': 'bias', 'type': 'bias_board', 'kicker': '期間ごとのバイアス',
+              'title': '判断材料と金（XAUUSD）への向き',
+              'subtitle': '各行が判断材料。右端が金への向き（▲▼ 強い、△▽ 弱い、— 中立）',
+              'groups': [groups['長期'], groups['短期']], 'verdicts': verdicts, 'items': items,
+              'legend': legend, 'rules': [{'label': i['label'], 'rule': i['rule']} for i in items],
+              'sources': [{'label': 'FRED', 'url': 'https://fred.stlouisfed.org/'},
+                          {'label': 'CNBC', 'url': 'https://www.cnbc.com/quotes/US2Y'},
+                          {'label': 'Investing.com', 'url': 'https://www.investing.com/'},
+                          {'label': 'Investing.com Fed Rate Monitor', 'url': 'https://www.investing.com/central-banks/fed-rate-monitor'},
+                          {'label': 'Cleveland Fed', 'url': 'https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting'},
+                          {'label': 'SPDR', 'url': 'https://www.spdrgoldshares.com/'},
+                          {'label': 'IMF IRFCL', 'url': 'https://data.imf.org/'},
+                          {'label': 'CFTC', 'url': 'https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm'},
+                          {'label': 'MyFXBook', 'url': 'https://www.myfxbook.com/community/outlook/XAUUSD'}]}
+    if reason and any(v['mismatch'] for v in verdicts):
+        figure['reason'] = {'text': reason, 'source_quote': reason}
+    return {'figure': figure, 'rows': [i['source_quote'] for i in items] + rows, 'bindings': bindings, 'notes': notes}
+
+
+def format_board_lines(data, mode):
+    """Parent-model input: the same rows and tallies the HTML board will show (news row excluded)."""
+    from scripts.report_bundle import analysis_cutoff
+    lines = ['### バイアス盤の材料（コード集計・HTMLに表示）']
+    try:
+        stamp = analysis_cutoff(data)
+        items, _, notes = bias_rows(data, stamp, mode)
+    except Exception as exc:  # the board is rebuilt at render time; input stays usable
+        lines.append(f'- 集計できず（{type(exc).__name__}）')
+        return lines
+    for item in items:
+        lines.append('- ' + item['source_quote'].split('｜規則: ')[0])
+    for name, group in (('長期', GROUPS['long']), ('短期', GROUPS['short'][mode])):
+        t = tally(items, group)
+        lines.append(f'- 集計 {name}: 要因ごと {t["detail"]} → {t["symbol"]} {t["word"]}')
+    lines.extend(f'- {note}' for note in notes)
+    lines.append('- 長期にはこの後、原稿の「ニュース・地政学:」行が1要因として加わる（金利・ドルの動きそのものは数えない）。'
+                 + TALLY_RULE + '。')
+    lines.append('- 「時間軸別の向き:」は原稿の判断。ニュース行を加えた集計と違う向きにするときは、セクション0に'
+                 '`集計と違う理由: <1行>` を書く（HTMLに表示される）')
+    return lines
+
+
+# ------------------------------------------------------------------ liquidity map
+
+def _draw(source):
+    """The report's draw from its one 「その日の目的地」 section: direction, level, price and the
+    hypothesis window (JST). Two sections are an error; a section without a level is no draw."""
+    blocks = list(re.finditer(r'^## その日の目的地.*?(?=^## |\Z)', source or '', re.M | re.S))
+    if not blocks:
+        return None
+    if len(blocks) > 1:
+        raise ValueError('Report has more than one その日の目的地 section')
+    block = blocks[0].group(0)
+    # Level names carry dates such as 10/12, so the field separator is " / " with spaces.
+    match = re.search(r'方向:\s*(up|down|上|下)\S*\s+/\s+水準:\s*(.+?)\s+/\s+価格:\s*([0-9][0-9,]*\.?\d*)', block)
+    if not match:
+        return None
+    try:
+        price = float(match.group(3).replace(',', ''))
+    except ValueError:
+        return None
+    found = re.search(r'対象時間（JST）[:：]\s*(\S+)\s*[～〜~]\s*(\S+)', block)
+    start, end = (_parse_jst(found.group(1)), _parse_jst(found.group(2))) if found else (None, None)
+    return {'direction': 'up' if match.group(1) in ('up', '上') else 'down', 'level': _clean(match.group(2)),
+            'price': price, 'window': (start, end) if start and end and start < end else None,
+            'quote': _clean(match.group(0))}
+
+
+def _window_text(window):
+    """'10/13 22:40〜翌06:00' (JST)."""
+    start, end = window
+    if end.date() == start.date():
+        return f'{start.strftime("%m/%d %H:%M")}〜{end.strftime("%H:%M")}'
+    if end.date() == start.date() + timedelta(days=1):
+        return f'{start.strftime("%m/%d %H:%M")}〜翌{end.strftime("%H:%M")}'
+    return f'{start.strftime("%m/%d %H:%M")}〜{end.strftime("%m/%d %H:%M")}'
+
+
+def _liq(kind, label, price_text, position, *, pool='', state='', state_word='', icon='', touched='',
+         distance_text='', proximity=None, offscale=False, value=None):
+    """One map row. The quote repeats every displayed string, so the renderer can verify each of them."""
+    parts = [f'流動性｜{label}: {price_text}'] + [x for x in (pool, distance_text, state_word, touched) if x]
+    item = {'kind': kind, 'label': label, 'price_text': price_text, 'position': number(position), 'pool': pool,
+            'state': state, 'state_word': state_word, 'icon': icon, 'touched': touched,
+            'distance_text': distance_text, 'proximity': proximity, 'source_quote': '｜'.join(parts)}
+    if offscale:
+        item['offscale'] = True
+    if value is not None:
+        item['value'] = number(value)
+    return item
+
+
+def liquidity_figure(data, stamp, mode, source=None):
+    lv = data.get('xau_levels') or {}
+    if not present(lv) or not lv.get('levels'):
+        return None
+    q = data.get('report_quote') or data.get('_raw_quote_XAUUSD') or {}
+    price = _float(q.get('close')) or num(lv.get('price'))
+    if price is None:
+        return None
+    span = LADDER_RANGE_PCT[mode]
+    weekly = mode == 'weekly'
+    liq = data.get('liquidity_levels') or {}
+    move = num(liq.get('expected_move_1sd'))
+    if weekly and move:
+        move = number(move * math.sqrt(5), 1)
+    items, aux, bindings = [], [], []
+
+    def far(position):
+        return abs(position - price) / price * 100 > span
+
+    def away(position):
+        return f'{number(position - price, 2):+,.2f}（{number((position - price) / price * 100, 2):+.2f}%）'
+
+    for index, level in enumerate(lv['levels']):
+        value = num(level.get('price'))
+        if value is None:
+            continue
+        touched = f'最初に抜けた足 {level["touched_at"]} JST（{level["touched_session"]}）' if level.get('touched_at') else ''
+        state_word = level['state_word'] + (f'・{level["note"]}' if level.get('note') else '')
+        icon = BEYOND_ICON.get(level['side'], '↗') if level.get('state') == 'beyond' else STATE_ICON.get(level.get('state'), '●')
+        items.append(_liq('level', level['name'], fmt(value), value, pool='BSL' if level['side'] == 'high' else 'SSL',
+                          state=level.get('state'), state_word=state_word, icon=icon,
+                          touched=touched, distance_text=away(value),
+                          proximity=min(abs(value - price) / move, 2.0) if move else None,
+                          offscale=far(value), value=value))
+        bindings.append({'figure': 'liquidity', 'label': level['name'], 'path': f'xau_levels.levels.{index}.price',
+                         'value': number(value), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc'),
+                         'state_path': f'xau_levels.levels.{index}.state', 'state': level.get('state')})
+    fetched = _parse_jst(q.get('fetched_at'))
+    observed = f'取得 {fetched.strftime("%m/%d %H:%M")} JST' if fetched else '取得時刻の記録なし'
+    items.append(_liq('current', '現在値', fmt(price), price, state='current', state_word=observed, icon='▶', value=price))
+    bindings.append({'figure': 'liquidity', 'label': '現在値', 'path': 'report_quote.close', 'value': number(price),
+                     'digits': 2, 'unit': 'USD/oz', 'observedAt': str(q.get('fetched_at') or q.get('datetime') or '')})
+    mo = num(lv.get('midnight_open'))
+    if mo is not None and not far(mo):
+        items.append(_liq('reference', 'NY 0時の始値', fmt(mo), mo, state='reference', state_word='当日の始値（参考）',
+                          icon='┄', distance_text=away(mo), value=mo))
+        bindings.append({'figure': 'liquidity', 'label': 'NY 0時の始値', 'path': 'xau_levels.midnight_open',
+                         'value': number(mo), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc')})
+    r = (data.get('retail_sentiment') or {}).get('XAUUSD') or {}
+    if present(r):
+        for key, label in (('avg_long_entry', '個人ロングの平均建値'), ('avg_short_entry', '個人ショートの平均建値')):
+            v = num(r.get(key))
+            if v is None:
+                continue
+            aux.append(_liq('retail', label, fmt(v), v, state='retail',
+                            state_word=f'{r.get("source") or "提供元不明"}・{_stamp(r.get("timestamp"))}',
+                            icon='◆', distance_text=away(v), value=v))
+            bindings.append({'figure': 'liquidity', 'label': label, 'path': f'retail_sentiment.XAUUSD.{key}', 'value': number(v),
+                             'digits': 2, 'unit': 'USD/oz', 'observedAt': str(r.get('timestamp') or '')})
+    draw = _draw(source)
+    if draw:
+        # The draw must be one of the listed levels (same name and price) on its side of the price;
+        # the parent stage validates this, so a mismatch here is an error, never a silent omission.
+        match = next((i for i in items if i['kind'] == 'level' and i['label'] == draw['level']
+                      and abs(i['position'] - draw['price']) < 0.005), None)
+        if match is None:
+            raise ValueError('The draw is not one of the listed levels')
+        if (draw['direction'] == 'up') != (match['position'] > price):
+            raise ValueError('The draw is on the wrong side of the price')
+        target = '◎ 目的地の仮説' + (f'（{_window_text(draw["window"])}）' if draw.get('window') else '')
+        match['target'] = target
+        match['source_quote'] += f'｜{target}'
+    items.sort(key=lambda i: (-i['position'], {'current': 1}.get(i['kind'], 0)))
+    cautions = [{'text': text, 'source_quote': f'流動性｜注意: {text}'} for text in lv.get('cautions') or []]
+    rows = [c['source_quote'] for c in cautions] + [i['source_quote'] for i in items + aux]
+    band = None
+    if move:
+        band = {'lower': number(price - move), 'upper': number(price + move),
+                'label': f'想定変動 ±1σ（{"1週" if weekly else "1日"}・±{move:,.1f}ドル）'}
+        rows.append(f'流動性｜{band["label"]}: {fmt(band["lower"])}〜{fmt(band["upper"])}'
+                    f'（GVZ {liq.get("gvz")}・{liq.get("gvz_as_of")}）')
+    last_bar = _utc_label(lv.get('last_bar_utc'))
+    legend = ('名前付きの高値・安値を価格順に並べています。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
+              '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
+              '↗↘抜けて推移（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
+              '時刻は最初に抜けた足です。形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、冒頭の直近候補から外します。'
+              '判定は確定した1時間足（発表15分足の直後はその時間の残りを15分足）、日足の区切りはNY 17:00。'
+              'セッションは各市場の現地時間で、アジア 東京9〜16時・London ロンドン8〜13時・NY ニューヨーク8〜13時'
+              '（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。'
+              f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）。'
+              '距離の棒は現在値からの遠さで、中央の目盛りが想定変動1σ、右端が2σ以上です。'
+              + (f'計算に使った最終確定足は{last_bar}（Twelve Data 1時間足）。' if last_bar else '') +
+              ('発表足の高値・安値は直近7日のTier A指標の発表15分足（なければ発表時刻を含む1時間足）です。' if weekly else
+               '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
+               '翌取引日の終わりまで表示します。') +
+              'NY 0時の始値は当日の参考値で、判定には使いません。'
+              '◆個人の平均建値（参考）は個人口座の建玉の平均で、流動性の位置ではありません。'
+              'Order Block・FVGはチャートで判断する領域のため載せていません。')
+    rows.append('流動性マップの読み方: ' + legend)
+    figure = {'id': 'liquidity', 'type': 'liquidity_map', 'kicker': '意識する価格',
+              'title': '流動性の位置（Liquidity）',
+              'subtitle': f'上ほど高い価格。●は確定足でまだ抜けていない水準、帯は{"1週" if weekly else "1日"}の想定変動',
+              'items': items, 'aux': aux, 'cautions': cautions, 'band': band, 'legend': legend,
+              'sources': [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
+                          {'label': 'FRED GVZCLS', 'url': 'https://fred.stlouisfed.org/series/GVZCLS'},
+                          {'label': 'MyFXBook', 'url': 'https://www.myfxbook.com/community/outlook/XAUUSD'}]}
+    return {'figure': figure, 'rows': rows, 'bindings': bindings}
+
+
+def nearest_chip(data):
+    """「直近の未到達: 上 … ／下 …」 from the levels and the quote; None without levels."""
+    from scrapers.xau_levels import nearest_resting
+    lv = data.get('xau_levels') or {}
+    q = data.get('report_quote') or data.get('_raw_quote_XAUUSD') or {}
+    price = _float(q.get('close')) or num(lv.get('price'))
+    near = nearest_resting(lv, price)
+    if not near:
+        return None
+    parts = [f'{"上" if side == "high" else "下"} {near[side]["name"]} {fmt(near[side]["price"])}'
+             f'（{number(near[side]["price"] - price, 2):+,.2f}）' for side in ('high', 'low') if side in near]
+    return '直近の未到達: ' + '／'.join(parts)
+
+
+# ------------------------------------------------------------------ US event table
+
+def _killzone(when):
+    for name, zone, start, end in KILLZONES:
+        if start <= when.astimezone(zone).hour < end:
+            return name
+    return 'KZ外'
+
+
+def _stop_span(ev, when, blackouts):
+    """(start, end) of the stop window: the recorded blackout, else 30 minutes before to 60 minutes
+    after the release (120 for FOMC decisions, press conferences and the Fed chair)."""
+    found = blackouts.get((_clean(ev.get('indicator')), when.isoformat()))
+    if found:
+        start, end = _parse_jst(found.get('window_start')), _parse_jst(found.get('window_end'))
+        if start and end and start < end:
+            return start, end
+    words = ('interest rate decision', 'press conference', 'fomc', 'fed chair')
+    after = 120 if any(w in str(ev.get('indicator', '')).lower() for w in words) else 60
+    return when - timedelta(minutes=30), when + timedelta(minutes=after)
+
+
+def _clock(t, day):
+    """'22:30' on the release date; 前日 / 翌 mark the other days."""
+    return ('前日' if t.date() < day else '翌' if t.date() > day else '') + t.strftime('%H:%M')
+
+
+def release_rows(data, stamp, mode):
+    """(when, tier, path, event) inside the tier windows: the calendar's rows plus released records
+    (macro_surprises) the calendar no longer lists, in time order."""
+    calendar = data.get('economic_calendar') or {}
+    sources = [(f'economic_calendar.events.{j}', ev) for j, ev in enumerate(calendar.get('events') or [])]
+    sources += [(f'macro_surprises.{k}', ev) for k, ev in enumerate(data.get('macro_surprises') or [])]
+    out, seen = [], set()
+    for path, ev in sources:
+        level, when = tier(ev), event_datetime_jst(ev)
+        if level is None or when is None or (_clean(ev.get('indicator')), when) in seen:
+            continue
+        start, end = event_window(stamp, mode, level)
+        if start <= when < end:
+            seen.add((_clean(ev.get('indicator')), when))
+            out.append((when, level, path, ev))
+    return sorted(out, key=lambda x: (x[0], x[1]))
+
+
+def release_groups(data, stamp, mode):
+    """{when: {'tier', 'names', 'span'}} per release time: the stop window is the union of the
+    windows of the releases at that time."""
+    blackouts = {(_clean(b.get('event')), str(b.get('time_jst', ''))): b
+                 for b in (data.get('offchart_features') or {}).get('event_blackouts') or []}
+    groups = OrderedDict()
+    for when, level, _, ev in release_rows(data, stamp, mode):
+        start, end = _stop_span(ev, when, blackouts)
+        g = groups.setdefault(when, {'tier': level, 'names': [], 'span': (start, end)})
+        g['tier'] = min(g['tier'], level)
+        g['span'] = (min(g['span'][0], start), max(g['span'][1], end))
+        name = display_name(ev.get('indicator')).split('（')[0]
+        if name not in g['names']:
+            g['names'].append(name)
+    return groups
+
+
+def _candle_for(levels, when):
+    """The release-candle high/low from xau_levels for the release at `when` (JST)."""
+    stamp = when.strftime('%m/%d %H:%M')
+    found = {}
+    for lv in (levels or {}).get('levels') or []:
+        if 'NEWS_' in lv.get('key', '') and f'（{stamp}）' in lv['name']:
+            found[lv['side']] = lv
+    return found
+
+
+def event_period(stamp, mode):
+    """The table's period in words, with dates (the selection uses the same whole JST days)."""
+    return window_label(stamp, mode)
 
 
 def event_figure(data, stamp, mode):
     calendar = data.get('economic_calendar')
-    if not usable(calendar):
+    if not present(calendar) or not calendar.get('events'):
         return None
     weekly = mode == 'weekly'
-    past = timedelta(days=7 if weekly else 2)
-    surprises = {(str(e.get('country', '')), _norm(e.get('indicator')), str(e.get('released_at_jst', ''))): e
-                 for e in data.get('macro_surprises') or []}
-    blackouts = {(str(b.get('country', '')), _norm(b.get('event')), str(b.get('time_jst', ''))): b
-                 for b in (data.get('offchart_features') or {}).get('event_blackouts') or []}
-    rows, items = [], []
-    selected = []
-    for ev in calendar.get('events') or []:
-        when = event_datetime_jst(ev)
-        if when is not None and stamp - past <= when <= stamp + timedelta(days=7):
-            selected.append((when, ev))
-    selected.sort(key=lambda pair: pair[0])
-    if len(selected) > 18:
-        released = [pair for pair in selected if pair[0] <= stamp][-18:]  # newest released rows keep priority
-        selected = released + [pair for pair in selected if pair[0] > stamp][:max(0, 18 - len(released))]
-    for when, ev in selected:
-        clean_of = lambda obj, key: '—' if obj.get(key) in (None, '', 'N/A') else str(obj.get(key))
-        clean = lambda key: clean_of(ev, key)
-        label = re.sub(r'\s+', ' ', str(ev.get('indicator', ''))).strip()
-        country = COUNTRY.get(ev.get('country'), str(ev.get('country') or '国不明'))
-        importance = {'high': '高', 'medium': '中', 'low': '低'}.get(ev.get('importance'), '高')
+    surprises = {(_clean(e.get('indicator')), str(e.get('released_at_jst', ''))): (k, e)
+                 for k, e in enumerate(data.get('macro_surprises') or [])}
+    levels = data.get('xau_levels')
+    nowcasts = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar.get('events'), data.get('inflation_nowcast'), stamp, mode)}
+    groups = release_groups(data, stamp, mode)
+    items, rows, bindings, notes, last_time = [], [], [], [], None
+    period = event_period(stamp, mode)
+    clean = lambda obj, key: '—' if obj.get(key) in (None, '', 'N/A') else str(obj.get(key))
+    for when, level, path, ev in release_rows(data, stamp, mode):
+        label = display_name(ev.get('indicator'))
         released = when <= stamp
-        previous, forecast, actual = clean('previous'), clean('forecast'), clean('actual')
-        window = _killzone(when)
+        previous, forecast, actual = clean(ev, 'previous'), clean(ev, 'forecast'), clean(ev, 'actual')
+        memo, first = [], when != last_time
+        last_time = when
+        if first:
+            # One stop window per release time, shown on its first row while it has not ended.
+            start, end = groups[when]['span']
+            if start <= stamp < end:
+                memo.append(f'停止中（{_clock(start, when.date())}〜{_clock(end, when.date())}）')
+            elif stamp < start:
+                memo.append(f'停止 {_clock(start, when.date())}〜{_clock(end, when.date())}・{_killzone(when)}')
         if released:
-            status = '発表済み'
-            s = surprises.get((str(ev.get('country', '')), _norm(ev.get('indicator')), when.isoformat()))
-            if s:  # show the pre-release record's own values so the displayed difference matches them
-                previous, forecast, actual = clean_of(s, 'previous'), clean_of(s, 'forecast'), clean_of(s, 'actual')
+            k, s = surprises.get((_clean(ev.get('indicator')), when.isoformat()), (None, None))
+            if s:
+                previous, forecast, actual = clean(s, 'previous'), clean(s, 'forecast'), clean(s, 'actual')
+                path = f'macro_surprises.{k}'
             record = s or ev
             surprise = compute_surprise(record) if actual != '—' else None
             if actual == '—':
-                actual, diff, (symbol, word, tone) = '未取得', '差: 結果未取得', ('—', '結果待ち', 'neutral')
+                diff, symbol, word, tone = '結果待ち', '—', '結果待ち', 'neutral'
             elif surprise:
-                provenance = '発表前記録の予想' if s and str(s.get('forecast_provenance', '')).startswith('発表前記録') else '予想は発表後に取得'
-                diff = f'結果−予想 {surprise["diff"]:+g}{surprise["unit"]}（{provenance}）'
-                symbol, word, tone = _direction(gold_sign(record), surprise['diff'], record.get('country'))
-            else:
-                diff, (symbol, word, tone) = '差: 計算不可（予想欠測または単位不一致）', ('—', '判定なし', 'neutral')
-        else:
-            status = '予定'
-            window = f'{window}・{_stop_window(ev, when, blackouts)}'
-            f, p = parse_value(ev.get('forecast')), parse_value(ev.get('previous'))
-            if f is not None and p is not None and f[1] == p[1]:
-                d = round(f[0] - p[0], 6)
-                diff = f'予想−前回 {d:+g}{"pp" if f[1] == "%" else f[1]}'
-                sign = gold_sign(ev)
+                sign = gold_sign(record)
+                provenance = '' if s and str(s.get('forecast_provenance', '')).startswith('発表前記録') else '・予想は発表後の取得'
+                diff = f'結果−予想 {surprise["diff"]:+g}{surprise["unit"]}{provenance}'
                 if sign == 0:
-                    symbol, word, tone = '—', ('規則なし（この指標は対象外）' if ev.get('country') == 'United States' else '規則なし（米指標以外）'), 'neutral'
-                elif d == 0:
-                    symbol, word, tone = '—', '予想は前回並み', 'neutral'
+                    symbol, word, tone = '—', '規則なし', 'neutral'
+                elif surprise['diff'] == 0:
+                    symbol, word, tone = '—', '予想どおり', 'neutral'
                 else:
-                    side = 'up' if d * sign > 0 else 'down'
-                    symbol, word, tone = mark(side, 'weak'), f'予想どおりなら{WORD[side]}', TONE[side]
+                    side = 'up' if surprise['diff'] * sign > 0 else 'down'
+                    # One series is weak evidence; the vote of all series at this time is the board's 指標の結果 row.
+                    symbol, word, tone = mark(side, 'weak'), f'{WORD[side]}（弱）', TONE[side]
             else:
-                diff = '差: 予想なし' if f is None else '差: 前回なし' if p is None else '差: 単位不一致'
-                symbol, word, tone = '—', '判定なし', 'neutral'
-        date, time = when.strftime('%Y-%m-%d'), when.strftime('%H:%M') + ' JST'
-        quote = (f'{date} {time}｜{country}｜{label}｜{status}｜重要度 {importance}｜前回 {previous}｜予想 {forecast}'
-                 f'｜結果 {actual}｜{diff}｜向き: {symbol} {word}｜{window}')
+                diff, symbol, word, tone = '差は計算不可（予想なし）', '—', '判定なし', 'neutral'
+            candle = _candle_for(levels, when)
+            if candle.get('high') and candle.get('low'):
+                frame = '発表15分足' if '15分足' in candle['high']['name'] else '発表時刻を含む1時間足'
+                memo.append(f'{frame} 高 {fmt(candle["high"]["price"])}（{candle["high"]["state_word"]}）'
+                            f'／安 {fmt(candle["low"]["price"])}（{candle["low"]["state_word"]}）')
+        else:
+            gap = nowcasts.get(id(ev))
+            if gap:
+                value, places = shown(gap['gap'], 2, GAP_NEUTRAL_PP)
+                side = 'flat' if abs(gap['gap']) < GAP_NEUTRAL_PP else ('up' if gap['gap'] < 0 else 'down')
+                diff = f'nowcast {gap["nowcast"]:.2f}%（予想との差 {value:+.{places}f}pp）'
+                symbol, word, tone = mark(side, 'weak'), ('中立（予想並み）' if side == 'flat' else f'{WORD[side]}（弱・予測）'), TONE[side]
+            else:
+                diff, symbol, word, tone = '発表前', '—', '発表待ち', 'neutral'
+        memo = '・'.join(memo)
+        date_text, time_text = when.strftime('%m/%d'), when.strftime('%H:%M')
+        weekday = '月火水木金土日'[when.weekday()]
+        quote = (f'米指標｜{date_text}（{weekday}） {time_text} JST｜Tier {level}｜{label}｜{"発表済み" if released else "予定"}'
+                 f'｜前回 {previous}｜予想 {forecast}｜結果 {actual}｜{diff}｜向き: {symbol} {word}' + (f'｜{memo}' if memo else ''))
         rows.append(quote)
-        items.append({'date': date, 'time': time, 'country': country, 'label': label, 'status': status,
-                      'importance': importance, 'previous': previous, 'forecast': forecast, 'actual': actual,
-                      'diff': diff, 'direction': word, 'symbol': symbol, 'tone': tone, 'window': window,
-                      'released': released, 'source_quote': quote})
-    span = f'直近{past.days}日' if past.days else '直近'
+        bindings.append({'figure': 'calendar', 'label': label, 'index': len(items), 'path': path})
+        items.append({'date': f'{date_text}（{weekday}）', 'time': time_text, 'tier': level, 'label': label,
+                      'status': '発表済み' if released else '予定', 'previous': previous, 'forecast': forecast,
+                      'actual': actual, 'diff': diff, 'direction': word, 'symbol': symbol, 'tone': tone, 'memo': memo,
+                      'released': released, 'group_start': first, 'source_quote': quote})
     if not items:
-        quote = f'経済指標: {span}と今後7日の範囲に提供カレンダーの重要度3/3指標の掲載なし（収集 {stamp.strftime("%Y-%m-%d %H:%M")} JST）。'
+        quote = f'米指標｜{period}｜該当なし（Tier A/Bの米指標なし）'
         rows.append(quote)
-        items.append({'date': '—', 'time': '', 'country': '—', 'label': '掲載なし', 'status': '—', 'importance': '—',
-                      'previous': '—', 'forecast': '—', 'actual': '—', 'diff': '—', 'direction': '—', 'symbol': '—',
-                      'tone': 'neutral', 'window': '—', 'released': False, 'source_quote': quote})
-    figure = {'id': 'calendar', 'type': 'event_table', 'kicker': '経済指標', 'title': f'経済指標（{span}の結果と今後7日の予定）',
-              'subtitle': f'JST / 前回・予想・結果と金への一般則の向き / 収集: {stamp.strftime("%Y-%m-%d %H:%M")} JST',
-              'caption': ('収集範囲はInvesting.comの重要度3/3（★★★）だけなので重要度は全件「高」です。差は発表済みなら結果−予想、予定なら予想−前回。'
-                          '向きは米指標の一般則（予想より強い結果はドル・金利高で金に逆風）で、米指標以外は規則なし。実際の金利・ドル・金の反応は別に確認します。'
-                          '市場は予想を先に織り込むため、予定行の向きは発表前の参考です。発表済み指標の発表足の高値・安値は翌日以降も意識されやすい価格帯（PD array候補）で、水準はチャートで確認します。'
-                          'KZはLondon 16:00〜19:00・NY 21:00〜01:00 JST。停止は発表30分前〜60分後（FOMC等は120分後）で、入力から計算した候補です。'),
-              'source_label': 'Investing.com Calendar', 'source_url': 'https://www.investing.com/economic-calendar/',
-              'items': items}
-    return {'figure': figure, 'rows': rows}
+        items.append({'date': period, 'time': '', 'tier': '', 'label': '該当なし（Tier A/Bの米指標なし）', 'status': '',
+                      'previous': '', 'forecast': '', 'actual': '', 'diff': '', 'direction': '', 'symbol': '',
+                      'tone': 'neutral', 'memo': '', 'released': False, 'empty': True, 'source_quote': quote})
+    if calendar.get('missing_tabs'):
+        notes.append(f'米指標: Investing.comの週タブ（{"・".join(calendar["missing_tabs"])}）が見つからず、その週の予定は表に入っていない')
+    legend = ('米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
+              'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
+              f'期間は{period}（JSTの日付単位）。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます。'
+              '発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。'
+              '同時刻の系列をまとめた票はバイアス盤の「指標の結果」行（2系列以上がそろえば強）。'
+              '予定の向きはCleveland連銀のnowcast（CPI・PCEの前月比）と市場予想の差で、発表前の参考（弱）です。'
+              f'nowcastが{NOWCAST_MAX_AGE_DAYS}日より古いときは付けません。予想と前回の差は織り込み済みのため向きに使いません。'
+              + ('発表足の高値・安値は直近7日のTier Aだけを流動性の一覧に残します。' if weekly else
+                 '発表足の高値・安値は発表15分足（なければ発表時刻を含む1時間足）で、翌取引日の終わりまで流動性の一覧に残します。')
+              + '停止は発表30分前〜60分後（FOMC・議長は120分後）。同時刻の発表は窓を合わせて最初の行に1回だけ示し、'
+              '発表後も窓が終わるまでは「停止中」と表示します。'
+              'KZは各市場の現地時間で、London 英国8〜11時（JST 夏16〜19時・冬17〜20時）・NY 米東部8〜12時（JST 夏21〜翌1時・冬22〜翌2時）。')
+    rows.append('米指標表の読み方: ' + legend)
+    figure = {'id': 'calendar', 'type': 'event_table', 'kicker': '気をつける指標',
+              'title': '米国の重要指標' + (f'（{period}）' if weekly else '（直近の結果とこの先の予定）'),
+              'subtitle': '時刻はJST。Tier Aは常に、Tier Bは近いときだけ表示', 'items': items, 'legend': legend,
+              'sources': [{'label': 'Investing.com', 'url': 'https://www.investing.com/economic-calendar/'},
+                          {'label': 'Cleveland Fed nowcast', 'url': 'https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting'}]}
+    return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes}
+
+
+def lead_chips(data, stamp, mode):
+    """Chips for the top of the page: a stop window in force now and the next US release
+    (Tier A or B, inside the table's window). Releases at the same time share one chip."""
+    chips = []
+    for when, g in release_groups(data, stamp, mode).items():
+        names = '・'.join(sorted(g['names'], key=lambda name: name.startswith('コア')))  # headline before core
+        start, end = g['span']
+        day = f'{when.strftime("%m/%d")}（{"月火水木金土日"[when.weekday()]}）'
+        if start <= stamp < end:
+            chips.append(f'停止中: {names}（{day}{when.strftime("%H:%M")} JST 発表）〜{_clock(end, stamp.date())}')
+        elif when > stamp:
+            chips.append(f'次の米指標: {names}（Tier {g["tier"]}） {day}{when.strftime("%H:%M")} JST')
+            break
+    return chips

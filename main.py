@@ -62,10 +62,15 @@ from scrapers.correlation import (
 )
 from scrapers.session_stats import compute_session_stats, format_session_stats_lines
 from scrapers.macro_surprise import (
-    JST, archive_actuals, archive_forecasts, fetch_ff_week, fill_missing_forecasts, format_surprise_lines,
-    load_actual_history, load_forecast_history, released_surprises,
+    FORECAST_HISTORY, JST, archive_actuals, archive_forecasts, fetch_ff_week, fill_missing_forecasts, format_surprise_lines,
+    load_actual_history, load_forecast_history, merge_history_events, released_surprises,
 )
 from scrapers.liquidity_levels import TV_HISTORY, build_liquidity, choose_gvz, format_liquidity_lines, latest_tv_gvz
+from scrapers.us_yields import fetch_us_yields
+from scrapers.inflation_nowcast import fetch_nowcast, series_key as nowcast_key, target_month as nowcast_month
+from scrapers.xau_bars import collect as collect_xau_bars, snapshot as bar_snapshot
+from scrapers.xau_levels import build_levels, format_level_lines, level_inputs
+from scrapers.us_events import format_us_event_lines, results_start
 from scrapers.fred import fetch_fred_series
 from scrapers.news_triage import build_news, format_news_lines
 from scrapers.offchart_features import build_features, save_features
@@ -139,8 +144,12 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
     失敗しても他の入力は残す。now / gvz_fetch / tv_history はテストで差し替えるための引数。
     """
     now = now or datetime.now(JST)
-    lookback = 7 * 24 if weekly else 36
+    lookback = 7 * 24 if weekly else 36  # news headlines
+    # Released results: from the previous weekday 00:00 JST (Daily; Monday looks back to Friday) or
+    # seven days (Weekly), the same whole-day window as the bias board and the US event table.
+    since = results_start(now, "weekly" if weekly else "daily")
     results["macro_surprise_hours"] = lookback
+    results["macro_surprise_since"] = since.isoformat()
     calendar = results.get("economic_calendar")
     events = calendar.get("events") if isinstance(calendar, dict) else None
     if events:
@@ -160,7 +169,7 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
         except Exception as e:
             history, actuals = {}, {}
             print(f"  [WARN]  forecast_archive: {e}")
-        results["macro_surprises"] = released_surprises(events, now, lookback_hours=lookback,
+        results["macro_surprises"] = released_surprises(events, now, lookback_hours=(now - since).total_seconds() / 3600,
                                                         forecast_history=history, actual_history=actuals)
     quote = results.get(f"_raw_quote_{DEFAULT_SYMBOL}") or {}
     try:
@@ -245,6 +254,32 @@ def format_input_status_lines(status: list[dict]) -> list[str]:
     return lines
 
 
+def attach_levels(results: dict, h1_bars: list, m15_bars: list, now: datetime, price, weekly: bool,
+                  history_path: Path = FORECAST_HISTORY) -> None:
+    """Named XAUUSD levels at `now` and the exact bars they used (xau_bars_used), after adding the
+    released US releases the calendar page no longer lists (Monday: Friday's payrolls) from the
+    archive, so the event table, the release candles and the surprises see the same releases."""
+    calendar = results.get("economic_calendar") or {}
+    events = calendar.get("events") if isinstance(calendar, dict) and not calendar.get("error") else None
+    if events:
+        try:
+            since = results_start(now, "weekly" if weekly else "daily")
+            calendar["history_added"] = merge_history_events(events, since, now.astimezone(JST), history_path)
+            print(f"  [OK]    calendar_history: 発表済みの記録から {calendar['history_added']} 件を補完")
+        except Exception as e:
+            print(f"  [WARN]  calendar_history: {e}")
+    try:
+        results["xau_levels"] = build_levels(h1_bars, m15_bars, now, price=price, events=events, weekly=weekly)
+        # The exact bars used, so validation can recompute every level and state (xau_levels.recompute).
+        results["xau_bars_used"] = bar_snapshot(*level_inputs(h1_bars, m15_bars, now, weekly))
+        lv = results["xau_levels"]
+        print(f"  [{'WARN' if lv.get('error') else 'OK'}]  xau_levels: "
+              f"{lv.get('error') or str(len(lv['levels'])) + ' 水準'}")
+    except Exception as e:
+        results["xau_levels"] = {"error": str(e)}
+        print(f"  [WARN]  xau_levels: {e}")
+
+
 async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
     """MyFXBook優先でデータを取得し、失敗銘柄はFXSSI→IGの順でフォールバックする。
     COT データは weekly に関係なく常時取得する（weekly 引数はファイル名 prefix 用に
@@ -288,6 +323,11 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
         "cot_disaggregated": None,  # Managed Money / Swap Dealer / Producer 内訳
         "correlation": None,        # ローリング相関係数 (ネットワーク不要、既存データの再計算)
         "session_stats": None,      # アジアレンジ / PDH-PDL スイープ率 (H1 から決定論計算)
+        # 2026-10-13 追加: 当日の米金利・インフレ予測・金の時間足と名前付き水準
+        "us_yields": None,          # CNBC: 米2年・10年の当日値（FRED は 1〜2 営業日遅れ）
+        "inflation_nowcast": None,  # Cleveland Fed: CPI/PCE 前月比の予測（市場予想との差）
+        "xau_bars": None,           # Twelve Data 1時間足キャッシュ・15分足の取得状況
+        "xau_levels": None,         # 前日・前週・前月高安、セッション高安、等高安、発表足高安と掃引状態
         # 前回レポート アンカー (Brain ローカル読み込み、オンデマンド運用の自己完結化)
         "report_anchor": None,
     }
@@ -327,9 +367,10 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
     try:
         price_text, raw_quotes, raw_series = fetch_price_data_with_raw(instruments=sorted(scope))
         results["price_data"] = price_text
+        fetched_at = datetime.now(timezone.utc).isoformat()  # the quote's own datetime is its daily bar date
         for sym, quote in raw_quotes.items():
             if quote:
-                results[f"_raw_quote_{sym}"] = quote
+                results[f"_raw_quote_{sym}"] = {**quote, "fetched_at": fetched_at}
                 results[f"_raw_series_{sym}"] = raw_series.get(sym, [])
         print("  [OK]    Twelve Data: 価格データ取得完了")
     except Exception as e:
@@ -471,6 +512,8 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
         # vix_structure は CBOE Dashboard を 4 ページ直列取得するため重い。Phase B へ移動。
         ("macro_liquidity", scrape_macro_liquidity()),
         ("rate_spreads", scrape_rate_spreads()),
+        ("us_yields", asyncio.to_thread(fetch_us_yields)),
+        ("inflation_nowcast", asyncio.to_thread(fetch_nowcast)),
     ]
     # 銘柄スコープ依存: BTC 系は BTCUSD、金フロー系は XAUUSD がスコープ内の時のみ
     if "BTCUSD" in scope:
@@ -540,6 +583,22 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
         results["vix_structure"] = {"error": str(e)}
         print(f"  [ERROR] vix_structure: {e}")
 
+    # 金の 1時間足（キャッシュ更新）と 15分足。Twelve Data の分間上限を避けるため間隔を空ける。
+    h1_bars, m15_bars = [], []
+    if "XAUUSD" in scope:
+        await asyncio.sleep(7)
+        try:
+            results["xau_bars"], h1_bars, m15_bars = await asyncio.to_thread(collect_xau_bars)
+            xb = results["xau_bars"]
+            print(f"  [{'WARN' if xb.get('error') else 'OK'}]  xau_bars: H1 {xb['h1_count']}本"
+                  f"（最終 {xb['h1_last_bar_utc']} UTC）・M15 {xb['m15_count']}本"
+                  + (f"（{xb['error']}）" if xb.get("error") else ""))
+        except Exception as e:
+            results["xau_bars"] = {"error": str(e)}
+            print(f"  [WARN]  xau_bars: {e}")
+    h1_path = (Path(results["xau_bars"]["h1_path"])
+               if isinstance(results.get("xau_bars"), dict) and results["xau_bars"].get("h1_count") else XAU_TF_H1_CSV)
+
     # --- MyFXBook Open Orders 並列取得 (Deep Bias 強化、対象は config.yaml の open_orders ∩ スコープ) ---
     open_order_targets = [s for s in OPEN_ORDER_SYMBOLS if s in scope]
     print(f"  MyFXBook Open Orders: {open_order_targets} を並列取得中...")
@@ -591,15 +650,17 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
     # --- 相関定量 + セッション統計 (ネットワーク不要、既存データからの決定論計算) ---
     if symbol == DEFAULT_SYMBOL:
         try:
-            xau_closes = daily_closes_from_h1(XAU_TF_H1_CSV)
+            xau_closes = daily_closes_from_h1(h1_path)
             if not xau_closes:
                 # XAU-TF 停止時は Twelve Data 日足（土日除外済み）の終値で代替する
                 xau_closes = {str(r.get("datetime"))[:10]: float(r["close"])
                               for r in results.get(f"_raw_series_{DEFAULT_SYMBOL}") or []
                               if isinstance(r, dict) and r.get("close") not in (None, "")}
             results["correlation"] = build_correlations(xau_closes, results.get("fred") or {})
-            if xau_closes and not daily_closes_from_h1(XAU_TF_H1_CSV):
+            if xau_closes and not daily_closes_from_h1(h1_path):
                 results["correlation"]["xau_source"] = "Twelve Data 日足（土日除外）"
+            elif h1_path != XAU_TF_H1_CSV:
+                results["correlation"]["xau_source"] = "Twelve Data 1時間足から日次終値（UTC）"
             pairs = results["correlation"].get("pairs", [])
             print(f"  [OK]    correlation: {len(pairs)} ペア算出"
                   f"（{', '.join(p['verdict'] for p in pairs)}）")
@@ -608,7 +669,7 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
             print(f"  [WARN]  correlation: {e}")
 
         try:
-            results["session_stats"] = compute_session_stats(XAU_TF_H1_CSV)
+            results["session_stats"] = compute_session_stats(h1_path)
             st = results["session_stats"]
             status = st.get("error") or f"標本 {st.get('sample_days')}日"
             print(f"  [{'WARN' if st.get('error') else 'OK'}]  session_stats: {status}")
@@ -632,7 +693,7 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
                 retail=results["retail_sentiment"].get(target) or {},
                 open_orders=oo_target,
                 current_price=cp,
-                h1_path=XAU_TF_H1_CSV,
+                h1_path=h1_path,
                 prev_report_at=_prev_at,
             )
             ra = results["retail_analytics"]
@@ -647,10 +708,17 @@ async def collect_all_data(weekly: bool = False, symbol: str = None) -> dict:
             results["retail_analytics"] = {"error": str(e)}
             print(f"  [WARN]  retail_analytics/{target}: {e}")
 
+    # --- 名前付き流動性水準と掃引状態 (デフォルト銘柄のみ、1時間足から決定論計算) ---
+    if symbol == DEFAULT_SYMBOL:
+        attach_levels(results, h1_bars, m15_bars, datetime.now(timezone.utc), _quote_close(DEFAULT_SYMBOL), weekly)
+
     # 共通メタデータスキーマ補完（source/symbol/timestamp/as_of_date/
     # stale/fallback_used/error/note）。既存キーは上書きしない。
     normalize_scraper_results(results)
     enrich_offchart_inputs(results, weekly=weekly)
+    results["mode"] = "weekly" if weekly else "daily"
+    # The figures judge "released" and "now" at the end of collection (report_bundle.analysis_cutoff).
+    results["collection_finished_at"] = datetime.now(JST).isoformat()
 
     return results
 
@@ -689,6 +757,13 @@ def format_scraped_data(data: dict) -> str:
         lines.append("")
     if isinstance(data.get("liquidity_levels"), dict):
         lines.extend(format_liquidity_lines(data["liquidity_levels"]))
+        lines.append("")
+    if data.get("xau_levels") is not None:
+        lines.extend(format_level_lines(data.get("xau_levels")))
+        lines.append("")
+    if data.get("mode") in ("daily", "weekly"):
+        from scripts.offchart_board import format_board_lines
+        lines.extend(format_board_lines(data, data["mode"]))
         lines.append("")
 
     # --- DXY 価格データ ---
@@ -793,6 +868,19 @@ def format_scraped_data(data: dict) -> str:
     # XAUUSD マクロドライバー: 実質金利とインフレ期待（DGS10 ≒ DFII10 + T10YIE）
     _emit_fred_yield("US10Y Real (TIPS)", "DFII10")
     _emit_fred_yield("10Y Breakeven Inflation", "T10YIE")
+
+    # --- 当日の米金利（CNBC）。FRED は 1〜2 営業日遅れのため、当日の金利はこちらを使う ---
+    uy = data.get("us_yields")
+    if isinstance(uy, dict):
+        for sym, label in (("US2Y", "米2年債"), ("US10Y", "米10年債")):
+            q = uy.get(sym)
+            if isinstance(q, dict):
+                lines.append(f"[{label} 当日（CNBC）]{' [STALE]' if q.get('stale') else ''} "
+                             f"{q['value']:.3f}%（前日終値 {q['prev_close']:.3f}%、前日比 {q['change']:+.3f}pp、"
+                             f"時点 {q['as_of_jst']} JST・{q.get('market_status') or '市場状態不明'}）")
+        if uy.get("error"):
+            lines.append(f"※ CNBC: {uy['error']}")
+        lines.append("")
 
     # --- Broad USD Index (FRED DTWEXBGS) — USD macro proxy。DXY とは別物として明示 ---
     dtwex = fred.get("DTWEXBGS") if isinstance(fred, dict) else None
@@ -1025,8 +1113,17 @@ def format_scraped_data(data: dict) -> str:
             lines.append("該当なし")
         if calendar.get("events"):
             lines.append("")
-            lines.extend(format_surprise_lines(data.get("macro_surprises") or [],
-                                               data.get("macro_surprise_hours") or 36))
+            since = data.get("macro_surprise_since")
+            lines.extend(format_surprise_lines(data.get("macro_surprises") or [], data.get("macro_surprise_hours") or 36,
+                                               since=datetime.fromisoformat(since) if since else None))
+            lines.append("")
+            from scripts.report_bundle import analysis_cutoff
+            try:
+                cutoff = analysis_cutoff(data)
+            except Exception:
+                cutoff = None
+            lines.extend(format_us_event_lines(calendar["events"], data.get("inflation_nowcast"), cutoff,
+                                               data.get("mode") or "daily"))
     if data.get("news_headlines"):
         lines.append("")
         lines.extend(format_news_lines(data.get("news_headlines")))

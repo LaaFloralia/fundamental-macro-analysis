@@ -1,267 +1,799 @@
-"""Deterministic bias board and economic-event table (scripts/offchart_board.py)."""
+"""Bias board, liquidity map and US event table (scripts/offchart_board.py)."""
 from copy import deepcopy
-from datetime import datetime
-from pathlib import Path
-import sys
+from datetime import date, datetime, timedelta
 
 import pytest
 
 from scripts import offchart_board as board
 from scripts import report_bundle as bundle
 
-NOW = datetime.fromisoformat('2026-10-13T18:01:41+09:00')
-SKILL = Path('/Users/laa/.agents/skills/human-first-docs/scripts')
+NOW = datetime.fromisoformat('2026-10-13T22:14:00+09:00')
+VERDICT_LINE = '時間軸別の向き: 長期 下向き・弱｜短期 上向き・弱｜総合 中立'
+NEWS_LINE = 'ニュース・地政学: 下向き・弱｜利上げ観測とドル高の見出しが続き、地政学の新材料はなし。'
+DRAW_LINE = '方向: 上 / 水準: 前日高値（10/12） / 価格: 4,216.21'
+SOURCE = ('# ICT Daily Bias Report — 2026-10-13\n\n## セクション0: エグゼクティブサマリー\n\n信頼度: Low\n'
+          f'{VERDICT_LINE}\nXAUUSD：長期は下向き・弱、短期は上向き・弱で総合は中立。\n\n'
+          f'## セクション5: ニュース・地政学\n\n{NEWS_LINE}\n\n'
+          f'## その日の目的地（Draw on Liquidity）\n\n{DRAW_LINE}\n')
 
 
-def fred(value, prev, ago, change_20, as_of='2026-10-08'):
-    return {'source': 'FRED', 'value': value, 'prev_value': prev, 'change': round(value - prev, 6),
-            'value_20obs_ago': ago, 'as_of_20obs_ago': '2026-09-10', 'change_20obs': change_20,
-            'as_of_date': as_of, 'prev_as_of_date': '2026-10-07', 'stale': False, 'error': None}
+def business_days(n, end):
+    out, d = [], date.fromisoformat(end)
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+        d -= timedelta(days=1)
+    return out[::-1]
+
+
+def series(first, last, end, n=21):
+    step = (last - first) / (n - 1)
+    return [[d, round(first + step * i, 4)] for i, d in enumerate(business_days(n, end))]
+
+
+def ev(day, time, indicator, previous='N/A', forecast='N/A', actual='N/A', country='United States'):
+    return {'date': day, 'time_jst': time, 'country': country, 'indicator': indicator,
+            'previous': previous, 'forecast': forecast, 'actual': actual}
+
+
+def level(key, name, side, price, state='resting', touched=None, session=None, note=''):
+    words = {'resting': '未到達', 'swept': '掃引済み', 'beyond': '抜けて推移', 'broken': '抜けて定着', 'forming': '形成中'}
+    return {'key': key, 'name': name, 'side': side, 'price': price, 'state': state, 'state_word': words[state],
+            'touched_at': touched, 'touched_session': session, 'note': note}
 
 
 def sample():
     return {
-        'timestamp': NOW.isoformat(), 'report_quote': {'close': '4186.69', 'datetime': '2026-10-13'},
-        'fred': {'DFII10': fred(2.87, 2.92, 2.55, 0.3200000000000003), 'DGS2': fred(4.75, 4.77, 4.56, 0.19),
-                 'DTWEXBGS': fred(121.3848, 121.7882, 118.127, 3.2578, '2026-10-02')},
-        'dxy': {'current_price': 102.31, 'prev_close': 102.59, 'change': -0.28, 'change_pct': -0.2729,
-                'timestamp': '2026-10-13T09:03:42Z', 'error': None, 'stale': False},
-        'fedwatch': {'next_fomc_date': 'Oct 28, 2026', 'error': None, 'stale': False,
-                     'target_rates': [{'range': '3.75-4.00', 'current': 80.5, 'prev_day': 80.5, 'prev_week': 75.9},
-                                      {'range': '4.00-4.25', 'current': 19.5, 'prev_day': 19.5, 'prev_week': 24.1}],
-                     'deltas': {'prev_day': {'by_range': {'3.75-4.00': -1.1, '4.00-4.25': 1.1}, 'source': '履歴 4日前 (2026-10-09)'},
-                                'prev_week': {'by_range': {'3.75-4.00': 3.5, '4.00-4.25': -3.5}, 'source': '履歴 8日前 (2026-10-05)'}}},
+        'timestamp': NOW.isoformat(), 'mode': 'daily',
+        'report_quote': {'close': '4177.47', 'datetime': '2026-10-13', 'fetched_at': '2026-10-13T13:14:30+00:00'},
+        'fred': {'DFII10': {'value': 2.87, 'value_20obs_ago': 2.55, 'as_of_20obs_ago': '2026-09-10',
+                            'change_20obs': 0.3200000000000003, 'as_of_date': '2026-10-08', 'error': None, 'stale': False,
+                            'recent': series(2.55, 2.87, '2026-10-08')},
+                 'DGS2': {'value': 4.75, 'as_of_date': '2026-10-08', 'error': None, 'stale': False,
+                          'recent': series(4.56, 4.75, '2026-10-08')[:-2] + [['2026-10-07', 4.77], ['2026-10-08', 4.75]]},
+                 'DTWEXBGS': {'value': 121.3848, 'value_20obs_ago': 118.127, 'as_of_20obs_ago': '2026-09-04',
+                              'change_20obs': 3.2578, 'as_of_date': '2026-10-02', 'error': None, 'stale': False}},
+        'correlation': {'pairs': [{'series_id': 'DFII10', 'r_20d': -0.53}]},
+        'dxy': {'current_price': 102.28, 'prev_close': 102.59, 'change_pct': -0.3022, 'timestamp': '2026-10-13T13:16:13Z',
+                'error': None, 'recent_closes': series(100.0, 102.0, '2026-10-13')},
+        'us_yields': {'source': 'CNBC', 'error': None,
+                      'US2Y': {'value': 4.802, 'prev_close': 4.791, 'change': 0.011, 'as_of_jst': '2026-10-13 22:11',
+                               'stale': False}},
+        'fedwatch': {'next_fomc_date': 'Oct 28, 2026', 'error': None, 'timestamp': '2026-10-13T22:10:00+09:00',
+                     'target_rates': [{'range': '4.00-4.25', 'current': 19.5, 'prev_day': 19.5, 'prev_week': 24.1},
+                                      {'range': '3.75-4.00', 'current': 80.5, 'prev_day': 80.5, 'prev_week': 75.9}],
+                     'deltas': {'prev_day': {'by_range': {'3.75-4.00': -1.1}, 'source': '履歴 4日前 (2026-10-09)'},
+                                'prev_week': {'by_range': {'3.75-4.00': 3.5}, 'source': '履歴 8日前 (2026-10-05)'}}},
         'gold_etf': {'tonnes': 1055.41, 'as_of_date': '2026-10-12', 'change_5d_t': -0.86, 'change_20d_t': 7.99, 'error': None},
-        'gold_cb': {'cumulative_3m_t': 154.2, 'regime': 'net_buying', 'as_of_date': '2026-M08', 'error': None},
-        'retail_sentiment': {'XAUUSD': {'source': 'MyFXBook', 'long_pct': 56.0, 'short_pct': 44.0, 'avg_long_entry': 4412.6358,
-                                        'avg_short_entry': 4025.0241, 'timestamp': '2026-10-13T09:03:42Z', 'as_of_date': None,
-                                        'error': None, 'stale': False}},
-        'cot_disaggregated': {'error': None, 'stale': False, 'data': {
-            'date': '2026-10-06', 'open_interest': 396109,
-            'managed_money': {'long': 127101, 'short': 16114, 'net': 110987, 'net_change': -9331, 'net_pct_oi': 28.0},
-            'swap_dealers': {'long': 14604, 'short': 239630, 'net': -225026},
-            'producer_merchant': {'long': 18860, 'short': 38361, 'net': -19501},
-            'other_reportables': {'long': 118302, 'short': 18954, 'net': 99348}}},
-        'offchart_features': {
-            'positioning': {'retail': {'XAUUSD': {'source': 'MyFXBook', 'long_pct': 56.0, 'percentile': 54.4, 'history_n': 57}},
-                            'cot_gold_mm': {'report_date': '2026-10-06', 'mm_net_pct_oi': 28.0, 'percentile': 43.9, 'history_n': 156}},
-            'event_blackouts': [{'event': 'CPI (MoM) (Sep)', 'country': 'United States', 'time_jst': '2026-10-13T21:30:00+09:00',
-                                 'window_start': '2026-10-13T21:00:00+09:00', 'window_end': '2026-10-13T22:30:00+09:00'}]},
-        'macro_surprise_hours': 36,
+        'gold_cb': {'cumulative_3m_t': 154.2, 'as_of_date': '2026-M08', 'error': None,
+                    'cumulative_periods': ['2026-M08', '2026-M07', '2026-M06'],
+                    'months': [{'period': '2026-M08', 'net_tonnes': 41.1}, {'period': '2026-M07', 'net_tonnes': 68.5},
+                               {'period': '2026-M06', 'net_tonnes': 44.6}]},
+        'retail_sentiment': {'XAUUSD': {'source': 'MyFXBook', 'long_pct': 56.0, 'short_pct': 44.0,
+                                        'avg_long_entry': 4412.6358, 'avg_short_entry': 4025.0241,
+                                        'timestamp': '2026-10-13T09:03:42Z', 'error': None, 'stale': False}},
+        'cot_disaggregated': {'error': None, 'data': {'date': '2026-10-06', 'managed_money': {
+            'net': 110987, 'net_change': -9331, 'long': 150000, 'short': 39013}}},
+        'offchart_features': {'positioning': {'retail': {'XAUUSD': {'percentile': 54.4, 'history_n': 57}},
+                                              'cot_gold_mm': {'percentile': 43.9, 'history_n': 156,
+                                                              'report_date': '2026-10-06'}}},
+        'inflation_nowcast': {'error': None, 'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'},
+                                                                  'core_cpi': {'value': 0.202, 'as_of': '10/09'}}}},
         'macro_surprises': [
-            {'date': 'Tuesday, October 13, 2026', 'time_jst': '15:00', 'country': 'Germany', 'indicator': 'German CPI (MoM) (Sep)',
-             'actual': '0.6%', 'previous': '0.2%', 'forecast': '0.6%', 'forecast_provenance': '発表前記録（2026-10-12 09:10 取得・Investing.com）',
-             'released_at_jst': '2026-10-13T15:00:00+09:00', 'surprise': {'diff': 0.0, 'unit': 'pp', 'relative': 0.0, 'gold_direction': '判定対象外'}},
             {'date': 'Monday, October 12, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': 'Initial Jobless Claims',
-             'actual': '231K', 'previous': '220K', 'forecast': '225K', 'forecast_provenance': '発表前記録（2026-10-12 09:10 取得・Investing.com）',
-             'released_at_jst': '2026-10-12T21:30:00+09:00', 'surprise': {'diff': 6.0, 'unit': 'K', 'relative': 0.0267, 'gold_direction': '金に上向き'}}],
-        'economic_calendar': {'error': None, 'stale': False, 'events': [
-            {'date': 'Monday, October 12, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': 'Initial Jobless Claims',
-             'actual': '231K', 'previous': '220K', 'forecast': '225K'},
+             'actual': '231K', 'previous': '220K', 'forecast': '225K', 'released_at_jst': '2026-10-12T21:30:00+09:00',
+             'forecast_provenance': '発表前記録（2026-10-12 09:10 取得・Investing.com）'},
             {'date': 'Tuesday, October 13, 2026', 'time_jst': '15:00', 'country': 'Germany', 'indicator': 'German CPI (MoM) (Sep)',
-             'actual': '0.6%', 'previous': '0.2%', 'forecast': '0.6%'},
-            {'date': 'Tuesday, October 13, 2026', 'time_jst': '23:00', 'country': 'United States', 'indicator': 'Existing Home Sales  (Sep)',
-             'actual': 'N/A', 'previous': '3.98M', 'forecast': '3.95M'},
-            {'date': 'Tuesday, October 13, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': 'CPI (MoM) (Sep)',
-             'actual': 'N/A', 'previous': '0.4%', 'forecast': '0.6%'},
-            {'date': 'Wednesday, October 14, 2026', 'time_jst': '23:30', 'country': 'United States', 'indicator': 'Crude Oil Inventories',
-             'actual': 'N/A', 'previous': '1.2M', 'forecast': '0.8M'},
-            {'date': 'Thursday, October 15, 2026', 'time_jst': '15:00', 'country': 'United Kingdom', 'indicator': 'GDP (MoM) (Aug)',
-             'actual': 'N/A', 'previous': '0.4%', 'forecast': '-0.1%'},
-            {'date': 'Friday, October 16, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': 'Durable Goods Orders (MoM)',
-             'actual': 'N/A', 'previous': 'N/A', 'forecast': '0.5%'}]}}
+             'actual': '0.6%', 'previous': '0.2%', 'forecast': '0.6%', 'released_at_jst': '2026-10-13T15:00:00+09:00',
+             'forecast_provenance': '発表前記録（2026-10-12 09:10 取得・Investing.com）'}],
+        'economic_calendar': {'error': None, 'events': [
+            ev('Friday, October 9, 2026', '23:00', 'Michigan 1-Year Inflation Expectations (Oct)', '4.7%', '4.6%', '4.8%'),
+            ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims', '220K', '230K', '231K'),
+            ev('Tuesday, October 13, 2026', '15:00', 'German CPI (MoM) (Sep)', '0.2%', '0.6%', '0.6%', country='Germany'),
+            ev('Tuesday, October 13, 2026', '23:00', 'Existing Home Sales (Sep)', '3.98M', '3.95M'),
+            ev('Wednesday, October 14, 2026', '21:30', 'CPI (MoM) (Sep)', '0.4%', '0.6%'),
+            ev('Wednesday, October 14, 2026', '21:30', 'Core CPI (MoM) (Sep)', '0.3%', '0.3%'),
+            ev('Wednesday, October 14, 2026', '23:30', 'Crude Oil Inventories', '1.2M', '0.8M'),
+            ev('Thursday, October 15, 2026', '21:30', 'Retail Sales (MoM) (Sep)', '0.6%', '0.4%'),
+            ev('Friday, October 16, 2026', '21:30', 'Durable Goods Orders (MoM) (Sep)', '-0.2%', '0.5%'),
+            ev('Tuesday, October 20, 2026', '21:30', 'Nonfarm Payrolls (Sep)', '143K', '150K'),
+            ev('Thursday, October 29, 2026', '03:00', 'Fed Interest Rate Decision', '4.00%', '3.75%')]},
+        'xau_levels': {'price': 4177.47, 'last_bar_utc': '2026-10-13 12:00', 'midnight_open': 4186.99, 'error': None,
+                       'levels': [level('PMH', '前月高値（9月）', 'high', 4514.11),
+                                  level('PDH', '前日高値（10/12）', 'high', 4216.21),
+                                  level('PWH', '前週高値（10/05週）', 'high', 4206.98, 'swept', '10/12 09:00', 'アジア'),
+                                  level('NEWS_H', '新規失業保険申請 発表15分足高値（10/12 21:30）', 'high', 4195.5, note='Tier B'),
+                                  level('LONDON_L', 'London安値（当日）', 'low', 4180.0, 'beyond', '10/13 21:00', 'NY'),
+                                  level('NEWS_L', '新規失業保険申請 発表15分足安値（10/12 21:30）', 'low', 4168.2, 'swept',
+                                        '10/13 03:00', 'NY', 'Tier B'),
+                                  level('PDL', '前日安値（10/12）', 'low', 4156.45, 'swept', '10/13 09:00', 'アジア'),
+                                  level('PWL', '前週安値（10/05週）', 'low', 4061.73)]},
+        'liquidity_levels': {'price': 4177.47, 'expected_move_1sd': 60.0, 'gvz': 22.79, 'gvz_as_of': '2026-10-09'},
+    }
 
 
-def by_label(items, prefix):
-    return next(i for i in items if i['label'].startswith(prefix))
+def rows_of(data, mode='daily', source=SOURCE):
+    return {i['label']: i for i in board.bias_rows(data, NOW, mode, source)[0]}
 
 
-def test_board_rows_follow_the_documented_direction_rules():
-    items, bindings, limitations = board.bias_rows(sample(), NOW, 'daily')
-    rows = {i['label']: i for i in items}
-    assert rows['実質金利（米10年TIPS）']['symbol'] == '▼' and rows['実質金利（米10年TIPS）']['change'] == '+0.32pp'
-    assert rows['実質金利（米10年TIPS）']['baseline'] == '20営業日前 2.55%（2026-09-10）'
-    assert rows['ドル（FRB広義ドル指数）']['symbol'] == '▼' and rows['ドル（FRB広義ドル指数）']['change'] == '+3.26（+2.76%）'
-    assert '政策金利の織り込み（前週比）' not in rows  # daily shows the one-day change only
-    assert rows['政策金利の織り込み（前日比）']['symbol'] == '—' and rows['政策金利の織り込み（前日比）']['change'] == '+0.0pp'
-    assert rows['政策金利の織り込み（前日比）']['baseline'] == '前日 80.5%（提供表の前日列）'
-    assert rows['GLD保有量（20営業日累計）']['symbol'] == '▲' and rows['GLD保有量（5営業日累計）']['symbol'] == '▽'
-    assert rows['中銀の金購入（IMF報告国・確定3ヶ月累計）']['symbol'] == '▲'
-    assert rows['米2年債利回り（前営業日比）']['symbol'] == '△' and rows['米2年債利回り（前営業日比）']['change'] == '-0.02pp'
-    assert rows['ドル指数DXY（前日比）']['symbol'] == '△' and rows['ドル指数DXY（前日比）']['asof'] == '記録 2026-10-13 18:03 JST'
-    assert rows['個人のロング比率']['direction'] == '極端値なし' and rows['個人のロング比率']['symbol'] == '—'
-    assert rows['投機筋（COT Managed Money 純ロング）']['change'] == '前週比 -9,331枚'
-    assert rows['投機筋（COT Managed Money 純ロング）']['baseline'] == '前週 120,318枚／156週の百分位 43.9'
-    surprise = by_label(items, '指標サプライズ: Initial Jobless Claims')
-    assert surprise['symbol'] == '▲' and surprise['change'] == '結果−予想 +6K'
-    assert not any(i['label'].startswith('指標サプライズ: German') for i in items)  # non-US has no rule
-    cpi = by_label(items, '予想 vs 前回: CPI (MoM) (Sep)')
-    assert cpi['symbol'] == '▽' and cpi['direction'] == '予想どおりなら下向き' and cpi['change'] == '予想−前回 +0.2pp'
-    assert not any('Durable Goods' in i['label'] for i in items)  # outside the 24h window
-    assert [i['group'] for i in items][:4] == [board.LONG_GROUP] * 4 and items[4]['group'] == board.SHORT_GROUP['daily']
-    assert limitations == []
-    paths = {b['label']: b['path'] for b in bindings}
-    assert paths['政策金利の織り込み（前日比）'] == 'fedwatch.target_rates.0.current'
-    assert paths['個人のロング比率'] == 'offchart_features.positioning.retail.XAUUSD.percentile'
-    for item in items:  # every visible field is covered by its quote
-        for key, value in item.items():
-            if key != 'source_quote' and isinstance(value, str):
-                assert value in item['source_quote'] or key in ('tone', 'side', 'strength'), (key, value)
+def shown_fields_are_quoted(item, keys):
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ''):
+            assert str(value) in item['source_quote'], (key, value)
 
 
-def test_tally_counts_only_shown_rows_and_tiles_quote_the_appendix():
-    result = board.bias_figure(sample(), NOW, 'daily')
-    verdicts = result['figure']['verdicts']
-    assert verdicts[0]['direction'] == '中立（拮抗）' and verdicts[0]['detail'] == '▲2 △0 ▼2 ▽0'
-    assert verdicts[1]['symbol'] in '▲△▼▽—' and verdicts[1]['source_quote'] in result['rows']
-    assert verdicts[2]['direction'] == '記載なし'
-    assert board.tally([{'group': 'g', 'symbol': '▲'}, {'group': 'g', 'symbol': '△'}], 'g')['word'] == '上向き（弱）'
-    assert board.tally([{'group': 'g', 'symbol': '▲'}, {'group': 'g', 'symbol': '▲'}, {'group': 'g', 'symbol': '▽'}], 'g')['word'] == '上向き（弱）'
-    assert board.tally([{'group': 'g', 'symbol': '▼'}, {'group': 'g', 'symbol': '▼'}], 'g')['symbol'] == '▼'
-    assert board.tally([], 'g')['word'] == '中立（材料なし）'
+# ------------------------------------------------------------------ bias board
+
+def test_daily_rows_compare_each_input_with_its_baseline_and_map_it_to_gold():
+    rows = rows_of(sample())
+    real = rows['実質金利（米10年TIPS）']
+    assert (real['symbol'], real['display'], real['baseline'], real['change'], real['asof']) == \
+        ('▼', '2.87%', '20営業日前 2.55%（09/10）', '+0.32pp', '10/08')
+    assert real['note'] == '金との20日相関 -0.53（通常どおり逆方向）' and real['viz']['type'] == 'spark'
+    assert len(real['viz']['values']) == 21 and real['viz']['path'] == 'fred.DFII10.recent'  # the 20-day window only
+    dxy = rows['ドル指数DXY（20営業日）']
+    assert (dxy['symbol'], dxy['change'], dxy['baseline']) == ('▼', '+2.00%', '20営業日前 100.000（09/15）')
+    news = rows['ニュース・地政学（原稿の判断）']
+    assert news['kind'] == 'text' and news['symbol'] == '▽' and news['direction'] == '下向き・弱'
+    assert news['display'] == '利上げ観測とドル高の見出しが続き、地政学の新材料はなし。'
+    cb = rows['中銀の金購入（IMF報告国・3ヶ月）']
+    assert (cb['symbol'], cb['display'], cb['asof']) == ('▲', '+154.2 t（6〜8月）', '2026年08月分')
+    assert cb['note'] == '月別（棒は左から） 6月 +44.6 t・7月 +68.5 t・8月 +41.1 t'
+    assert [b['label'] for b in cb['viz']['items']] == ['6月', '7月', '8月']
+    us2y = rows['米2年債利回り（当日）']
+    assert (us2y['symbol'], us2y['display'], us2y['change'], us2y['asof']) == ('▽', '4.802%', '+0.011pp', '10/13 22:11 JST')
+    assert us2y['viz']['scale'] == 0.05  # the slope is drawn against the strong threshold
+    day = rows['ドル指数DXY（当日）']
+    assert (day['symbol'], day['change'], day['asof']) == ('▲', '-0.30%', '記録 10/13 22:16 JST')  # -0.3022% reaches 0.3%
+    fed = rows['政策金利の織り込み（前日比）']
+    assert (fed['symbol'], fed['direction'], fed['display'], fed['baseline'], fed['change'], fed['asof']) == \
+        ('—', '中立', '期待 3.924%', '3.924%（提供表の前日列）', '+0.0bp', '次回FOMC 10/28')
+    assert fed['note'] == '確率 3.75-4.00 80.5%・4.00-4.25 19.5%'
+    assert [x['label'] for x in fed['viz']['segments']] == ['3.75-4.00', '4.00-4.25']  # low to high
+    claims = rows['指標の結果: 新規失業保険申請']
+    assert (claims['symbol'], claims['display'], claims['baseline'], claims['change']) == \
+        ('△', '結果 231K', '予想 225K（発表前記録）', '+6K')  # one series alone is weak
+    cpi = rows['予測との差: CPI（前月比・9月）']
+    assert (cpi['symbol'], cpi['display'], cpi['baseline'], cpi['change'], cpi['asof']) == \
+        ('△', 'nowcast 0.53%', '市場予想 0.6%', '-0.07pp', '10/14 21:30 JST 発表・nowcast 10/09時点')
+    assert rows['予測との差: コアCPI（前月比・9月）']['change'] == '-0.10pp'
+    etf = rows['GLD保有量（5営業日）']
+    assert (etf['symbol'], etf['baseline'], etf['note']) == ('▽', '5営業日前 1,056.27 t', '棒は左から5営業日・20営業日。20営業日 +7.99 t')
+    assert [b['label'] for b in etf['viz']['items']] == ['5営業日', '20営業日']
+    cot = rows['投機筋の買い越し（COT Managed Money）']
+    assert (cot['symbol'], cot['direction'], cot['display'], cot['change']) == ('—', '中立（偏りなし）', '110,987枚', '前週比 -9,331枚')
+    assert cot['baseline'] == '156週百分位 43.9'
+    data = sample()
+    data['offchart_features']['positioning']['cot_gold_mm'].update(mm_net_pct_oi=21.04, window=['2023-10-10', '2026-10-06'])
+    assert rows_of(data)['投機筋の買い越し（COT Managed Money）']['baseline'] == '建玉比 21.0%の156週百分位 43.9（2023/10/10〜2026/10/06）'
+    retail = rows['個人のロング比率（MyFXBook）']
+    assert (retail['symbol'], retail['display'], retail['asof']) == ('—', 'ロング 56.0%・ショート 44.0%', '記録 10/13 18:03 JST')
+    assert retail['viz'] == {'type': 'split', 'left': 56.0, 'right': 44.0, 'track': 54.4}  # shares of 100, not rescaled
+    assert {i['material']: i['factor'] for i in rows.values()}['個人の比率'] == '建玉の偏り'
+    assert not any('German' in label or 'Durable' in label for label in rows)  # non-US, and outside the 2-day window
+    for item in rows.values():
+        assert item['symbol'] != '？' and '保留' not in item['direction']
+        shown_fields_are_quoted(item, ('label', 'display', 'baseline', 'change', 'direction', 'symbol', 'asof', 'note'))
+        for bar in (item.get('viz') or {}).get('items') or []:
+            assert bar['label'] in item['source_quote']
+    assert board.bias_rows(sample(), NOW, 'daily', SOURCE)[2] == []  # nothing missing
 
 
-def test_extreme_percentiles_vote_against_the_majority():
+def test_verdicts_use_unrounded_values_and_the_shown_value_agrees():
+    assert board.shown(0.046, 2, 0.05) == (0.046, 3)      # 0.05 when rounded, but under the line
+    assert board.shown(0.05 - 1e-12, 2, 0.05) == (0.05, 2)  # binary noise only: at the line
+    assert board.shown(0.0499999, 2, 0.05) == (0.0499999, 7)  # a real shortfall keeps its digits
+    assert board.shown(4.837 - 4.791, 2, 0.05) == (0.046, 3)
+    assert board.shown(0.004, 2, 0.05) == (0.004, 3)      # not shown as zero
+    assert board.shown(89.96, 1, 90, below=(10,)) == (89.96, 2) and board.shown(10.04, 1, 90, below=(10,)) == (10.04, 2)
+    assert board.judge(0.046, 0.05, -1) == ('down', 'weak') and board.judge(0.05, 0.05, -1) == ('down', 'strong')
+    assert board.judge(0.15 + 0.15 - 0.3, 0.05, -1) == ('flat', 'none')  # 5.6e-17: noise
+    assert board.judge(0.0000001, 0.05, -1) == ('down', 'weak')         # a real, tiny move
+    data = sample()
+    data['us_yields']['US2Y'].update(change=0.046, value=4.837)
+    us2y = rows_of(data)['米2年債利回り（当日）']
+    assert (us2y['symbol'], us2y['change']) == ('▽', '+0.046pp')
+    data['offchart_features']['positioning']['retail']['XAUUSD']['percentile'] = 89.96
+    retail = rows_of(data)['個人のロング比率（MyFXBook）']
+    assert (retail['symbol'], retail['baseline']) == ('—', '自前履歴57件の百分位 89.96')
+
+
+def test_missing_materials_are_listed_and_an_empty_group_is_not_neutral():
+    data = sample()
+    del data['fred']['DFII10'], data['gold_cb']
+    notes = board.bias_rows(data, NOW, 'daily', SOURCE)[2]
+    assert notes == ['欠測: 実質金利（FRED DFII10・取得失敗）。長期（数週間〜）の集計に入れていない',
+                     '欠測: 中銀の金購入（IMF IRFCL・取得失敗）。長期（数週間〜）の集計に入れていない']
+    tiles = {t['label']: t for t in board.bias_figure(data, NOW, 'daily', SOURCE)['figure']['verdicts']}
+    assert tiles['長期']['detail'] == '欠測: 実質金利・中銀の金購入'  # the verdict follows the tally
+    assert tiles['長期']['show_detail'] is True and tiles['短期']['show_detail'] is False
+    empty = {'timestamp': NOW.isoformat(), 'fedwatch': sample()['fedwatch']}
+    tiles = {t['label']: t for t in board.bias_figure(empty, NOW, 'daily', '# R\n')['figure']['verdicts']}
+    assert (tiles['長期']['direction'], tiles['長期']['symbol'], tiles['長期']['show_detail']) == ('材料なし', '—', True)
+
+
+@pytest.mark.parametrize('change,why', [
+    (lambda d: d['fred']['DFII10'].update(as_of_date='2026-10-02'), '実質金利（FRED DFII10・最新 10/02・7日より古い）'),
+    (lambda d: d['fred']['DFII10'].update(as_of_date=None), '実質金利（FRED DFII10・観測日の記録なし）'),
+    (lambda d: d['gold_cb'].update(as_of_date='2026-M05'), '中銀の金購入（IMF IRFCL・最新 5月分・4ヶ月より古い）'),
+    (lambda d: d['gold_etf'].update(as_of_date='2026-10-02'), 'GLD保有量（SPDR・最新 10/02・7日より古い）'),
+    (lambda d: d['fedwatch'].pop('timestamp'), '政策金利の織り込み（Fed Rate Monitor・取得時刻の記録なし）'),
+    (lambda d: d['fedwatch'].update(timestamp='2026-10-12T18:00:00+09:00'),
+     '政策金利の織り込み（Fed Rate Monitor・取得 10/12 18:00 JST・24時間より前）'),
+    (lambda d: d['fedwatch'].update(next_fomc_date=''), '政策金利の織り込み（Fed Rate Monitor・次回FOMCの日付なし）'),
+    (lambda d: d['dxy'].update(timestamp='2026-10-12T09:00:00Z'), 'ドル（短期）（DXY・取得 10/12 18:00 JST・24時間より前）'),
+    (lambda d: d['dxy'].update(current_price=44.782, prev_close=44.779, change_pct=0.007, estimated=True),
+     'ドル（短期）（DXY・EUR/USDからの推定値のみ（DXYの当日値なし））'),
+    (lambda d: d['retail_sentiment']['XAUUSD'].update(short_pct=40.0), '個人の比率（MyFXBook・ロングとショートの合計が100%でない）'),
+    (lambda d: d['retail_sentiment']['XAUUSD'].update(timestamp='2026-10-11T09:00:00Z'),
+     '個人の比率（MyFXBook・取得 10/11 18:00 JST・24時間より前）'),
+    (lambda d: d['cot_disaggregated']['data']['managed_money'].update(short=40000), '投機筋の建玉（CFTC COT・買い−売り＝差引が合わない）'),
+    (lambda d: d['offchart_features']['positioning']['cot_gold_mm'].update(report_date='2026-09-29'),
+     '投機筋の建玉（CFTC COT・百分位と建玉の報告日が違う）'),
+    (lambda d: d['cot_disaggregated']['data'].update(date='2026-09-22') or
+     d['offchart_features']['positioning']['cot_gold_mm'].update(report_date='2026-09-22'),
+     '投機筋の建玉（CFTC COT・最新 09/22・14日より古い）')])
+def test_old_or_inconsistent_materials_are_left_out_with_the_reason(change, why):
+    data = sample()
+    change(data)
+    notes = board.bias_rows(data, NOW, 'daily', SOURCE)[2]
+    assert [n for n in notes if why in n], notes
+    assert len(notes) == 1
+
+
+def test_tally_and_verdict_tiles_quote_the_report_line():
+    result = board.bias_figure(sample(), NOW, 'daily', SOURCE)
+    tiles = {t['label']: t for t in result['figure']['verdicts']}
+    assert (tiles['長期']['symbol'], tiles['長期']['direction'], tiles['長期']['origin']) == ('▽', '下向き・弱', '原稿の判断')
+    assert tiles['長期']['detail'] == '規則の集計: 下向き（弱）（実質金利 ▼・ドル ▼・ニュース・地政学 ▽・中銀 ▲）'
+    assert (tiles['長期']['short'], tiles['長期']['group']) == ('規則の集計 下向き（弱）・要因4', '長期（数週間〜）')
+    # 米2年債 ▽, 織り込み —, 失業保険 ▲ are one factor that disagrees: no vote. Two nowcasts are one half vote.
+    assert (tiles['短期']['symbol'], tiles['短期']['detail']) == \
+        ('△', '規則の集計: 上向き（弱）（金利・織り込み —・ドル ▲・発表前の予測 △・ETF ▽・建玉の偏り —）')
+    assert (tiles['総合']['symbol'], tiles['総合']['direction'], tiles['総合']['detail']) == ('—', '中立', '長期×短期の規則: 中立')
+    assert not any(t['mismatch'] or t['show_detail'] for t in tiles.values()) and 'reason' not in result['figure']
+    for tile in tiles.values():
+        assert tile['source_quote'] in result['rows']
+        shown_fields_are_quoted(tile, ('label', 'symbol', 'direction', 'origin', 'detail', 'short'))
+
+
+def test_a_verdict_that_differs_from_the_tally_is_marked_with_the_reports_reason():
+    source = SOURCE.replace(VERDICT_LINE, '時間軸別の向き: 長期 上向き・弱｜短期 上向き・弱｜総合 上向き・弱\n'
+                                          '集計と違う理由: 中銀の買いを実質金利より重く見た。')
+    assert board.verdict_mismatches(sample(), NOW, 'daily', source) == ['長期', '総合']
+    result = board.bias_figure(sample(), NOW, 'daily', source)
+    tiles = {t['label']: t for t in result['figure']['verdicts']}
+    assert (tiles['長期']['origin'], tiles['長期']['mismatch'], tiles['長期']['show_detail']) == ('原稿の判断・集計と異なる', True, True)
+    assert tiles['短期']['mismatch'] is False and tiles['短期']['show_detail'] is False
+    assert result['figure']['reason'] == {'text': '集計と違う理由: 中銀の買いを実質金利より重く見た。',
+                                          'source_quote': '集計と違う理由: 中銀の買いを実質金利より重く見た。'}
+    assert board.verdict_mismatches(sample(), NOW, 'daily', SOURCE) == []
+    assert result['rows'][-1].startswith('バイアス盤の読み方: ') and result['figure']['legend'] in result['rows'][-1]
+    assert {r['label'] for r in result['figure']['rules']} == {i['label'] for i in result['figure']['items']}
+
+
+def test_tiles_fall_back_to_the_rules_when_the_report_has_no_verdict_line():
+    tiles = {t['label']: t for t in board.bias_figure(sample(), NOW, 'daily', '# R\n\n本文のみ。\n')['figure']['verdicts']}
+    assert (tiles['長期']['direction'], tiles['長期']['origin']) == ('下向き（弱）', '規則集計')
+    assert tiles['長期']['detail'] == '欠測: ニュース・地政学' and tiles['長期']['show_detail'] is True
+    assert not any(t['mismatch'] for t in tiles.values())
+    assert (tiles['短期']['direction'], tiles['総合']['direction']) == ('上向き（弱）', '中立')
+    assert tiles['総合']['origin'] == '長期×短期の規則'
+
+
+def test_tally_counts_one_vote_per_factor():
+    def t(*rows):
+        return board.tally([{'group': 'g', 'symbol': s, 'factor': f, 'label': f} for f, s in rows], 'g')
+    assert (t(('実質金利', '▲'), ('中銀', '△'))['word'], t(('実質金利', '▲'), ('中銀', '△'))['symbol']) == ('上向き（弱）', '△')
+    assert t(('a', '▲'), ('b', '▲'), ('c', '▽'))['word'] == '上向き（弱）'
+    assert (t(('a', '▼'), ('b', '▼'))['symbol'], t(('a', '▼'), ('b', '▼'))['word']) == ('▼', '下向き')
+    assert t(('a', '▲'), ('b', '▽'))['word'] == '中立'  # a difference under one vote is neutral
+    # Rows of one factor: the larger vote when they agree, none when they disagree.
+    agree = t(('金利・織り込み', '▲'), ('金利・織り込み', '△'), ('中銀', '▲'))
+    assert (agree['word'], agree['detail']) == ('上向き', '金利・織り込み ▲・中銀 ▲')
+    split = t(('金利・織り込み', '▲'), ('金利・織り込み', '▽'), ('中銀', '▲'))
+    assert (split['word'], split['detail']) == ('上向き（弱）', '金利・織り込み —・中銀 ▲')
+    assert t(('金利・織り込み', '▲'), ('金利・織り込み', '—'))['detail'] == '金利・織り込み ▲'  # neutral rows do not cancel
+    # Positioning and pre-release forecasts are capped at half a vote.
+    capped = t(('建玉の偏り', '▼'), ('発表前の予測', '▼'))
+    assert (capped['word'], capped['detail']) == ('下向き（弱）', '建玉の偏り ▽・発表前の予測 ▽')
+    assert t(('建玉の偏り', '▲'))['word'] == '中立'
+    assert (t()['word'], t()['detail'], t()['symbol']) == ('材料なし', '材料なし', '—')
+
+
+@pytest.mark.parametrize('long_t,short_t,expected', [
+    (('up', 'strong'), ('up', 'strong'), ('up', 'strong')),
+    (('up', 'strong'), ('up', 'weak'), ('up', 'weak')),
+    (('flat', 'none'), ('down', 'strong'), ('down', 'weak')),
+    (('up', 'weak'), ('flat', 'none'), ('up', 'weak')),
+    (('up', 'strong'), ('down', 'strong'), ('flat', 'none'))])
+def test_blend_combines_long_and_short(long_t, short_t, expected):
+    side = lambda pair: {'side': pair[0], 'strength': pair[1]}
+    assert board.blend(side(long_t), side(short_t)) == expected
+
+
+@pytest.mark.parametrize('line,expected', [
+    (VERDICT_LINE, {'長期': ('down', 'weak', '下向き・弱'), '短期': ('up', 'weak', '上向き・弱'), '総合': ('flat', 'none', '中立')}),
+    ('時間軸別の向き：長期 上向き ｜ 短期: 下向き・弱 ｜ 総合 中立',  # a bare 上向き is not one of the five words
+     {'短期': ('down', 'weak', '下向き・弱'), '総合': ('flat', 'none', '中立')}),
+    ('時間軸別の向き: 長期 保留｜短期 中立ではない｜総合 中立', {'総合': ('flat', 'none', '中立')}),
+    ('時間軸別の向き: 長期 上向き・強（実質金利）｜短期 中立｜総合 中立', {'短期': ('flat', 'none', '中立'), '総合': ('flat', 'none', '中立')}),
+    ('信頼度: Low', {})])
+def test_source_verdicts_read_only_the_five_verdict_words(line, expected):
+    assert board.source_verdicts('# R\n\n' + line + '\n') == expected
+
+
+def test_repeated_verdict_news_or_reason_lines_are_errors():
+    with pytest.raises(ValueError, match='repeats'):
+        board.source_verdicts(f'# R\n\n{VERDICT_LINE}\n\n{VERDICT_LINE}\n')
+    with pytest.raises(ValueError, match='repeats 長期'):
+        board.source_verdicts('時間軸別の向き: 長期 中立｜長期 上向き・強｜総合 中立\n')
+    with pytest.raises(ValueError, match='repeats'):
+        board.news_verdict(f'{NEWS_LINE}\n{NEWS_LINE}\n')
+    with pytest.raises(ValueError, match='repeats'):
+        board.reason_line('集計と違う理由: a\n集計と違う理由: b\n')
+
+
+def test_news_verdict_needs_a_verdict_word_and_a_summary():
+    assert board.news_verdict(NEWS_LINE)['side'] == 'down' and board.news_verdict(NEWS_LINE)['word'] == '下向き・弱'
+    assert board.news_verdict('ニュース・地政学: 保留｜材料混在') is None
+    assert board.news_verdict('ニュース・地政学: 上向き・強') is None
+    assert board.news_verdict('ニュース・地政学: 上向き｜材料') is None  # exactly one of the five words
+    assert '（原稿の判断）' not in ' '.join(rows_of(sample(), source='# R\n'))  # no line, no news row
+
+
+def test_stale_cnbc_quote_falls_back_to_fred_with_its_own_date():
+    data = sample()
+    data['us_yields']['US2Y']['stale'] = True
+    rows = rows_of(data)
+    assert '米2年債利回り（当日）' not in rows
+    fred = rows['米2年債利回り（前営業日比）']
+    assert (fred['symbol'], fred['baseline'], fred['change'], fred['asof']) == ('△', '10/07 4.77%', '-0.02pp', '10/08')
+    data['us_yields'] = {'error': '取得不可（Timeout）'}
+    assert '米2年債利回り（前営業日比）' in rows_of(data)
+
+
+def test_dollar_falls_back_to_the_broad_index_without_dxy_history():
+    data = sample()
+    del data['dxy']['recent_closes']
+    broad = rows_of(data)['ドル（FRB広義ドル指数・20営業日）']
+    assert (broad['symbol'], broad['change'], broad['baseline']) == ('▼', '+2.76%', '20営業日前 118.13（09/04）')
+
+
+def test_fedwatch_judges_the_probability_weighted_rate():
+    # 10/80/10 -> 20/0/80 moves the expected rate up although the lowest range gains: a headwind.
+    data = sample()
+    data['fedwatch']['target_rates'] = [
+        {'range': '3.50-3.75', 'current': 20.0, 'prev_day': 10.0}, {'range': '3.75-4.00', 'current': 0.0, 'prev_day': 80.0},
+        {'range': '4.00-4.25', 'current': 80.0, 'prev_day': 10.0}]
+    fed = rows_of(data)['政策金利の織り込み（前日比）']
+    assert (fed['symbol'], fed['change'], fed['display'], fed['baseline']) == \
+        ('▼', '+15.0bp', '期待 4.025%', '3.875%（提供表の前日列）')
+
+
+def fed_note(data):
+    return [n for n in board.bias_rows(data, NOW, 'daily', SOURCE)[2] if n.startswith('欠測: 政策金利の織り込み')]
+
+
+def test_fedwatch_uses_its_own_history_or_drops_the_row():
+    data = sample()
+    data['fedwatch']['target_rates'][1]['prev_day'] = None
+    data['fedwatch']['deltas']['prev_day']['by_range'] = {'3.75-4.00': -1.1, '4.00-4.25': 1.1}
+    fed = rows_of(data)['政策金利の織り込み（10/09比）']  # the history's own date, not 「前日」
+    assert (fed['symbol'], fed['change'], fed['baseline']) == ('▽', '+0.3bp', '3.921%（自前履歴 10/09）')
+    data['fedwatch']['deltas']['prev_day']['meeting'] = 'Dec 9, 2026'
+    assert '別の会合の履歴' in fed_note(data)[0]
+    data['fedwatch']['deltas']['prev_day'].update(meeting='Oct 28, 2026', source='履歴 6日前 (2026-10-07)')
+    assert '比較元が古い' in fed_note(data)[0]  # more than four days old for the Daily
+    data['fedwatch']['deltas']['prev_day'].update(source='履歴 4日前 (2026-10-09)', by_range={'3.75-4.00': -1.1})
+    assert '同じレンジ構成の履歴がない' in fed_note(data)[0]  # history for one range only: no baseline, no row
+    data = sample()
+    data['fedwatch']['target_rates'][0]['current'] = 9.5   # the table sums to 90%: incomplete, no vote
+    assert '確率の合計が100%前後でない' in fed_note(data)[0]
+    data = sample()
+    for rate in data['fedwatch']['target_rates']:
+        rate['current'] = 120.0
+    assert fed_note(data) and not any(label.startswith('政策金利') for label in rows_of(data))
+
+
+def test_extreme_positioning_votes_against_the_crowd_and_bad_percentiles_drop_the_row():
     data = sample()
     data['offchart_features']['positioning']['retail']['XAUUSD']['percentile'] = 92.0
     data['offchart_features']['positioning']['cot_gold_mm']['percentile'] = 8.0
-    items, _, _ = board.bias_rows(data, NOW, 'daily')
-    rows = {i['label']: i for i in items}
-    assert rows['個人のロング比率']['symbol'] == '▼' and rows['投機筋（COT Managed Money 純ロング）']['symbol'] == '▲'
-    data['offchart_features']['positioning']['retail']['XAUUSD']['percentile'] = None
-    items, _, limitations = board.bias_rows(data, NOW, 'daily')
-    assert {i['label']: i for i in items}['個人のロング比率']['symbol'] == '？' and limitations
-
-
-@pytest.mark.parametrize('line,direction,detail', [
-    ('時間軸別の向き: 長期 下向き（低）｜ 短期 上向き（中）｜ 総合 中立（低）', '中立（低）', '長期 下向き（低）｜ 短期 上向き（中）'),
-    ('時間軸別の向き： 長期 中立（低）｜ 短期 下向き（中）｜ 総合: 下向き（低）', '下向き（低）', '長期 中立（低）｜ 短期 下向き（中）'),
-    ('方向付与: 可（上向き・中） ｜ イベント停止: なし', '上向き・中', '方向付与: 可（上向き・中）'),
-    ('方向付与: 保留（理由: 材料混在） ｜ イベント停止: 10/13 22:30〜00:00 JST', '保留', '方向付与: 保留（理由: 材料混在）'),
-    ('XAUUSD：中立・低。当日は保留。', '中立・低', '')])
-def test_source_verdict_quotes_the_report_line(line, direction, detail):
-    tile = board.source_verdict('# R\n\n## セクション0: エグゼクティブサマリー\n\n信頼度: Low\n\n' + line + '\n')
-    assert tile['direction'] == direction and tile['detail'] == detail and tile['source_quote'] == line
-    assert board.source_verdict('no verdict here') is None
-    assert board.source_verdict('時間軸別の向き: 長期 上向き（低）｜ 短期 上向き（低）\n') is None  # no 総合 -> fallback tile
-
-
-def test_event_rows_show_previous_forecast_actual_difference_and_direction():
-    figure = board.event_figure(sample(), NOW, 'daily')['figure']
-    rows = {i['label']: i for i in figure['items']}
-    claims = rows['Initial Jobless Claims']
-    assert claims['status'] == '発表済み' and claims['actual'] == '231K' and claims['diff'] == '結果−予想 +6K（発表前記録の予想）'
-    assert claims['symbol'] == '▲' and claims['direction'] == '上向き' and claims['window'] == 'NY KZ'
-    assert rows['German CPI (MoM) (Sep)']['direction'] == '規則なし（米指標以外）'
-    cpi = rows['CPI (MoM) (Sep)']
-    assert cpi['status'] == '予定' and cpi['previous'] == '0.4%' and cpi['forecast'] == '0.6%' and cpi['actual'] == '—'
-    assert cpi['diff'] == '予想−前回 +0.2pp' and cpi['symbol'] == '▽' and cpi['window'] == 'NY KZ・停止 21:00〜22:30'
-    assert rows['Existing Home Sales (Sep)']['window'] == 'NY KZ・停止 22:30〜00:00'  # default window when no blackout entry
-    assert rows['Crude Oil Inventories']['direction'] == '規則なし（この指標は対象外）'
-    assert rows['GDP (MoM) (Aug)']['direction'] == '規則なし（米指標以外）' and rows['GDP (MoM) (Aug)']['window'].startswith('KZ外')
-    assert rows['Durable Goods Orders (MoM)']['diff'] == '差: 前回なし'
-    assert [i['importance'] for i in figure['items']] == ['高'] * len(figure['items'])
-    assert [i['status'] for i in figure['items']][:2] == ['発表済み', '発表済み']
-    for item in figure['items']:
-        for key in ('date', 'time', 'country', 'label', 'previous', 'forecast', 'actual', 'diff', 'direction', 'window'):
-            assert item[key] in item['source_quote'], key
-
-
-def test_empty_calendar_still_yields_a_quoted_row():
-    data = sample(); data['economic_calendar']['events'] = []
-    figure = board.event_figure(data, NOW, 'daily')['figure']
-    assert figure['items'][0]['label'] == '掲載なし' and '掲載なし' in figure['items'][0]['source_quote']
-
-
-def test_weekly_mode_uses_week_windows():
-    data = sample(); data['macro_surprise_hours'] = 168
-    items, _, _ = board.bias_rows(data, NOW, 'weekly')
-    labels = [i['label'] for i in items]
-    assert '米2年債利回り（前営業日比）' not in labels and '政策金利の織り込み（前日比）' not in labels
-    assert labels.count('政策金利の織り込み（前週比）') == 1
-    assert {i['group'] for i in items if i['label'].startswith('政策金利')} == {board.SHORT_GROUP['weekly']}
-    fed = {i['label']: i for i in items}['政策金利の織り込み（前週比）']
-    assert fed['symbol'] == '△' and fed['change'] == '+4.6pp' and fed['baseline'] == '前週 75.9%（提供表の前週列）'
-    assert any('Crude Oil Inventories' in label for label in labels)  # 7-day horizon (Durable Goods has no previous value)
-    figure = board.event_figure(data, NOW, 'weekly')['figure']
-    assert figure['title'].startswith('経済指標（直近7日')
-
-
-def test_bundle_integrates_board_and_table_with_bindings_and_quotes():
-    data = sample()
-    source = '# ICT Daily Bias Report — 2026-10-13\n\n## セクション0: エグゼクティブサマリー\n\n信頼度: Low ｜ スコア 0\n\n時間軸別の向き: 長期 下向き（低）｜ 短期 中立（低）｜ 総合 中立（低）\n'
-    result = bundle.observations(data, NOW, 'daily', source)
-    assert [f['id'] for f in result['figures']][:3] == ['bias', 'price', 'calendar']
-    assert result['figures'][0]['placement'] == 'band' and result['figures'][0]['verdicts'][2]['direction'] == '中立（低）'
-    assert 'bias' not in ' '.join(result['missing']) and 'calendar' not in ' '.join(result['missing'])
-    bundle.check_bindings(data, result, result['figures'])
-    data['fred']['DFII10']['change_20obs'] = 0.33
-    with pytest.raises(bundle.BundleError, match='does not match'):
-        bundle.check_bindings(data, result, result['figures'])
-    full = source + result['appendix']
-    if SKILL.exists():
-        sys.path.insert(0, str(SKILL))
-        import visual_blocks
-        checks = visual_blocks.validate(result['figures'], full)
-        assert len(checks) >= sum(len(f['items']) for f in result['figures']) + 3
-
-
-def test_missing_inputs_drop_rows_instead_of_inventing_them():
-    data = {'timestamp': NOW.isoformat(), 'report_quote': {'close': '4186.69'}}
-    assert board.bias_figure(data, NOW, 'daily') is None and board.event_figure(data, NOW, 'daily') is None
-    result = bundle.observations(deepcopy(data), NOW)
-    assert any(entry.startswith('bias') for entry in result['missing']) and any(entry.startswith('calendar') for entry in result['missing'])
-
-
-def test_fedwatch_falls_back_to_own_history_when_the_table_column_is_missing():
-    data = sample()
-    data['fedwatch']['target_rates'][0]['prev_day'] = None
-    rows = {i['label']: i for i in board.bias_rows(data, NOW, 'daily')[0]}
-    fed = rows['政策金利の織り込み（前日比）']
-    assert fed['change'] == '-1.1pp' and fed['symbol'] == '▽' and fed['baseline'] == '前日 81.6%（自前履歴 履歴 4日前 (2026-10-09)）'
-    data['fedwatch']['deltas']['prev_day']['by_range'] = {}
-    fed = {i['label']: i for i in board.bias_rows(data, NOW, 'daily')[0]}['政策金利の織り込み（前日比）']
-    assert fed['symbol'] == '？' and fed['baseline'] == '前日の確率は取得不可'
-    data['fedwatch']['target_rates'][0]['current'] = 120.0  # impossible probability -> no row
-    assert '政策金利の織り込み（前日比）' not in {i['label'] for i in board.bias_rows(data, NOW, 'daily')[0]}
-
-
-def test_stale_or_out_of_range_inputs_do_not_vote():
-    data = sample()
-    data['fred']['DFII10']['stale'] = True
+    rows = rows_of(data)
+    # Crowding is a weak vote (half), not a confirmed reversal.
+    assert rows['個人のロング比率（MyFXBook）']['symbol'] == '▽' and rows['投機筋の買い越し（COT Managed Money）']['symbol'] == '△'
     data['offchart_features']['positioning']['retail']['XAUUSD']['percentile'] = 101.0
-    items, _, limitations = board.bias_rows(data, NOW, 'daily')
-    rows = {i['label']: i for i in items}
-    assert rows['実質金利（米10年TIPS）']['symbol'] == '？' and rows['実質金利（米10年TIPS）']['direction'] == '古い値・判定保留'
-    assert rows['実質金利（米10年TIPS）']['change'] == '+0.32pp' and rows['実質金利（米10年TIPS）']['asof'].endswith('・古い値')
-    assert rows['個人のロング比率']['symbol'] == '？' and limitations
-    figure = board.bias_figure(data, NOW, 'daily')['figure']
-    assert figure['verdicts'][0]['detail'] == '▲2 △0 ▼1 ▽0'  # the stale row is shown but not counted
+    assert '個人のロング比率（MyFXBook）' not in rows_of(data)
 
 
-def test_released_rows_use_the_prerelease_record_and_surprises_are_time_filtered():
+def test_surprises_need_a_prerelease_record_inside_the_window():
     data = sample()
-    for ev in data['economic_calendar']['events']:
-        if ev['indicator'] == 'Initial Jobless Claims':
-            ev['forecast'] = '230K'  # provider revised the forecast after release
-    rows = {i['label']: i for i in board.event_figure(data, NOW, 'daily')['figure']['items']}
-    assert rows['Initial Jobless Claims']['forecast'] == '225K' and rows['Initial Jobless Claims']['diff'] == '結果−予想 +6K（発表前記録の予想）'
-    data['macro_surprises'][1]['released_at_jst'] = '2026-10-10T21:30:00+09:00'  # outside the 36-hour window
-    labels = [i['label'] for i in board.bias_rows(data, NOW, 'daily')[0]]
-    assert not any(label.startswith('指標サプライズ: Initial') for label in labels)
-    assert any(label.startswith('指標サプライズ（') for label in labels)
-
-
-def test_unit_mismatch_between_forecast_and_previous_is_named():
+    data['macro_surprises'][0]['forecast_provenance'] = '発表後の取得'
+    assert '指標の結果: 新規失業保険申請' not in rows_of(data)
     data = sample()
-    for ev in data['economic_calendar']['events']:
-        if ev['indicator'] == 'Crude Oil Inventories':
-            ev['previous'] = '0.4%'
-    rows = {i['label']: i for i in board.event_figure(data, NOW, 'daily')['figure']['items']}
-    assert rows['Crude Oil Inventories']['diff'] == '差: 単位不一致' and rows['Crude Oil Inventories']['direction'] == '判定なし'
+    data['macro_surprises'][0]['released_at_jst'] = '2026-10-09T21:30:00+09:00'  # before the previous weekday
+    assert '指標の結果: 新規失業保険申請' not in rows_of(data)
+    data['macro_surprises'][0]['released_at_jst'] = '2026-10-12T00:00:00+09:00'  # the previous weekday from 00:00 JST
+    assert '指標の結果: 新規失業保険申請' in rows_of(data)
+    monday = datetime.fromisoformat('2026-10-12T18:00:00+09:00')  # Monday looks back to Friday 00:00
+    data['macro_surprises'][0]['released_at_jst'] = '2026-10-09T21:30:00+09:00'
+    assert any(i['label'] == '指標の結果: 新規失業保険申請' for i in board.bias_rows(data, monday, 'daily', SOURCE)[0])
+    data['macro_surprises'][0]['actual'] = data['macro_surprises'][0]['forecast']
+    data['macro_surprises'][0]['released_at_jst'] = '2026-10-12T21:30:00+09:00'
+    same = rows_of(data)['指標の結果: 新規失業保険申請']
+    assert (same['symbol'], same['direction']) == ('—', '予想どおり（中立）')
 
 
-def test_verdict_tile_without_a_fixed_line_quotes_its_own_appendix_row():
-    result = board.bias_figure(sample(), NOW, 'daily', source='# R\n\n本文のみ。\n')
-    tile = result['figure']['verdicts'][2]
-    assert tile['direction'] == '記載なし' and tile['source_quote'] in result['rows'] and '記載なし' in tile['source_quote']
+def test_simultaneous_releases_are_one_vote():
+    data = sample()
+    cpi = lambda name, actual, forecast: {
+        'date': 'Tuesday, October 13, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': name,
+        'actual': actual, 'previous': '0.3%', 'forecast': forecast, 'released_at_jst': '2026-10-13T21:30:00+09:00',
+        'forecast_provenance': '発表前記録（2026-10-12 09:10 取得・Investing.com）'}
+    data['macro_surprises'] = [cpi('CPI (MoM) (Sep)', '0.2%', '0.3%'), cpi('Core CPI (MoM) (Sep)', '0.2%', '0.3%'),
+                               cpi('CPI (YoY) (Sep)', '3.1%', '3.0%')]
+    rows = [r for r in board.bias_rows(data, NOW, 'daily', SOURCE)[0] if r['label'].startswith('指標の結果')]
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row['label'], row['display'], row['symbol'], row['direction']) == \
+        ('指標の結果: CPI・コアCPI', '3系列: 追い風 2・逆風 1・予想どおり 0', '△', '上向き（弱）')  # majority, not unanimous
+    assert row['change'] == 'CPI（前月比・9月） -0.1pp／コアCPI（前月比・9月） -0.1pp／CPI（前年比・9月） +0.1pp'
+    assert row['viz'] == {'type': 'votes', 'up': 2, 'down': 1, 'flat': 0}
+    data['macro_surprises'] = data['macro_surprises'][:2]
+    row = [r for r in board.bias_rows(data, NOW, 'daily', SOURCE)[0] if r['label'].startswith('指標の結果')][0]
+    assert (row['symbol'], row['direction']) == ('▲', '上向き')  # unanimous: one strong vote
+    data['macro_surprises'] = data['macro_surprises'][:1]
+    row = [r for r in board.bias_rows(data, NOW, 'daily', SOURCE)[0] if r['label'].startswith('指標の結果')][0]
+    assert (row['symbol'], row['direction']) == ('△', '上向き（弱）')  # one series alone is weak
+
+
+def test_weekly_rows_use_week_windows_and_thresholds():
+    data = sample()
+    rows = rows_of(data, 'weekly')
+    assert '米2年債利回り（当日）' not in rows and 'ドル指数DXY（当日）' not in rows
+    us2y = rows['米2年債利回り（5営業日）']
+    assert us2y['group'] == board.GROUPS['short']['weekly'] and us2y['rule'].startswith('上昇は金の逆風') and '±0.10pp' in us2y['rule']
+    dxy5 = rows['ドル指数DXY（5営業日）']
+    assert dxy5['symbol'] == '▽' and dxy5['change'] == '+0.49%'  # under the 0.7% line
+    fed = rows['政策金利の織り込み（前週比）']
+    assert (fed['symbol'], fed['change'], fed['baseline']) == ('△', '-1.2bp', '3.935%（提供表の前週列）')  # under 2.5bp
+    assert us2y['viz']['type'] == 'spark' and len(us2y['viz']['values']) == 6  # the judged five days only
+    assert us2y['group'] == '短期（今後1週間）'
+
+
+def test_format_board_lines_gives_the_parent_the_same_rows_without_rules():
+    lines = board.format_board_lines(sample(), 'daily')
+    assert lines[0] == '### バイアス盤の材料（コード集計・HTMLに表示）'
+    assert any(line.startswith('- 長期（数週間〜）｜実質金利（米10年TIPS）: 2.87%') for line in lines)
+    assert not any('規則:' in line or 'ニュース・地政学（原稿の判断）' in line for line in lines)
+    assert '- 集計 長期: 要因ごと 実質金利 ▼・ドル ▼・中銀 ▲ → ▽ 下向き（弱）' in lines
+    assert '- 集計 短期: 要因ごと 金利・織り込み —・ドル ▲・発表前の予測 △・ETF ▽・建玉の偏り — → △ 上向き（弱）' in lines
+    assert lines[-1].startswith('- 「時間軸別の向き:」は原稿の判断') and '集計と違う理由:' in lines[-1]
+    assert board.format_board_lines({'timestamp': 'not a time'}, 'daily')[1].startswith('- 集計できず')
+    # The board's "now" is the end of collection: a release just before it counts as released.
+    data = sample()
+    data['timestamp'] = '2026-10-13T21:20:00+09:00'
+    data['macro_surprises'][0]['released_at_jst'] = '2026-10-13T21:30:00+09:00'
+    assert not any('指標の結果: 新規失業保険申請' in line for line in board.format_board_lines(data, 'daily'))
+    data['collection_finished_at'] = '2026-10-13T21:40:00+09:00'
+    assert any('指標の結果: 新規失業保険申請' in line for line in board.format_board_lines(data, 'daily'))
+
+
+def test_missing_inputs_drop_figures_instead_of_inventing_them():
+    data = {'timestamp': NOW.isoformat(), 'report_quote': {'close': '4177.47'}}
+    assert board.bias_figure(data, NOW, 'daily') is None
+    assert board.liquidity_figure(data, NOW, 'daily') is None and board.event_figure(data, NOW, 'daily') is None
+    result = bundle.observations(deepcopy(data), NOW)
+    assert [entry.split(':')[0] for entry in result['missing']] == ['bias', 'liquidity', 'calendar']
+
+
+# ------------------------------------------------------------------ liquidity map
+
+def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
+    result = board.liquidity_figure(sample(), NOW, 'daily', SOURCE)
+    items = result['figure']['items']
+    assert [i['label'] for i in items] == [
+        '前月高値（9月）', '前日高値（10/12）', '前週高値（10/05週）',
+        '新規失業保険申請 発表15分足高値（10/12 21:30）', 'NY 0時の始値', 'London安値（当日）', '現在値',
+        '新規失業保険申請 発表15分足安値（10/12 21:30）', '前日安値（10/12）', '前週安値（10/05週）']
+    # Retail average entries are not liquidity: a reference line below the ladder.
+    assert [i['label'] for i in result['figure']['aux']] == ['個人ロングの平均建値', '個人ショートの平均建値']
+    by = {i['label']: i for i in items}
+    pdh = by['前日高値（10/12）']
+    assert (pdh['pool'], pdh['icon'], pdh['state_word'], pdh['distance_text']) == ('BSL', '●', '未到達', '+38.74（+0.93%）')
+    assert pdh['proximity'] == pytest.approx(38.74 / 60.0)
+    assert pdh['target'] == '◎ 目的地の仮説' and pdh['source_quote'].endswith('｜◎ 目的地の仮説')
+    assert not any(i['kind'] == 'draw' for i in items)  # the draw marks its level instead of adding a row
+    pwh = by['前週高値（10/05週）']
+    assert (pwh['icon'], pwh['touched']) == ('✓', '最初に抜けた足 10/12 09:00 JST（アジア）')
+    assert by['London安値（当日）']['icon'] == '↘' and by['London安値（当日）']['pool'] == 'SSL'  # left through the low
+    assert by['新規失業保険申請 発表15分足安値（10/12 21:30）']['state_word'] == '掃引済み・Tier B'
+    assert by['現在値']['state_word'] == '取得 10/13 22:14 JST'
+    assert by['NY 0時の始値']['state_word'] == '当日の始値（参考）'  # not premium / discount
+    assert result['figure']['aux'][0]['state_word'] == 'MyFXBook・10/13 18:03 JST'
+    assert [i['label'] for i in items if i.get('offscale')] == ['前月高値（9月）', '前週安値（10/05週）']
+    assert '未到達（確定足で一度も抜けていない）' in result['figure']['legend'] and '注文そのものは観測していません' in result['figure']['legend']
+    assert result['figure']['cautions'] == []
+    band = result['figure']['band']
+    assert band == {'lower': 4117.47, 'upper': 4237.47, 'label': '想定変動 ±1σ（1日・±60.0ドル）'}
+    assert '流動性｜想定変動 ±1σ（1日・±60.0ドル）: 4,117.47〜4,237.47（GVZ 22.79・2026-10-09）' in result['rows']
+    for item in items + result['figure']['aux']:
+        shown_fields_are_quoted(item, ('label', 'price_text', 'pool', 'state_word', 'touched', 'distance_text', 'target'))
+    assert 'キリ' not in str(result) and 'プレミアム' not in str(result) and '損切りが残る' not in str(result)
+    data = sample()
+    del data['report_quote']['fetched_at']
+    data['xau_levels']['cautions'] = ['最終確定足が10/13 16:00 JSTで、その後の5時間分の足がない。以降の値動きは状態に入っていない']
+    result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
+    assert next(i for i in result['figure']['items'] if i['kind'] == 'current')['state_word'] == '取得時刻の記録なし'
+    assert result['figure']['cautions'][0]['source_quote'] == '流動性｜注意: ' + data['xau_levels']['cautions'][0]
+    assert result['rows'][0] == result['figure']['cautions'][0]['source_quote']
+
+
+def test_weekly_map_widens_the_range_and_scales_the_band():
+    result = board.liquidity_figure(sample(), NOW, 'weekly', SOURCE)
+    assert result['figure']['band']['label'] == '想定変動 ±1σ（1週・±134.2ドル）'
+    assert [i['label'] for i in result['figure']['items'] if i.get('offscale')] == ['前月高値（9月）']
+
+
+def test_a_draw_must_be_a_listed_level_with_the_same_price_and_side():
+    source = SOURCE.replace(DRAW_LINE, '方向: down / 水準: 前々日安値（10/09） / 価格: 4,140.00')
+    draw = board._draw(source)
+    assert (draw['direction'], draw['level'], draw['price'], draw['window']) == ('down', '前々日安値（10/09）', 4140.0, None)
+    with pytest.raises(ValueError, match='not one of the listed levels'):
+        board.liquidity_figure(sample(), NOW, 'daily', source)
+    moved = SOURCE.replace(DRAW_LINE, '方向: 上 / 水準: 前日高値（10/12） / 価格: 4,220.00')  # right name, other price
+    with pytest.raises(ValueError, match='not one of the listed levels'):
+        board.liquidity_figure(sample(), NOW, 'daily', moved)
+    wrong_side = SOURCE.replace(DRAW_LINE, '方向: 下 / 水準: 前日高値（10/12） / 価格: 4,216.21')
+    with pytest.raises(ValueError, match='wrong side'):
+        board.liquidity_figure(sample(), NOW, 'daily', wrong_side)
+    twice = SOURCE + '\n## その日の目的地（draw）\n\n' + DRAW_LINE + '\n'
+    with pytest.raises(ValueError, match='more than one'):
+        board._draw(twice)
+    assert board._draw('## その日の目的地\n\n方向: 上 / 水準: 前日高値\n') is None
+    assert board._draw('## その日の目的地（draw）\n\n- 方向: none / 水準: none / 価格: None\n') is None
+    # The pipeline's section (numeric_validation.draw_markdown) carries the hypothesis window.
+    timed = SOURCE.replace(DRAW_LINE, '- ' + DRAW_LINE + '\n- 対象時間（JST）: 2026-10-13T22:40:00+09:00 ～ 2026-10-14T06:00:00+09:00')
+    pdh = next(i for i in board.liquidity_figure(sample(), NOW, 'daily', timed)['figure']['items'] if i.get('target'))
+    assert (pdh['label'], pdh['target']) == ('前日高値（10/12）', '◎ 目的地の仮説（10/13 22:40〜翌06:00）')
+    assert pdh['source_quote'].endswith('｜◎ 目的地の仮説（10/13 22:40〜翌06:00）')
+
+
+def test_no_levels_no_map():
+    data = sample()
+    data['xau_levels'] = {'error': '1時間足なし', 'levels': []}
+    assert board.liquidity_figure(data, NOW, 'daily') is None
+
+
+# ------------------------------------------------------------------ US event table
+
+def test_event_table_keeps_us_tier_a_and_b_inside_their_windows():
+    figure = board.event_figure(sample(), NOW, 'daily')['figure']
+    assert [i['label'] for i in figure['items']] == [
+        '新規失業保険申請', 'CPI（前月比・9月）', 'コアCPI（前月比・9月）', '小売売上高（前月比・9月）',
+        '雇用統計 非農業部門雇用者数（9月）']
+    by = {i['label']: i for i in figure['items']}
+    claims = by['新規失業保険申請']
+    assert (claims['tier'], claims['status'], claims['previous'], claims['forecast'], claims['actual']) == \
+        ('B', '発表済み', '220K', '225K', '231K')  # the pre-release forecast, not the revised 230K
+    assert (claims['diff'], claims['symbol'], claims['direction']) == ('結果−予想 +6K', '△', '上向き（弱）')  # one series
+    assert claims['memo'] == '発表15分足 高 4,195.50（未到達）／安 4,168.20（掃引済み）'
+    cpi = by['CPI（前月比・9月）']
+    assert (cpi['tier'], cpi['status'], cpi['date'], cpi['time']) == ('A', '予定', '10/14（水）', '21:30')
+    assert (cpi['diff'], cpi['symbol'], cpi['direction']) == ('nowcast 0.53%（予想との差 -0.07pp）', '△', '上向き（弱・予測）')
+    assert cpi['memo'] == '停止 21:00〜22:30・NY KZ'
+    assert by['コアCPI（前月比・9月）']['memo'] == ''  # the same release time: the stop window is shown once
+    retail = by['小売売上高（前月比・9月）']
+    assert (retail['diff'], retail['symbol'], retail['direction']) == ('発表前', '—', '発表待ち')
+    for item in figure['items']:
+        shown_fields_are_quoted(item, ('date', 'time', 'label', 'status', 'previous', 'forecast', 'actual', 'diff',
+                                       'direction', 'symbol', 'memo'))
+    assert figure['title'] == '米国の重要指標（直近の結果とこの先の予定）'
+
+
+def test_weekly_table_covers_last_week_and_the_next_eight_days():
+    labels = [i['label'] for i in board.event_figure(sample(), NOW, 'weekly')['figure']['items']]
+    assert labels[0] == 'ミシガン大 1年先インフレ期待（10月）' and '耐久財受注（前月比・9月）' in labels
+    assert 'FOMC 政策金利' not in labels  # 10/29 is beyond eight days
+    figure = board.event_figure(sample(), NOW, 'weekly')['figure']
+    assert figure['title'] == '米国の重要指標（10/06〜10/13の結果と10/21までの予定）'  # dates, not 「来週」
+
+
+@pytest.mark.parametrize('when,expected', [
+    ('2026-10-14T16:30:00+09:00', 'London KZ'), ('2026-10-14T21:30:00+09:00', 'NY KZ'),
+    ('2026-10-28T16:30:00+09:00', 'KZ外'),        # UK on winter time: London KZ is 17-20 JST
+    ('2026-10-28T21:30:00+09:00', 'NY KZ'),       # the US still on summer time
+    ('2026-11-11T21:30:00+09:00', 'KZ外'), ('2026-11-11T22:30:00+09:00', 'NY KZ')])
+def test_killzones_follow_each_market_clock(when, expected):
+    assert board._killzone(datetime.fromisoformat(when)) == expected
+
+
+def test_old_nowcasts_are_not_used():
+    data = sample()
+    for point in data['inflation_nowcast']['months']['2026-9'].values():
+        point['as_of'] = '10/01'
+    assert not any(label.startswith('予測との差') for label in rows_of(data))
+    cpi = next(i for i in board.event_figure(data, NOW, 'daily')['figure']['items'] if i['label'] == 'CPI（前月比・9月）')
+    assert cpi['diff'] == '発表前'
+
+
+def test_released_without_a_prerelease_record_is_labelled_and_missing_actual_waits():
+    data = sample()
+    data['macro_surprises'] = []
+    claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
+    assert claims['forecast'] == '230K' and claims['diff'] == '結果−予想 +1K・予想は発表後の取得'
+    data['economic_calendar']['events'][1]['actual'] = 'N/A'
+    claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
+    assert (claims['diff'], claims['direction']) == ('結果待ち', '結果待ち')
+
+
+def test_empty_window_yields_one_quoted_row():
+    data = sample()
+    data['economic_calendar']['events'] = [ev('Tuesday, October 13, 2026', '23:00', 'Existing Home Sales (Sep)')]
+    data['macro_surprises'] = []
+    items = board.event_figure(data, NOW, 'daily')['figure']['items']
+    assert len(items) == 1 and items[0]['label'] == '該当なし（Tier A/Bの米指標なし）' and items[0]['empty'] is True
+    assert items[0]['date'] == '10/12からの結果と、Tier Aは10/20・Tier Bは10/15までの予定'
+    shown_fields_are_quoted(items[0], ('date', 'time', 'label', 'status', 'previous', 'forecast', 'actual', 'diff',
+                                       'direction', 'symbol', 'memo'))
+
+
+def test_released_records_the_calendar_dropped_stay_in_the_table():
+    data = sample()
+    del data['economic_calendar']['events'][1]  # the calendar no longer lists the claims release
+    claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
+    assert (claims['label'], claims['forecast'], claims['actual'], claims['diff']) == \
+        ('新規失業保険申請', '225K', '231K', '結果−予想 +6K')
+    result = board.event_figure(data, NOW, 'daily')
+    assert result['bindings'][0]['path'] == 'macro_surprises.0'
+
+
+def test_stop_windows_are_merged_per_release_time_and_shown_while_active():
+    data = sample()
+    data['offchart_features'] = {**data['offchart_features'], 'event_blackouts': [
+        {'event': 'Core CPI (MoM) (Sep)', 'time_jst': '2026-10-14T21:30:00+09:00',
+         'window_start': '2026-10-14T20:45:00+09:00', 'window_end': '2026-10-14T22:30:00+09:00'}]}
+    items = board.event_figure(data, NOW, 'daily')['figure']['items']
+    cpi, core = items[1], items[2]
+    assert cpi['memo'] == '停止 20:45〜22:30・NY KZ' and core['memo'] == ''  # the union of both windows, once
+    assert (cpi['group_start'], core['group_start']) == (True, False)
+    during = datetime.fromisoformat('2026-10-14T21:45:00+09:00')
+    items = board.event_figure(sample(), during, 'daily')['figure']['items']
+    cpi = next(i for i in items if i['label'] == 'CPI（前月比・9月）')
+    assert cpi['status'] == '発表済み' and cpi['memo'].startswith('停止中（21:00〜22:30）')
+
+
+def test_lead_chips_show_an_active_stop_window_and_the_next_us_release():
+    assert board.lead_chips(sample(), NOW, 'daily') == ['次の米指標: CPI・コアCPI（Tier A） 10/14（水）21:30 JST']
+    during = datetime.fromisoformat('2026-10-14T21:45:00+09:00')
+    assert board.lead_chips(sample(), during, 'daily') == [
+        '停止中: CPI・コアCPI（10/14（水）21:30 JST 発表）〜22:30',
+        '次の米指標: 小売売上高（Tier B） 10/15（木）21:30 JST']
+    data = sample()
+    data['economic_calendar']['events'] = []
+    assert board.lead_chips(data, NOW, 'daily') == []
+
+
+# ------------------------------------------------------------------ bundle
+
+def test_bundle_builds_three_figures_with_bindings_quotes_and_a_lead_chip():
+    data = sample()
+    result = bundle.observations(data, NOW, 'daily', SOURCE)
+    assert [f['id'] for f in result['figures']] == ['bias', 'liquidity', 'calendar'] and result['missing'] == []
+    assert [x['text'] for x in result['lead']] == [
+        '次の米指標: CPI・コアCPI（Tier A） 10/14（水）21:30 JST',
+        '直近の未到達: 上 新規失業保険申請 発表15分足高値（10/12 21:30） 4,195.50（+18.03）／下 前週安値（10/05週） 4,061.73（-115.74）']
+    full = SOURCE + result['appendix']
+    for figure in result['figures']:
+        for item in figure['items']:
+            assert item['source_quote'] in full
+    bundle.check_bindings(data, result, result['figures'])
+    changed = deepcopy(data)
+    changed['xau_levels']['levels'][1]['price'] = 4216.5
+    with pytest.raises(bundle.BundleError, match='does not match'):
+        bundle.check_bindings(changed, result, result['figures'])
+    changed = deepcopy(data)
+    changed['xau_levels']['levels'][1]['state'] = 'swept'
+    with pytest.raises(bundle.BundleError, match='state does not match'):
+        bundle.check_bindings(changed, result, result['figures'])
+    changed = deepcopy(data)
+    changed['fred']['DFII10']['recent'][-3][1] = 9.99
+    with pytest.raises(bundle.BundleError, match='sparkline'):
+        bundle.check_bindings(changed, result, result['figures'])
+
+
+def prepared(tmp_path, data, source=SOURCE, mode='daily'):
+    import json
+    from pathlib import Path
+    data_path = tmp_path / 'r.data.json'
+    data_path.write_text(json.dumps(data, ensure_ascii=False))
+    md = tmp_path / 'r.md'
+    md.write_text(source, encoding='utf-8')
+    out = bundle.prepare(md, data_path, mode, now=NOW + timedelta(minutes=10))
+    read = lambda key: json.loads(Path(out[key]).read_text())
+    return read('bundle_path'), read('visuals_path'), md.read_text(encoding='utf-8'), read('summary_path')
+
+
+def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_path):
+    data = sample()
+    data['collection_finished_at'] = '2026-10-13T22:20:00+09:00'
+    manifest, figures, source, summary = prepared(tmp_path, data)
+    assert manifest['schemaVersion'] == 3
+    bundle.check_regenerated(data, manifest, figures, source, summary)
+    assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
+    assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source
+    tampered = [
+        ('Figures differ', lambda m, f, s, c: f[0]['items'][0].update(symbol='▲')),
+        ('Figures differ', lambda m, f, s, c: f[1]['items'].pop()),
+        ('Bindings differ', lambda m, f, s, c: m['bindings'].pop()),
+        ('Bindings differ', lambda m, f, s, c: m.update(missing=['calendar: 図の作成に必要なデータが不足'])),
+        ('Lead chips or limitations', lambda m, f, s, c: c['chips'].pop(0))]
+    for message, change in tampered:
+        m, f, c = deepcopy(manifest), deepcopy(figures), deepcopy(summary)
+        change(m, f, source, c)
+        with pytest.raises(bundle.BundleError, match=message):
+            bundle.check_regenerated(data, m, f, source, c)
+    with pytest.raises(bundle.BundleError, match='Appendix rows differ'):
+        bundle.check_regenerated(data, manifest, figures, source.replace('｜向き: ▼ 下向き｜', '｜向き: ▲ 上向き｜', 1), summary)
+    changed = deepcopy(data)
+    changed['fred']['DFII10']['change_20obs'] = -0.32   # the collection itself changed: the rebuild differs
+    with pytest.raises(bundle.BundleError, match='differ'):
+        bundle.check_regenerated(changed, manifest, figures, source, summary)
+    # The parent's own limitations and a notice chip may be added; the code-made ones must stay.
+    extra = deepcopy(summary)
+    extra['chips'].insert(0, {'text': '過去資料の修正版です。', 'source_quote': '過去資料の修正版です。'})
+    extra['limitations'].append({'title': '制約', 'text': '原稿の制約', 'source_quote': '原稿の制約'})
+    bundle.check_regenerated(data, manifest, figures, source, extra)
+    old = {**manifest, 'schemaVersion': 2}       # editions drawn by earlier code are not rebuilt
+    bundle.check_regenerated(data, old, [], source, summary)
+
+
+def test_validation_recomputes_the_levels_from_the_stored_bars(tmp_path):
+    import json
+    from scrapers import xau_bars as xb
+    from scrapers import xau_levels as xl
+    from tests.test_offchart_collectors import scenario, utc
+    bars, m15, events = scenario()
+    now = utc('2026-10-13T13:10')
+    data = sample()
+    data['xau_levels'] = json.loads(json.dumps(xl.build_levels(bars, m15, now, price=4177.47, events=data['economic_calendar']['events'])))
+    data['xau_bars_used'] = xb.snapshot(*xl.level_inputs(bars, m15, now))
+    manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
+    bundle.check_regenerated(data, manifest, figures, source, summary)
+    changed = deepcopy(data)
+    changed['xau_bars_used']['h1'][-30][2] += 50.0          # one stored bar edited: its digest no longer matches
+    with pytest.raises(bundle.BundleError, match='Stored bars cannot be used'):
+        bundle.check_regenerated(changed, manifest, figures, source, summary)
+    changed = deepcopy(data)
+    changed['xau_bars_used'] = xb.snapshot(*xl.level_inputs(bars[:-5], m15, now))  # other bars, a valid digest
+    with pytest.raises(bundle.BundleError, match='Liquidity levels differ'):
+        bundle.check_regenerated(changed, manifest, figures, source, summary)
+    changed = deepcopy(data)
+    del changed['xau_levels']['inputs']
+    with pytest.raises(bundle.BundleError, match='do not record when'):
+        bundle.check_regenerated(changed, manifest, figures, source, summary)
+
+
+def test_release_rows_are_rechecked_against_their_records():
+    data = sample()
+    result = bundle.observations(data, NOW, 'daily', SOURCE)
+    texts = [b for b in result['bindings'] if 'value' not in b]
+    assert {b['figure'] for b in texts} == {'bias', 'calendar'}
+    assert next(b for b in texts if b['figure'] == 'bias')['members'] == ['macro_surprises.0']
+    bundle.check_bindings(data, result, result['figures'])
+    calendar_path = next(b['path'] for b in texts if b['figure'] == 'calendar' and b['path'].startswith('economic_calendar'))
+    for path, field, value in ((calendar_path, 'previous', '9.9%'), ('macro_surprises.0', 'actual', '240K')):
+        changed = deepcopy(data)
+        bundle.resolve(changed, path)[field] = value
+        with pytest.raises(bundle.BundleError, match='does not match its source record'):
+            bundle.check_bindings(changed, result, result['figures'])
+    dropped = {**result, 'bindings': [b for b in result['bindings'] if b.get('figure') != 'calendar']}
+    with pytest.raises(bundle.BundleError, match='Text bindings are missing'):
+        bundle.check_bindings(data, dropped, result['figures'])
+    bundle.check_bindings(data, {**dropped, 'schemaVersion': 1}, result['figures'])  # editions before text bindings
+    changed = deepcopy(data)
+    changed['inflation_nowcast']['months']['2026-9']['cpi']['value'] = 0.61
+    with pytest.raises(bundle.BundleError, match='Figure number does not match'):
+        bundle.check_bindings(changed, result, result['figures'])

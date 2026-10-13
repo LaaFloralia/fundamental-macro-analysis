@@ -408,6 +408,74 @@ async def _scrape_investing() -> Optional[dict]:
     return None
 
 
+def _with_history(data: dict, htf_levels: dict, recent: list) -> dict:
+    """Fill the levels a source lacks from the daily history (IPDA always from history)."""
+    data["error"] = None
+    data["note"] = None
+    if htf_levels:
+        notes = []
+        for key in ["pdh", "pdl", "pwh", "pwl", "pmh", "pml",
+                    "ipda_20_high", "ipda_20_low", "ipda_40_high", "ipda_40_low",
+                    "ipda_60_high", "ipda_60_low"]:
+            if data.get(key) is None and htf_levels.get(key) is not None:
+                data[key] = htf_levels[key]
+                if key.startswith("ipda"):
+                    continue
+                notes.append(key.upper())
+        if notes:
+            data["note"] = f"{'/'.join(notes)}はヒストリカルデータから算出"
+        for ipda_key in ["ipda_20_high", "ipda_20_low", "ipda_40_high", "ipda_40_low",
+                         "ipda_60_high", "ipda_60_low"]:
+            if htf_levels.get(ipda_key) is not None:
+                data[ipda_key] = htf_levels[ipda_key]
+    data["_recent"] = recent
+    return data
+
+
+def _scrape_cnbc(getter=None, now: Optional[datetime] = None) -> Optional[dict]:
+    """ICE U.S. Dollar Index (.DXY) from the CNBC quote service used for the same-day yields.
+
+    The change is last minus the previous close. A quote outside the current New York trading
+    date (17:00 boundary) is flagged stale, as for the yields.
+    """
+    from datetime import timezone
+    from scrapers.us_yields import URL, USER_AGENT as CNBC_AGENT, trading_date
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    params = {"symbols": ".DXY", "requestMethod": "itv", "noform": "1", "partnerId": "2",
+              "fund": "1", "exthrs": "1", "output": "json", "events": "1"}
+    try:
+        if getter is None:
+            import requests
+            response = requests.get(URL, params=params, headers={"User-Agent": CNBC_AGENT}, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+        else:
+            payload = getter(URL, params)
+        quotes = ((payload or {}).get("FormattedQuoteResult") or {}).get("FormattedQuote") or []
+        q = next((x for x in quotes if x.get("symbol") == ".DXY"), None) or {}
+        last, prev = _parse_float(q.get("last")), _parse_float(q.get("previous_day_closing"))
+        at = datetime.strptime(str(q.get("last_time")), "%Y-%m-%dT%H:%M:%S.%f%z")
+    except Exception as e:  # network, HTTP, JSON and time-format failures
+        print(f"  [WARN] CNBC DXY: {type(e).__name__}")
+        return None
+    if last is None or not prev:
+        return None
+    change = round(last - prev, 4)
+    return {
+        "source": "CNBC",
+        "current_price": last,
+        "prev_close": prev,
+        "change": change,
+        "change_pct": round(change / prev * 100, 4),
+        "pdh": None, "pdl": None, "pwh": None, "pwl": None, "pmh": None, "pml": None,
+        "ipda_20_high": None, "ipda_20_low": None, "ipda_40_high": None, "ipda_40_low": None,
+        "ipda_60_high": None, "ipda_60_low": None,
+        "estimated": False,
+        "quote_time": at.isoformat(),
+        "stale": at > now or trading_date(at) != trading_date(now),
+    }
+
+
 async def _scrape_marketwatch() -> Optional[dict]:
     """MarketWatch からDXYデータを取得する。"""
     url = "https://www.marketwatch.com/investing/index/dxy"
@@ -562,7 +630,25 @@ def _estimate_from_eurusd() -> Optional[dict]:
         return None
 
 
+def _recent_closes(ohlc: List[Dict], n: int = 21) -> List[list]:
+    """直近 n 本の日足終値（古い順 [YYYY-MM-DD, close]）。20 営業日の変化と図のミニ折れ線に使う。"""
+    out = []
+    for d in reversed(ohlc[:n]):
+        try:
+            out.append([d["date"].strftime("%Y-%m-%d"), float(d["close"])])
+        except (KeyError, AttributeError, TypeError, ValueError):
+            continue
+    return out
+
+
 async def scrape_dxy() -> dict:
+    result = await _scrape_dxy()
+    if isinstance(result, dict) and "_recent" in result:
+        result["recent_closes"] = result.pop("_recent")
+    return result
+
+
+async def _scrape_dxy() -> dict:
     """DXYデータを取得する。優先順にソースを試行する。
 
     Returns:
@@ -585,70 +671,39 @@ async def scrape_dxy() -> dict:
     # ヒストリカルデータを先に取得（レベル算出に使用）
     ohlc = await _fetch_historical_ohlc()
     htf_levels = _calculate_levels(ohlc) if ohlc else {}
+    recent = _recent_closes(ohlc) if ohlc else []
 
     # 1. Investing.com
     print("  DXY: Investing.com を試行中...")
     data = await _scrape_investing()
     if data and data.get("current_price") is not None:
         print(f"  [OK]    DXY: Investing.com から取得 ({data['current_price']})")
-        data["error"] = None
-        data["note"] = None
-
-        # ヒストリカルから算出したHTFレベルで補完
-        if htf_levels:
-            notes = []
-            for key in ["pdh", "pdl", "pwh", "pwl", "pmh", "pml",
-                        "ipda_20_high", "ipda_20_low", "ipda_40_high", "ipda_40_low",
-                        "ipda_60_high", "ipda_60_low"]:
-                if data.get(key) is None and htf_levels.get(key) is not None:
-                    data[key] = htf_levels[key]
-                    if key.startswith("ipda"):
-                        continue
-                    notes.append(key.upper())
-            if notes:
-                data["note"] = f"{'/'.join(notes)}はヒストリカルデータから算出"
-            # IPDA は常にヒストリカルから設定
-            for ipda_key in ["ipda_20_high", "ipda_20_low", "ipda_40_high", "ipda_40_low",
-                              "ipda_60_high", "ipda_60_low"]:
-                if htf_levels.get(ipda_key) is not None:
-                    data[ipda_key] = htf_levels[ipda_key]
-
-        return data
+        return _with_history(data, htf_levels, recent)
 
     # 2. MarketWatch
     print("  DXY: MarketWatch を試行中...")
     data = await _scrape_marketwatch()
     if data and data.get("current_price") is not None:
         print(f"  [OK]    DXY: MarketWatch から取得 ({data['current_price']})")
-        data["error"] = None
-        data["note"] = None
-        if htf_levels:
-            notes = []
-            for key in ["pdh", "pdl", "pwh", "pwl", "pmh", "pml",
-                        "ipda_20_high", "ipda_20_low", "ipda_40_high", "ipda_40_low",
-                        "ipda_60_high", "ipda_60_low"]:
-                if data.get(key) is None and htf_levels.get(key) is not None:
-                    data[key] = htf_levels[key]
-                    if key.startswith("ipda"):
-                        continue
-                    notes.append(key.upper())
-            if notes:
-                data["note"] = f"{'/'.join(notes)}はヒストリカルデータから算出"
-            for ipda_key in ["ipda_20_high", "ipda_20_low", "ipda_40_high", "ipda_40_low",
-                              "ipda_60_high", "ipda_60_low"]:
-                if htf_levels.get(ipda_key) is not None:
-                    data[ipda_key] = htf_levels[ipda_key]
-        return data
+        return _with_history(data, htf_levels, recent)
 
-    # 3. EUR/USD から推定
+    # 3. CNBC（.DXY の気配。前日終値と気配時刻つき）
+    print("  DXY: CNBC を試行中...")
+    data = _scrape_cnbc()
+    if data and data.get("current_price") is not None:
+        print(f"  [OK]    DXY: CNBC から取得 ({data['current_price']})")
+        return _with_history(data, htf_levels, recent)
+
+    # 4. EUR/USD から推定（水準はDXYと比べられない。バイアス盤は使わない）
     print("  DXY: EUR/USD逆数から推定中...")
     data = _estimate_from_eurusd()
     if data and data.get("current_price") is not None:
         print(f"  [OK]    DXY: EUR/USD推定 ({data['current_price']})")
         data["error"] = None
+        data["_recent"] = recent
         return data
 
-    return {
+    return {"_recent": recent,
         "source": "取得不可",
         "current_price": None,
         "prev_close": None,

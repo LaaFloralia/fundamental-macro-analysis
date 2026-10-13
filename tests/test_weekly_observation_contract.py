@@ -119,4 +119,6 @@ def test_weekly_template_has_no_order_inference_directives():
     assert "通常の公開予定から実公表日時を推測しない" in prompt
     assert "固定比率60%だけで逆張り、過熱、Draw on Liquidity を導かない" in prompt
     assert "未検証の計算済み値も事実として転記しない" in prompt
-    assert "比率（COT・個人）と前回アンカーは票にしない" in prompt
+    assert "前回アンカーは継続・変更の確認に使い、票にしない" in prompt  # ratios vote only at extremes (board rule)
+    assert "比率（COT・個人）の極端値" in prompt and "時間軸別の向きを必ず答える（保留しない）" in prompt
+    assert "キリ番と、注文の種類が確認できない注文分布" in prompt

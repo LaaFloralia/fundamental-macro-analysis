@@ -5,14 +5,13 @@ must inspect the generated images and meaning and supply a hash-bound review.
 """
 from __future__ import annotations
 
-from html.parser import HTMLParser
 import base64
 import hashlib
 import json
 from pathlib import Path
 import re
 
-from scripts.report_bundle import BundleError, check_bindings, digest, require_fresh
+from scripts.report_bundle import BundleError, check_bindings, check_regenerated, digest, require_fresh
 
 CHECKS = ('facts_match_sources', 'numbers_and_units', 'summary_preserves_conditions',
           'no_unverified_trading_claims', 'desktop_readable', 'mobile_readable',
@@ -36,6 +35,8 @@ def validate_bundle(html_path, bundle_path, now=None):
         raise BundleError('Required figures are missing')
     figures = json.loads(Path(b['figuresPath']).read_text())
     check_bindings(data, b, figures)
+    check_regenerated(data, b, figures, Path(b['sourcePath']).read_text(encoding='utf-8'),
+                      json.loads(Path(b['summaryPath']).read_text()))
     audit = json.loads(html_path.with_suffix('.presentation.audit.json').read_text())
     if audit.get('source_sha256') != b['sourceSha256'] or audit.get('html_sha256') != digest(html_path):
         raise BundleError('HTML or source digest mismatch')
@@ -54,110 +55,124 @@ def validate_bundle(html_path, bundle_path, now=None):
     return b
 
 
-class SourceBlocks(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.level, self.current, self.blocks = 0, [], []
-    def handle_starttag(self, tag, attrs):
-        if tag in {'p', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'li'}:
-            if not self.level:
-                self.current = []
-            self.level += 1
-    def handle_endtag(self, tag):
-        if tag in {'p', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'li'} and self.level:
-            self.level -= 1
-            if not self.level:
-                self.blocks.append(''.join(self.current))
-    def handle_data(self, data):
-        if self.level:
-            self.current.append(data)
-
-
 def compact(text):
-    return re.sub(r'\s+', '', text).replace('↩', '')
+    return re.sub(r'\s+', '', str(text or '')).replace('−', '-')
+
+
+# Every cell the page shows (explanations open), so a dropped cell fails the browser check.
+FIGURE_TEXT = {'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'asof', 'note'),
+               'liquidity_map': ('label', 'price_text', 'pool', 'state_word', 'touched', 'distance_text', 'target'),
+               'event_table': ('label', 'time', 'previous', 'forecast', 'actual', 'diff', 'direction', 'memo')}
+
+
+def shown_texts(summary, figures):
+    """Strings the page must show: conclusion, lead chips, figure titles, every item and verdict, limitations."""
+    texts = [(summary.get('conclusion') or {}).get('text')]
+    texts += [x.get('text') for x in summary.get('chips') or []]
+    texts += [x.get('text') for x in summary.get('limitations') or []]
+    for figure in figures:
+        texts.append(figure.get('title'))
+        for item in figure.get('items') or []:
+            keys = FIGURE_TEXT.get(figure.get('type'), ())
+            if item.get('kind') == 'text':  # a judgement in words: one wide cell, no baseline or change
+                keys = tuple(k for k in keys if k not in ('baseline', 'change'))
+            texts += [item.get(key) for key in keys]
+        texts += [item.get(key) for item in figure.get('aux') or [] for key in ('label', 'price_text', 'state_word')]
+        texts += [c.get('text') for c in figure.get('cautions') or []]
+        texts += [tile.get(key) for tile in figure.get('verdicts') or [] for key in ('label', 'direction', 'short')]
+        if figure.get('reason'):
+            texts.append(figure['reason'].get('text'))
+    return [t for t in dict.fromkeys(texts) if t not in (None, '') and compact(t)]
 
 
 def browser_check(html_path, bundle_path, *, now=None):
-    import markdown
+    """Real-browser evidence for one edition: content present, no overflow, readable captures.
+
+    Captures the page as the reader first sees it (explanations collapsed): the first
+    screen, every figure, consecutive page tiles and, on mobile, the right side of any
+    table wider than the screen; then every <details> open, as page tiles again
+    (`-open-NN`). Text presence is checked with every <details> open.
+    """
     from playwright.sync_api import sync_playwright
     b = validate_bundle(html_path, bundle_path, now)
     html_path = Path(html_path).absolute()
     out = html_path.with_suffix('.render-evidence')
     out.mkdir(exist_ok=True)
-    source = Path(b['sourcePath']).read_text()
-    expected = SourceBlocks()
-    expected.feed(markdown.markdown(source, extensions=['tables', 'footnotes', 'fenced_code']))
-    record = {'schemaVersion': 1, 'htmlSha256': digest(html_path), 'bundleSha256': digest(bundle_path),
-              'status': 'failed', 'viewports': [], 'images': [], 'sourceBlocks': len(expected.blocks)}
+    figures = json.loads(Path(b['figuresPath']).read_text())
+    summary = json.loads(Path(b['summaryPath']).read_text())
+    expected = shown_texts(summary, figures)
+    record = {'schemaVersion': 2, 'htmlSha256': digest(html_path), 'bundleSha256': digest(bundle_path),
+              'status': 'failed', 'viewports': [], 'images': [], 'expectedTexts': len(expected)}
+
+    def capture(path, **kwargs):
+        record['images'].append({'path': str(path), 'sha256': digest(path), **kwargs})
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
             for width, label in [(1365, 'desktop'), (390, 'mobile')]:
                 page = browser.new_page(viewport={'width': width, 'height': 950}, device_scale_factor=1)
-                page.route('**/*', lambda route: route.continue_() if route.request.url.startswith('file:') else route.abort())
+                page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(('file:', 'data:')) else route.abort())
                 page.goto(html_path.as_uri(), wait_until='load')
                 page.evaluate('document.fonts.ready')
                 if page.locator('script,iframe,object,embed,form').count():
                     raise BundleError('Active document nodes are prohibited')
-                page.locator('details.chapter').evaluate_all('(nodes) => nodes.forEach(n => n.open = true)')
-                body = compact(page.locator('.markdown-body').inner_text())
-                blocks = expected.blocks
-                if source.lstrip().startswith('# ') and blocks:
-                    if compact(blocks[0]) not in compact(page.locator('footer').inner_text()):
-                        raise BundleError('Original report title is missing')
-                    blocks = blocks[1:]
-                missing = [x for x in blocks if compact(x) and compact(x) not in body]
-                if missing:
-                    raise BundleError(f'Rendered source has missing blocks: {len(missing)}')
-                encoded = page.locator('#source-markdown a[download]').get_attribute('href').split(',', 1)[1]
+                if page.locator('details[open]').count():
+                    raise BundleError('Explanations must start collapsed')
+                encoded = page.locator('#source-markdown').get_attribute('href').split(',', 1)[1]
                 if base64.b64decode(encoded) != Path(b['sourcePath']).read_bytes():
                     raise BundleError('Embedded original source bytes differ')
-                overflow = page.evaluate('document.documentElement.scrollWidth > innerWidth + 1')
-                if overflow:
+                if page.evaluate('document.documentElement.scrollWidth > innerWidth + 1'):
                     raise BundleError(f'{label} body overflows viewport')
+                small = page.locator('details > summary').evaluate_all(
+                    '(nodes) => nodes.filter(n => n.getBoundingClientRect().height < 44).length')
+                if small:
+                    raise BundleError(f'{label} has {small} expandable labels under 44px')
                 top = out / f'{label}-overview.png'
                 page.screenshot(path=str(top), full_page=False)
-                record['images'].append({'path': str(top), 'sha256': digest(top), 'viewport': label})
+                capture(top, viewport=label)
                 for i, figure in enumerate(page.locator('.data-figure').all()):
-                    path = out / f'{label}-figure-{i+1}.png'
+                    path = out / f'{label}-figure-{i + 1}.png'
                     figure.screenshot(path=str(path))
-                    record['images'].append({'path': str(path), 'sha256': digest(path), 'viewport': label})
-                # Readable source tiles keep the full tables legible to an image reviewer.
-                # Figure screenshots scroll the viewport. Clips for full-page
-                # screenshots require document coordinates, not bounding_box's
-                # viewport-relative coordinates.
-                rect = page.locator('.full-report').evaluate('''(element) => {
-                    const r = element.getBoundingClientRect();
-                    return {x: r.left + window.scrollX, y: r.top + window.scrollY,
-                            width: r.width, height: r.height};
-                }''')
-                top_y, bottom_y = rect['y'], rect['y'] + rect['height']
-                tile_index = 0
-                while top_y < bottom_y:
-                    tile_index += 1
-                    tile = out / f'{label}-source-{tile_index:02}.png'
-                    clip = {'x': rect['x'], 'y': top_y, 'width': rect['width'],
-                            'height': min(950, bottom_y-top_y)}
-                    page.screenshot(path=str(tile), full_page=True, clip=clip)
-                    record['images'].append({'path': str(tile), 'sha256': digest(tile),
-                                             'viewport': label, 'section': 'full-report', 'clip': clip})
-                    top_y += 850
+                    capture(path, viewport=label)
                 if label == 'mobile':
-                    for index, table in enumerate(page.locator('.table-wrap').all()):
-                        if table.evaluate('(e)=>e.scrollWidth > e.clientWidth + 1'):
-                            table.evaluate('(e)=>e.scrollLeft=e.scrollWidth')
-                            tile = out / f'mobile-table-right-{index+1}.png'
-                            table.screenshot(path=str(tile))
-                            record['images'].append({'path': str(tile), 'sha256': digest(tile), 'viewport': label})
-                            table.evaluate('(e)=>e.scrollLeft=0')
-                # Full text evidence is separate from the compact first screen.
-                path = out / f'{label}-full.png'
-                page.evaluate('document.documentElement.style.scrollBehavior = \"auto\"; window.scrollTo({top:0,left:0,behavior:\"instant\"})')
-                page.wait_for_function('window.scrollY === 0')
-                page.screenshot(path=str(path), full_page=True)
-                record['images'].append({'path': str(path), 'sha256': digest(path), 'viewport': label})
+                    for index, table in enumerate(page.locator('.board-wrap').all()):
+                        if table.evaluate('(e) => e.scrollWidth > e.clientWidth + 1'):
+                            table.evaluate('(e) => e.scrollLeft = e.scrollWidth')
+                            path = out / f'mobile-table-right-{index + 1}.png'
+                            table.screenshot(path=str(path))
+                            capture(path, viewport=label)
+                            table.evaluate('(e) => e.scrollLeft = 0')
+                # Consecutive tiles of the whole page at readable size (what the reader scrolls through).
+                page.evaluate('window.scrollTo(0, 0)')
+                height = page.evaluate('document.documentElement.scrollHeight')
+                y, tile = 0, 0
+                while y < height:
+                    tile += 1
+                    clip = {'x': 0, 'y': y, 'width': width, 'height': min(950, height - y)}
+                    path = out / f'{label}-page-{tile:02}.png'
+                    page.screenshot(path=str(path), full_page=True, clip=clip)
+                    capture(path, viewport=label, section='page', clip=clip)
+                    y += 850
+                page.locator('details').evaluate_all('(nodes) => nodes.forEach(n => n.open = true)')
+                body = compact(page.locator('main').inner_text())
+                missing = [t for t in expected if compact(t) not in body]
+                if missing:
+                    raise BundleError(f'{label} page is missing {len(missing)} figure or summary texts')
+                if page.evaluate('document.documentElement.scrollWidth > innerWidth + 1'):
+                    raise BundleError(f'{label} body overflows viewport with explanations open')
+                page.evaluate('window.scrollTo(0, 0)')
+                height = page.evaluate('document.documentElement.scrollHeight')
+                y, tile = 0, 0
+                while y < height:
+                    tile += 1
+                    clip = {'x': 0, 'y': y, 'width': width, 'height': min(950, height - y)}
+                    path = out / f'{label}-open-{tile:02}.png'
+                    page.screenshot(path=str(path), full_page=True, clip=clip)
+                    capture(path, viewport=label, section='explanations-open', clip=clip)
+                    y += 850
                 record['viewports'].append({'width': width, 'height': 950, 'bodyOverflow': False,
-                                            'figureCount': page.locator('.data-figure').count(), 'sourceBlocksMissing': 0})
+                                            'figureCount': page.locator('.data-figure').count(), 'textsMissing': 0})
                 page.close()
         finally:
             browser.close()

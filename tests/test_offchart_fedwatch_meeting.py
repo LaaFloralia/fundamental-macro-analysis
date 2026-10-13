@@ -50,7 +50,7 @@ def test_parser_meeting_reaches_features_and_saved_json(tmp_path, weekly):
     assert features["fedwatch"] == {
         "next_meeting": "Oct 28, 2026", "target_rates": raw["target_rates"],
     }
-    assert features["schema_version"] == 1
+    assert features["schema_version"] == 2
     assert features["mode"] == ("weekly" if weekly else "daily")
     assert original == before
     save_features(features, tmp_path)

@@ -1,4 +1,4 @@
-"""チャート外の追加入力（2026-09-24）: 指標サプライズ・予想補完・キリ番・ポジショニング履歴"""
+"""チャート外の追加入力（2026-09-24）: 指標サプライズ・予想補完・想定値幅・ポジショニング履歴"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import main  # noqa: E402
 from scrapers import macro_surprise as ms  # noqa: E402
 from scrapers import positioning_history as ph  # noqa: E402
-from scrapers.liquidity_levels import build_liquidity, expected_daily_move, format_liquidity_lines, round_levels  # noqa: E402
+from scrapers.liquidity_levels import build_liquidity, expected_daily_move, format_liquidity_lines  # noqa: E402
 
 
 def _ev(indicator, actual, forecast, *, country="United States", date="Thursday, September 24, 2026", time="21:30"):
@@ -62,20 +62,20 @@ def test_fill_missing_forecasts_requires_country_time_and_name_match():
     assert events[1]["forecast"] == "N/A" and events[2]["forecast"] == "N/A"
 
 
-def test_round_levels_mark_hundreds_and_stay_within_band():
-    levels = round_levels(4312.21)
-    assert all(abs(lv["distance_pct"]) <= 2.0 for lv in levels)
-    assert [lv["level"] for lv in levels if lv["major"]] == [4300.0]
-    assert [lv["level"] for lv in levels] == [4250.0, 4300.0, 4350.0]
-    text = "\n".join(format_liquidity_lines(build_liquidity(4312.21, {"value": 25.0, "as_of_date": "2026-09-25"})))
-    assert "4,350" in text and "4,300★（-12.2, -0.28%・参考変動額内）" in text and "QuikStrike" in text
+def test_liquidity_lines_give_the_expected_range_without_round_numbers():
+    liq = build_liquidity(4312.21, {"value": 25.0, "as_of_date": "2026-09-25"})
+    assert "levels" not in liq and "nearest_above" not in liq  # round numbers removed (2026-10-13)
+    assert (liq["band_lower"], liq["band_upper"]) == (4244.3, 4380.12)
+    lines = format_liquidity_lines(liq)
+    text = "\n".join(lines)
+    assert lines[0] == "### 想定値幅（GVZ）" and "QuikStrike" in text
     assert "±67.9ドル" in text and "±56.4ドル" in text  # 252営業日換算と365暦日換算
-    assert "観測した注文集中（価格帯別の注文量）: 取得不可" in text
+    assert "キリ番" not in text and "注文集中" not in text
     no_gvz = "\n".join(format_liquidity_lines(build_liquidity(4312.21, {"error": "timeout"})))
-    assert "参考変動額: 取得不可（GVZ timeout）" in no_gvz and "参考変動額内" not in no_gvz
-    assert build_liquidity(float("nan"), {"value": 25.0})["levels"] == []
+    assert "参考変動額: 取得不可（GVZ timeout）" in no_gvz
+    assert build_liquidity(float("nan"), {"value": 25.0})["expected_move_1sd"] is None
     assert build_liquidity(4000.0, {"value": float("nan")})["expected_move_1sd"] is None
-    assert "キリ番: 取得不可" in "\n".join(format_liquidity_lines(None))
+    assert format_liquidity_lines(None)[1] == "- 参考変動額: 取得不可（GVZ 値なし）"
     assert expected_daily_move(4000, 0) is None
 
 
@@ -127,6 +127,7 @@ def test_enrich_offchart_inputs_survives_feed_failure(tmp_path, monkeypatch):
                                 save=False)
     assert results["economic_calendar"]["forecast_fallback"]["error"].startswith("ForexFactory")
     assert results["macro_surprises"] == []
+    assert results["macro_surprise_since"] == "2026-09-23T00:00:00+09:00"  # Thursday: from Wednesday 00:00 JST
     assert results["positioning"]["snapshot"]["retail"]["XAUUSD"]["long_pct"] == 62.4
     assert (tmp_path / "positioning.jsonl").exists()
     status = {row["item"]: row["available"] for row in results["input_status"]}
@@ -220,6 +221,55 @@ def test_percentile_needs_variation_and_uses_mid_rank():
     assert ph.percentile_rank(values + [float("nan")], 55.0) == 51.7
 
 
+def _archived_payrolls(path):
+    friday = _ev("Nonfarm Payrolls (Sep)", "N/A", "150K", date="Friday, October 9, 2026")
+    assert ms.archive_forecasts([friday], datetime(2026, 10, 9, 18, 0, tzinfo=ms.JST), path) == 1
+    assert ms.archive_actuals([{**friday, "actual": "180K"}], datetime(2026, 10, 9, 22, 0, tzinfo=ms.JST), set(), path) == 1
+
+
+def test_history_rebuilds_released_events_the_calendar_dropped(tmp_path):
+    path = tmp_path / "f.jsonl"
+    _archived_payrolls(path)
+    events = [_ev("CPI (MoM) (Sep)", "N/A", "0.3%", date="Wednesday, October 14, 2026")]  # Monday's page: this week only
+    since, until = datetime(2026, 10, 9, 0, 0, tzinfo=ms.JST), datetime(2026, 10, 12, 18, 0, tzinfo=ms.JST)
+    assert ms.merge_history_events(events, since, until, path) == 1
+    nfp = events[-1]
+    assert (nfp["indicator"], nfp["date"], nfp["time_jst"], nfp["actual"], nfp["forecast"], nfp["previous"]) == \
+        ("Nonfarm Payrolls (Sep)", "Friday, October 9, 2026", "21:30", "180K", "150K", "196K")
+    assert nfp["from_history"] is True
+    assert ms.merge_history_events(events, since, until, path) == 0            # already listed: not twice
+    out = ms.released_surprises(events, until, lookback_hours=(until - since).total_seconds() / 3600,
+                                forecast_history=ms.load_forecast_history(path), actual_history=ms.load_actual_history(path))
+    assert len(out) == 1 and out[0]["forecast_provenance"].startswith("発表前記録") and out[0]["surprise"]["diff"] == 30
+    assert ms.merge_history_events([], datetime(2026, 10, 10, tzinfo=ms.JST), until, path) == 0  # before the window
+    assert ms.format_surprise_lines([], since=since)[0] == "### 指標サプライズ（発表済み・10/09 00:00 JST以降）"
+
+
+def test_attach_levels_keeps_fridays_release_candle_on_monday_and_stores_the_bars(tmp_path):
+    from scrapers import xau_levels as xl
+    from tests.test_offchart_collectors import flat_bars, set_bar, utc
+    path = tmp_path / "f.jsonl"
+    _archived_payrolls(path)
+    bars = flat_bars("2026-08-31T21:00", "2026-10-12T07:00")                  # through Monday 16:00 JST
+    set_bar(bars, "2026-10-09T12:00", high=4050.0, low=3950.0)                 # the hour holding 21:30 JST payrolls
+    set_bar(bars, "2026-10-07T12:00", high=4060.0, low=3940.0)                 # last week's range is wider
+    results = {"economic_calendar": {"events": [_ev("CPI (MoM) (Sep)", "N/A", "0.3%", date="Wednesday, October 14, 2026")]}}
+    main.attach_levels(results, bars, [], utc("2026-10-12T09:05"), 4000.0, False, history_path=path)
+    assert results["economic_calendar"]["history_added"] == 1
+    news = [lv for lv in results["xau_levels"]["levels"] if any(k.startswith("NEWS_") for k in lv["key"].split("+"))]
+    # Friday is also the previous trading day, so the candle shares its row with the previous day's range.
+    assert [(lv["key"], lv["name"], lv["price"]) for lv in news] == [
+        ("PDH+NEWS_H", "前日高値（10/09）・雇用統計 非農業部門雇用者数 発表時刻を含む1時間足高値（10/09 21:30）", 4050.0),
+        ("PDL+NEWS_L", "前日安値（10/09）・雇用統計 非農業部門雇用者数 発表時刻を含む1時間足安値（10/09 21:30）", 3950.0)]
+    stored = json.loads(json.dumps(results, default=str))                     # as written to the data JSON
+    again = xl.recompute(stored["xau_bars_used"], stored["xau_levels"]["inputs"]["computed_at"], 4000.0,
+                         stored["economic_calendar"]["events"], False)
+    assert json.loads(json.dumps(again, default=str)) == stored["xau_levels"]
+    results = {"economic_calendar": {"error": "timeout", "events": []}}
+    main.attach_levels(results, bars, [], utc("2026-10-12T09:05"), 4000.0, False, history_path=path)
+    assert "history_added" not in results["economic_calendar"] and results["xau_levels"]["levels"]
+
+
 def test_weekly_surprise_window_is_seven_days():
     now = datetime(2026, 9, 26, 7, 0, tzinfo=ms.JST)
     events = [_ev("PPI (MoM)", "0.1%", "0.2%", date="Monday, September 21, 2026")]
@@ -248,10 +298,10 @@ def test_correlation_reports_periods_and_rejects_nan():
 
 
 def test_liquidity_format_accepts_saved_json_without_calendar_move():
-    saved = {"price": 4286.1, "levels": round_levels(4286.1), "gvz": 23.59, "gvz_as_of": "2026-09-22",
+    saved = {"price": 4286.1, "levels": [{"level": 4300.0, "major": True}], "gvz": 23.59, "gvz_as_of": "2026-09-22",
              "gvz_stale": False, "gvz_error": None, "expected_move_1sd": 63.7}   # 9/26 以前の保存形式
     text = "\n".join(format_liquidity_lines(saved))
-    assert "±63.7ドル" in text and "暦日365日換算" not in text
+    assert "±63.7ドル" in text and "暦日365日換算" not in text and "4,300" not in text  # old round levels are ignored
 
 
 def test_weekly_input_status_uses_prev_week():
@@ -313,10 +363,10 @@ def test_offchart_features_are_machine_readable(tmp_path):
     feats = of.build_features(results, now)
     assert [b["event"] for b in feats["event_blackouts"]] == ["JOLTS Job Openings (Aug)"]   # 36時間内のみ
     assert feats["event_blackouts"][0]["window_start"].startswith("2026-09-29T22:30")
-    assert feats["expected_move"]["expected_move_1sd"] == 62.3 and 4300.0 in feats["round_levels"]
+    assert feats["expected_move"]["expected_move_1sd"] == 62.3 and "round_levels" not in feats
     assert feats["rates"]["DFII10"]["change_20obs"] == 0.51 and feats["rates"]["DGS2"] is None
     of.save_features(feats, tmp_path)
-    assert json.loads((tmp_path / "offchart_features_latest.json").read_text())["schema_version"] == 1
+    assert json.loads((tmp_path / "offchart_features_latest.json").read_text())["schema_version"] == 2
     assert len((tmp_path / "history" / "offchart_features.jsonl").read_text().splitlines()) == 1
 
 

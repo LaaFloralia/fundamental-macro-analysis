@@ -5,7 +5,7 @@
 
 - event_blackouts: 高重要度指標の前後の取引停止候補（発表30分前〜60分後、FOMC 等は120分後）
 - expected_move: GVZ からの参考変動額（252営業日・365暦日換算）
-- round_levels / positioning / surprises / fedwatch / rates / correlation / flows / news / input_status
+- positioning / surprises / fedwatch / rates / correlation / flows / news / input_status
 
 保存先: output/offchart_features_latest.json と output/history/offchart_features.jsonl（追記）
 """
@@ -21,7 +21,7 @@ from scrapers.macro_surprise import event_datetime_jst
 from scrapers.positioning_history import load_history, positioning_numbers
 
 OUTPUT = Path(__file__).parent.parent / "output"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2: round_levels removed (2026-10-13)
 LONG_WINDOW_WORDS = ("interest rate decision", "press conference", "fomc", "monetary policy statement")
 
 
@@ -67,7 +67,6 @@ def build_features(results: dict, now: datetime, weekly: bool = False) -> dict:
         "event_blackouts": _blackouts(calendar.get("events") or [], now, 7 * 24 if weekly else 36),
         "expected_move": {k: liq.get(k) for k in ("price", "gvz", "gvz_as_of", "gvz_stale",
                                                   "expected_move_1sd", "expected_move_calendar")},
-        "round_levels": [lv["level"] for lv in liq.get("levels") or []],
         "positioning": positioning,
         "surprises": [{"indicator": e.get("indicator"), "released_at": e.get("released_at_jst"),
                        "actual": e.get("actual"), "forecast": e.get("forecast"),

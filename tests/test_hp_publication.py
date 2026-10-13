@@ -11,7 +11,7 @@ ASOF = datetime.fromisoformat('2026-10-03T07:00:00+09:00')
 NOW = datetime.fromisoformat('2026-10-13T12:00:00+09:00')
 
 
-def fixture_edition(root, *, name='edition-a', as_of=ASOF):
+def fixture_edition(root, *, name='edition-a', as_of=ASOF, tiles='page'):
     folder = root / 'reports' / 'daily' / 'editions' / name
     folder.mkdir(parents=True)
     base = folder / 'Daily_Bias_Report'
@@ -47,7 +47,7 @@ def fixture_edition(root, *, name='edition-a', as_of=ASOF):
         'figure_count': 1, 'numeric_check': 'pass'})
     images = []
     for name in ('desktop-overview.png', 'mobile-overview.png', 'desktop-figure-1.png',
-                 'mobile-figure-1.png', 'desktop-source-01.png', 'mobile-source-01.png',
+                 'mobile-figure-1.png', f'desktop-{tiles}-01.png', f'mobile-{tiles}-01.png',
                  'mobile-table-right-1.png'):
         image = folder / 'render-evidence' / name
         image.parent.mkdir(exist_ok=True)
@@ -163,6 +163,18 @@ def test_missing_right_edge_image_review_blocks_publish(tmp_path):
     review_path = edition.with_name('Daily_Bias_Report.hp-review.json')
     review = hp.read(review_path)
     review['imagesReviewed'] = [image for image in review['imagesReviewed'] if 'table-right' not in image['path']]
+    hp.write_json(review_path, review)
+    with pytest.raises(hp.PublicationError, match='visual inspection incomplete'):
+        hp.publish('daily', tmp_path, now=NOW)
+
+
+def test_page_tiles_or_legacy_source_tiles_are_required(tmp_path):
+    fixture_edition(tmp_path, name='legacy', as_of=ASOF - timedelta(days=1), tiles='source')
+    edition = fixture_edition(tmp_path)
+    assert hp.publish('daily', tmp_path, now=NOW)['status'] == 'dry_run_validated'
+    review_path = edition.with_name('Daily_Bias_Report.hp-review.json')
+    review = hp.read(review_path)
+    review['imagesReviewed'] = [image for image in review['imagesReviewed'] if 'mobile-page-' not in image['path']]
     hp.write_json(review_path, review)
     with pytest.raises(hp.PublicationError, match='visual inspection incomplete'):
         hp.publish('daily', tmp_path, now=NOW)
@@ -297,3 +309,18 @@ def test_public_readback_identifies_publisher_without_credentials(monkeypatch):
     assert headers['User-agent'] == 'LAA-Report-Publisher/1.0'
     assert headers['Cache-control'] == 'no-cache'
     assert 'Authorization' not in headers
+
+
+def test_publication_rebuilds_the_figures_from_the_collection_before_upload(tmp_path, monkeypatch):
+    from scripts.report_bundle import BundleError
+    fixture_edition(tmp_path)
+    seen = []
+    monkeypatch.setattr(hp, 'check_regenerated', lambda data, bundle, figures, source, summary: seen.append((source, summary)))
+    assert hp.publish('daily', tmp_path, now=NOW)['status'] == 'dry_run_validated'
+    assert seen == [('# Original dated analysis\nLimitations retained.\n', {})]
+
+    def differs(*args):
+        raise BundleError('Figures differ from a rebuild of the collection')
+    monkeypatch.setattr(hp, 'check_regenerated', differs)
+    with pytest.raises(BundleError, match='Figures differ'):
+        hp.publish('daily', tmp_path, now=NOW)

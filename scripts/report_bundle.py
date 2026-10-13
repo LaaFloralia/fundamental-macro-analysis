@@ -14,8 +14,10 @@ import re
 from zoneinfo import ZoneInfo
 
 JST = ZoneInfo('Asia/Tokyo')
-REQUIRED_FIGURES = ('bias', 'price', 'calendar', 'retail', 'etf', 'cot')
-LADDER_SCALE_PCT = 2.5  # levels farther than this from the price are listed, not plotted
+REQUIRED_FIGURES = ('bias', 'liquidity', 'calendar')
+MANIFEST_VERSION = 3  # 2: release rows carry text bindings; 3: figures are regenerated at validation
+APPENDIX = '\n\n## 図表に使用した観測値\n'
+CONCLUSION_MAX = 220  # the master prompts ask for one line of 220 characters
 
 
 class BundleError(ValueError):
@@ -42,6 +44,17 @@ def require_fresh(data, now=None):
     return stamp
 
 
+def analysis_cutoff(data):
+    """The board's "now": the end of collection when recorded (at most an hour after its start),
+    otherwise its start. Releases up to it count as released and windows end there."""
+    start = timestamp(data.get('timestamp'))
+    try:
+        end = timestamp(data['collection_finished_at']) if data.get('collection_finished_at') else None
+    except BundleError:
+        end = None
+    return end if end and start <= end <= start + timedelta(hours=1) else start
+
+
 def number(value, digits=2):
     if isinstance(value, bool):
         raise BundleError('Boolean is not a numeric observation')
@@ -63,296 +76,254 @@ def quote_snapshot(data):
     quote = data.get('_raw_quote_XAUUSD')
     if not isinstance(quote, dict) or number(quote.get('close')) <= 0:
         raise BundleError('Required XAUUSD quote is missing')
-    return {key: quote.get(key) for key in ('symbol', 'close', 'datetime', 'timestamp', 'previous_close', 'high', 'low')}
+    return {key: quote.get(key) for key in ('symbol', 'close', 'datetime', 'timestamp', 'fetched_at', 'previous_close',
+                                            'high', 'low')}
+
+
+def _figure_gone(key, data):
+    """A readable limitation for a figure that could not be drawn."""
+    if key == 'bias':
+        return 'バイアス盤: 判断材料がすべて欠測で、図を作れない'
+    if key == 'liquidity':
+        error = (data.get('xau_levels') or {}).get('error') or '水準なし'
+        return f'流動性マップ: 1時間足から水準を作れない（{error}）'
+    error = (data.get('economic_calendar') or {}).get('error') or '予定が0件'
+    return f'米指標の表: 経済指標カレンダーの取得に失敗（{error}）'
 
 
 def observations(data, now=None, mode='daily', source=None):
+    """Three figures from one collection: bias board, liquidity map, US event table.
+
+    Every displayed string is written once into the appendix rows, which become part of
+    the Markdown, so each figure item quotes the same source the reader can audit.
+    """
+    require_fresh(data, now)
+    return build_observations(data, mode, source)
+
+
+def build_observations(data, mode='daily', source=None):
+    """observations() without the freshness gate: the same inputs always give the same output,
+    so validation can rebuild an edition and compare (check_regenerated)."""
     from scripts import offchart_board
-    stamp = require_fresh(data, now)
+    start, stamp = timestamp(data.get('timestamp')), analysis_cutoff(data)
     figures, rows, missing, bindings, limitations = [], [], [], [], []
-
-    def add(ident, kind, title, unit, caption, source, observed, specs):
-        items, item_rows, item_bindings = [], [], []
-        for spec in specs:
-            # 7番目の要素は、図の既定と提供元・時点が異なる項目の観測時刻（例: 価格図の平均建値）。
-            label, value, pointer, digits, suffix, detail = spec[:6]
-            seen = spec[6] if len(spec) > 6 else observed
-            value = number(value, digits)
-            display = f'{value:,.{digits}f}{suffix}'
-            text = f'{label}: {display}。観測: {seen}。{detail}'.strip()
-            item_rows.append(text)
-            item = {'label': label, 'value': value, 'display': display, 'source_quote': text,
-                    'tone': 'negative' if value < 0 else 'neutral'}
-            if detail:
-                item['detail'] = detail
-            items.append(item)
-            item_bindings.append({'figure': ident, 'label': label, 'path': pointer, 'value': value,
-                             'digits': digits, 'unit': unit, 'observedAt': seen})
-        rows.extend(item_rows)
-        bindings.extend(item_bindings)
-        figures.append({'id': ident, 'type': kind, 'title': title, 'unit': unit,
-                        'subtitle': f'{unit} / 観測: {observed}', 'caption': caption,
-                        'source_label': source[0], 'source_url': source[1], 'items': items})
-
     q = data.get('report_quote') or data.get('_raw_quote_XAUUSD')
     if not isinstance(q, dict) or number(q.get('close')) <= 0:
         raise BundleError('Required XAUUSD quote is missing')
-    price = number(q.get('close'))
-    r = (data.get('retail_sentiment') or {}).get('XAUUSD')
-    quote_time = str(q.get('datetime') or q.get('timestamp') or '市場観測時刻は未確認')
-    liq = data.get('liquidity_levels') if isinstance(data.get('liquidity_levels'), dict) else {}
-    board = offchart_board.bias_figure(data, stamp, mode, source)
-    if board:
-        figures.append(board['figure']); rows.extend(board['rows']); bindings.extend(board['bindings'])
-        limitations.extend(board['limitations'])
-    price_specs = [('現在値', q.get('close'), 'report_quote.close', 2, '', '図の基準。収集時点の記録価格')]
-    band_detail = 'GVZ（GLDオプションの予想変動率）を252営業日で日次換算した±1標準偏差。到達範囲の予測ではない'
-    for key, label in (('band_upper', '想定変動 上限（+1σ）'), ('band_lower', '想定変動 下限（−1σ）')):
-        if isinstance(liq.get(key), (int, float)) and not isinstance(liq.get(key), bool):
-            price_specs.append((label, liq[key], f'liquidity_levels.{key}', 2, '', band_detail))
-    levels = [(index, lv) for index, lv in enumerate(liq.get('levels') or []) if isinstance(lv, dict)
-              and isinstance(lv.get('level'), (int, float)) and not isinstance(lv.get('level'), bool)]
-    if levels:
-        for index, lv in levels:  # index is the position in the original list, which the binding path names
-            level = number(lv['level'])
-            side = '上' if level > price else '下' if level < price else '同値'
-            inside = (isinstance(liq.get('band_upper'), (int, float)) and isinstance(liq.get('band_lower'), (int, float))
-                      and number(liq['band_lower']) <= level <= number(liq['band_upper']))
-            stops = {'上': 'ショートの損切り（買い注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証、支持抵抗の強さではない）',
-                     '下': 'ロングの損切り（売り注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証、支持抵抗の強さではない）',
-                     '同値': '現在値と同じ水準で、どちらの損切りが近いかは言えない'}[side]
-            position = f'現在値より{side}' if side != '同値' else '現在値と同値'
-            price_specs.append((f'キリ番 {level:,.0f}（{side}）', lv['level'], f'liquidity_levels.levels.{index}.level', 2, '',
-                                f'{position}{"・想定変動の範囲内" if inside else "・想定変動の範囲外"}。'
-                                f'{"100ドル" if lv.get("major") else "50ドル"}刻み。{stops}'))
-    else:
-        for key, label, detail in (('nearest_below', 'キリ番（下）', '現在値より下。ロングの損切り（売り注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証）'),
-                                   ('nearest_above', 'キリ番（上）', '現在値より上。ショートの損切り（買い注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証）')):
-            if isinstance(liq.get(key), (int, float)) and not isinstance(liq.get(key), bool):
-                price_specs.append((label, liq[key], f'liquidity_levels.{key}', 2, '', detail))
-    if usable(r):
-        rt = ('観測日 ' + str(r['as_of_date'])) if r.get('as_of_date') else ('観測時刻は未確認 / 記録 ' + str(r.get('timestamp') or '未確認'))
-        provider = r.get('source') or '提供元は未確認'
-        provider_url = 'https://fxssi.com/tools/current-ratio' if provider.upper() == 'FXSSI' else 'https://www.myfxbook.com/community/outlook'
-        for key, label in (('avg_long_entry', '個人Long平均建値'), ('avg_short_entry', '個人Short平均建値')):
-            if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool):
-                above = number(r[key]) > price
-                price_specs.append((f'{label}（{"上" if above else "下"}）', r[key], f'retail_sentiment.XAUUSD.{key}', 2, '',
-                                    f'現在値より{"上" if above else "下"}。{provider}の建玉集計の平均。損益率・SL位置・注文集中は示さない', rt))
-    gvz_source = liq.get('gvz_source') or 'FRED GVZCLS'
-    gvz_note = (f"GVZ {liq.get('gvz')}（{liq.get('gvz_as_of')}時点・{gvz_source}）" if liq.get('gvz') else 'GVZは取得できず、想定変動は表示していません')
-    entry_note = ''
-    if any('平均建値' in spec[0] for spec in price_specs):
-        entry_note = f'個人の平均建値は{provider}の建玉集計（{rt}）で、価格とは提供元・時点が異なります。'
-    add('price', 'price_map', '価格帯の目安（現在値・想定変動・キリ番・個人平均建値）', 'USD/oz',
-        f'現在値の上下に、1日の想定変動（{gvz_note}、帯で表示）、キリ番、個人の平均建値を並べています。（上）（下）は現在値から見た側で、'
-        '上のキリ番の少し外にはショートの損切り（買い注文）、下のキリ番の少し外にはロングの損切り（売り注文）が集まりやすいという為替研究の傾向を示す参考です。'
-        '金での注文量・到達範囲・支持抵抗の強さは未検証です。' + entry_note + '観測した注文集中は取得できません。小数第2位へ丸めています。',
-        ('Twelve Data / FRED GVZCLS', 'https://twelvedata.com/'), quote_time, price_specs)
-    figures[-1]['subtitle'] = f'USD/oz / 価格の観測: {quote_time}'
-    figures[-1]['kicker'] = '価格帯の意識'
-    if isinstance(liq.get('band_lower'), (int, float)) and isinstance(liq.get('band_upper'), (int, float)):
-        figures[-1]['band'] = {'lower': number(liq['band_lower']), 'upper': number(liq['band_upper']), 'label': '想定変動 ±1σ'}
-    for item in figures[-1]['items']:
-        if item['label'] == '現在値':
-            item['tone'] = 'current'
-        elif item['label'].startswith('想定変動'):
-            item['tone'] = 'reference'
-        elif item['label'].startswith('キリ番'):
-            item['tone'] = 'caution'
-        if abs(item['value'] - price) / price * 100 > LADDER_SCALE_PCT:
-            item['offscale'] = True
-    figures[-1]['source_links'] = [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
-                                    {'label': 'TradingView CBOE:GVZ', 'url': 'https://www.tradingview.com/symbols/CBOE-GVZ/'}
-                                    if gvz_source.startswith('TradingView') else
-                                    {'label': 'FRED GVZCLS', 'url': 'https://fred.stlouisfed.org/series/GVZCLS'}]
-    if entry_note and r.get('source'):
-        figures[-1]['source_links'].append({'label': provider, 'url': provider_url})
-    if len(price_specs) == 1:
-        figures[-1]['availability'] = 'partial'
-    if usable(r) and not all(isinstance(r.get(k), (int, float)) for k in ('avg_long_entry', 'avg_short_entry')):
-        limitations.append('Long・Shortの平均建値は取得できず、価格との比較はできません。この比較に基づく方向判断は行いません')
-        rows.append(limitations[-1])
-    if usable(r):
-        try:
-            long, short = number(r.get('long_pct')), number(r.get('short_pct'))
-            if min(long, short) < 0 or abs(long + short - 100) > .01:
-                raise BundleError('Retail percentages do not add to 100')
-            add('retail', 'split', '参加口座の建玉比率', '%',
-                '取得された比率を小数第2位で表示しています。母集団・分母は提供元の定義に依存し、市場全体の比率を示すものではありません。',
-                (provider, provider_url), rt, [
-                    ('Long', long, 'retail_sentiment.XAUUSD.long_pct', 2, '%', ''),
-                    ('Short', short, 'retail_sentiment.XAUUSD.short_pct', 2, '%', '')])
-        except BundleError:
-            missing.append('retail: 建玉の一部欠測または比率不整合')
-    else:
-        missing.append('retail: 建玉データは欠測または古い')
-    etf = data.get('gold_etf')
-    if usable(etf) and etf.get('as_of_date'):
-        try:
-            add('etf', 'diverging_bars', 'GLD保有量の変化', 'トン',
-                '期間は重複するため合算しません。保有量変化は価格収益率や資金流入額ではありません。',
-                ('SPDR Gold Shares', 'https://www.spdrgoldshares.com/usa/historical-data/'), etf['as_of_date'], [
-                    ('直近5営業日', etf.get('change_5d_t'), 'gold_etf.change_5d_t', 2, ' t', '期間は直近5営業日'),
-                    ('直近20営業日', etf.get('change_20d_t'), 'gold_etf.change_20d_t', 2, ' t', '期間は直近20営業日')])
-            streak = etf.get('streak_days')
-            direction = etf.get('streak_direction')
-            if isinstance(streak, int) and streak > 0 and direction in {'inflow', 'outflow'}:
-                word = '保有増' if direction == 'inflow' else '保有減'
-                note = f'GLDは直近{streak}営業日連続の{word}。観測: {etf["as_of_date"]}。中期の変化と直近の動きを分けて確認します。'
-                rows.append(note)
-                figures[-1]['caption'] += note
-                limitations.append(note)
-        except BundleError:
-            missing.append('etf: 保有量変化は欠測')
-    cot = data.get('cot_disaggregated')
-    if usable(cot) and isinstance(cot.get('data'), dict) and cot['data'].get('date'):
-        c = cot['data']
-        try:
-            specs = []
-            for key, label in [('managed_money', 'Managed Money'), ('swap_dealers', 'Swap Dealers'),
-                               ('producer_merchant', 'Producer / Merchant'), ('other_reportables', 'Other Reportables')]:
-                v = c.get(key) or {}
-                if number(v.get('long'), 0) - number(v.get('short'), 0) != number(v.get('net'), 0):
-                    raise BundleError('COT net does not match long minus short')
-                specs.append((label, v['net'], f'cot_disaggregated.data.{key}.net', 0, ' 枚', ''))
-            add('cot', 'diverging_bars', 'Gold先物・主体別ネット建玉', '枚',
-                'ネットはLong−Short。週次の先物建玉であり、スポット注文や過熱の判定ではありません。',
-                ('CFTC Disaggregated', 'https://www.cftc.gov/dea/futures/other_lf.htm'), c['date'], specs)
-        except BundleError:
-            missing.append('cot: 主体別建玉の欠測または算術不整合')
+    for build in (offchart_board.bias_figure, offchart_board.liquidity_figure):
+        built = build(data, stamp, mode, source)
+        if built:
+            figures.append(built['figure'])
+            rows.extend(built['rows'])
+            bindings.extend(built.get('bindings') or [])
+            limitations.extend(built.get('notes') or [])
     events = offchart_board.event_figure(data, stamp, mode)
     if events:
-        figures.append(events['figure']); rows.extend(events['rows'])
+        figures.append(events['figure'])
+        rows.extend(events['rows'])
+        bindings.extend(events.get('bindings') or [])
+        limitations.extend(events.get('notes') or [])
+    lead = offchart_board.lead_chips(data, stamp, mode)
+    nearest = offchart_board.nearest_chip(data)
+    if nearest:
+        lead.append(nearest)
+    rows.extend(lead)
+    lead = [{'text': text, 'source_quote': text} for text in lead]
     order = {key: index for index, key in enumerate(REQUIRED_FIGURES)}
     figures.sort(key=lambda figure: order.get(figure['id'], len(order)))
     if data.get('synthetic') is True:
         for figure in figures:
-            figure['caption'] = '合成値による表示検証です。リンクは参照用で、数値の取得元ではありません。' + figure['caption']
             figure['title'] += '（合成値）'
     present = {f['id'] for f in figures}
-    missing.extend(f'{key}: 図の作成に必要なデータが不足' for key in REQUIRED_FIGURES if key not in present)
-    appendix = ('\n\n## 図表に使用した観測値\n\n'
-                f'データ収集: {stamp.isoformat()}。以下の数値は同じ収集JSONから図表と本文へ出力しています。丸めは各図に表示しています。'
-                '各行は「項目: 現在値（時点）｜基準｜変化｜向き｜規則」または「日時｜国｜指標｜前回｜予想｜結果｜差｜向き｜時間帯」の順で、'
-                '向きは金（XAUUSD）に対する方向（▲▼ 閾値以上、△▽ 閾値未満、— 中立・票なし、？ 判定保留）です。\n\n' +
+    for key in REQUIRED_FIGURES:
+        if key not in present:
+            missing.append(f'{key}: 図の作成に必要なデータが不足')
+            limitations.append(_figure_gone(key, data))
+    limitations = list(dict.fromkeys(limitations))
+    appendix = (APPENDIX + '\n'
+                f'データ収集: {start.isoformat()}〜{stamp.isoformat()}（判定の基準は収集終了時刻）。'
+                '以下の各行は同じ収集JSONからコードで作り、HTMLの図はこの行だけを表示します。'
+                '向きは金（XAUUSD）に対する方向（▲▼ 閾値以上、△▽ 閾値未満、— 中立）です。\n\n' +
                 '\n\n'.join(rows) + '\n')
+    if limitations:
+        appendix += '\n' + '\n'.join(f'制約: {note}' for note in limitations) + '\n'
     if missing:
         appendix += '\n欠測・除外: ' + '。'.join(dict.fromkeys(missing)) + '\n'
-    return {'asOf': stamp.isoformat(), 'figures': figures, 'appendix': appendix,
-            'missing': list(dict.fromkeys(missing)), 'limitations': limitations, 'bindings': bindings}
+    return {'asOf': start.isoformat(), 'cutoff': stamp.isoformat(), 'figures': figures, 'appendix': appendix,
+            'lead': lead, 'missing': list(dict.fromkeys(missing)), 'limitations': limitations, 'bindings': bindings}
+
+
+def resolve(data, path):
+    """The value at a dotted path ('fred.DGS2.recent.20.1'); BundleError when missing."""
+    value = data
+    for key in path.split('.'):
+        if isinstance(value, list):
+            if not key.isdigit() or int(key) >= len(value):
+                raise BundleError('Bound source field is missing')
+            value = value[int(key)]
+            continue
+        if key == 'report_quote' and isinstance(value, dict) and key not in value:
+            key = '_raw_quote_XAUUSD'
+        if not isinstance(value, dict) or key not in value:
+            raise BundleError('Bound source field is missing')
+        value = value[key]
+    return value
+
+
+def _shown_text(record, key):
+    value = record.get(key)
+    return '—' if value in (None, '', 'N/A') else str(value)
+
+
+def _check_text_bindings(data, texts, figures, strict):
+    """Release rows re-read from their records: the calendar's previous / forecast / actual and
+    result-minus-forecast, and each member of a released-indicator row on the bias board."""
+    from scrapers.macro_surprise import compute_surprise
+    items = {f['id']: f['items'] for f in figures}
+    needed = {('calendar', n) for n, i in enumerate(items.get('calendar') or []) if not i.get('empty')}
+    needed |= {('bias', n) for n, i in enumerate(items.get('bias') or []) if i['label'].startswith('指標の結果')}
+    covered = [(b['figure'], b['index']) for b in texts]
+    if len(set(covered)) != len(covered) or (strict and set(covered) != needed) or not set(covered) <= needed:
+        raise BundleError('Text bindings are missing or unexpected')
+    for b in texts:
+        item = items[b['figure']][b['index']]
+        if item['label'] != b['label']:
+            raise BundleError('Text binding points at another row')
+        records = [resolve(data, p) for p in (b.get('members') or [b.get('path')])]
+        for record in records:
+            if not isinstance(record, dict):
+                raise BundleError('Bound source record is missing')
+            s = compute_surprise(record) if _shown_text(record, 'actual') != '—' else None
+            if b['figure'] == 'calendar':
+                if any(item[k] != _shown_text(record, k) for k in ('previous', 'forecast', 'actual')):
+                    raise BundleError('Release row does not match its source record')
+                if item['released'] and s and f'{s["diff"]:+g}{s["unit"]}' not in item['diff']:
+                    raise BundleError('Release difference does not match its source record')
+            elif s is None or f'{s["diff"]:+g}{s["unit"]}' not in item['change']:
+                raise BundleError('Indicator result does not match its source record')
+        if b['figure'] == 'bias' and len(records) == 1 and (
+                item['display'] != f'結果 {records[0].get("actual")}'
+                or not item['baseline'].startswith(f'予想 {records[0].get("forecast")}')):
+            raise BundleError('Indicator result does not match its source record')
 
 
 def check_bindings(data, manifest, figures):
-    """Recompute chart values from recorded source paths; matching digits elsewhere never pass."""
-    indexed = {(f['id'], i['label']): i for f in figures for i in f['items'] if 'value' in i}
-    expected = {(b['figure'], b['label']) for b in manifest['bindings']}
-    if set(indexed) != expected:
+    """Recompute chart values, level states, sparkline series and release rows from recorded
+    source paths; matching digits elsewhere never pass. Editions before schemaVersion 2 have no
+    text bindings."""
+    entries = [(f['id'], i) for f in figures for i in list(f['items']) + list(f.get('aux') or [])]
+    numeric = [b for b in manifest['bindings'] if 'value' in b]
+    texts = [b for b in manifest['bindings'] if 'value' not in b]
+    indexed = {(fid, i['label']): i for fid, i in entries if 'value' in i}
+    expected = {(b['figure'], b['label']) for b in numeric}
+    if set(indexed) != expected or len(expected) != len(numeric):
         raise BundleError('Figure bindings are missing or unexpected')
-    for b in manifest['bindings']:
-        value = data
-        for key in b['path'].split('.'):
-            if isinstance(value, list):
-                if not key.isdigit() or int(key) >= len(value):
-                    raise BundleError('Bound source field is missing')
-                value = value[int(key)]
-                continue
-            if key == 'report_quote' and isinstance(value, dict) and key not in value:
-                key = '_raw_quote_XAUUSD'
-            if not isinstance(value, dict) or key not in value:
-                raise BundleError('Bound source field is missing')
-            value = value[key]
-        actual = number(value, b['digits'])
-        if actual != b['value'] or actual != indexed[(b['figure'], b['label'])]['value']:
+    _check_text_bindings(data, texts, figures, strict=manifest.get('schemaVersion', MANIFEST_VERSION) >= 2)
+    for b in numeric:
+        actual = number(resolve(data, b['path']), b['digits'])
+        item = indexed[(b['figure'], b['label'])]
+        if actual != b['value'] or actual != item['value']:
             raise BundleError('Figure number does not match its source field')
+        if 'state_path' in b and not (resolve(data, b['state_path']) == b['state'] == item.get('state')):
+            raise BundleError('Level state does not match its source field')
+    for fid, item in entries:
+        viz = item.get('viz') or {}
+        if viz.get('path'):
+            series = [v for _, v in resolve(data, viz['path']) or []
+                      if isinstance(v, (int, float)) and not isinstance(v, bool)][-viz['count']:]
+            if [number(v, 6) for v in series] != [number(v, 6) for v in viz.get('values') or []]:
+                raise BundleError(f'{fid}: sparkline does not match its source series')
 
 
-def make_summary(source, mode, as_of):
-    """Quote complete source paragraphs; never invent an editorial conclusion."""
+def _plain_json(value):
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def check_regenerated(data, manifest, figures, source, summary=None):
+    """Rebuild every figure, appendix row and binding from the collection JSON and the report text
+    (without its appendix) and require the stored ones to be identical: a flipped sign, swapped
+    endpoints, another baseline, an edited word or a removed cell is rejected. The liquidity
+    levels are recomputed from the stored bars when the edition carries them. Editions before
+    schemaVersion 3 are not regenerated (the code that drew them has changed)."""
+    if manifest.get('schemaVersion', 1) < 3:
+        return
+    body = source.split(APPENDIX)[0].rstrip()
+    rebuilt = build_observations(data, manifest['kind'], body)
+    if body + rebuilt['appendix'] != source:
+        raise BundleError('Appendix rows differ from a rebuild of the collection')
+    if _plain_json(rebuilt['figures']) != figures:
+        raise BundleError('Figures differ from a rebuild of the collection')
+    if _plain_json(rebuilt['bindings']) != manifest['bindings'] or rebuilt['missing'] != manifest['missing']:
+        raise BundleError('Bindings differ from a rebuild of the collection')
+    if summary is not None:
+        # The parent stage may add its own limitations and a notice chip; the code-made ones must all stay.
+        texts = {x.get('text') for x in (summary.get('chips') or []) + (summary.get('limitations') or [])
+                 if isinstance(x, dict)}
+        if not {x['text'] for x in rebuilt['lead']} | set(rebuilt['limitations']) <= texts:
+            raise BundleError('Lead chips or limitations differ from a rebuild of the collection')
+    if data.get('xau_bars_used'):
+        from scrapers.xau_levels import recompute
+        levels = data.get('xau_levels') or {}
+        computed_at = (levels.get('inputs') or {}).get('computed_at')
+        if not computed_at:
+            raise BundleError('Liquidity levels do not record when they were computed')
+        calendar = data.get('economic_calendar') or {}
+        try:
+            again = recompute(data['xau_bars_used'], computed_at, levels.get('price'),
+                              None if calendar.get('error') else calendar.get('events'), manifest['kind'] == 'weekly')
+        except (TypeError, ValueError) as exc:
+            raise BundleError(f'Stored bars cannot be used: {exc}') from None
+        if _plain_json(again) != levels:
+            raise BundleError('Liquidity levels differ from a recomputation from the stored bars')
+
+
+def make_summary(source, mode, as_of, lead=(), cutoff=None):
+    """The conclusion quoted from the report; no editorial text is invented here.
+
+    The dashboard shows one conclusion line, the next important release and the
+    report's limitations. Plans and cancellation conditions stay in the Markdown.
+    """
     sections = re.split(r'^##\s+', source, flags=re.M)
     intro = next((s for s in sections if re.match(r'.*(?:サマリー|要約)', s.split('\n', 1)[0])), '')
     paragraphs = [p.strip() for p in re.split(r'\n\s*\n', intro.partition('\n')[2])
                   if p.strip() and not p.lstrip().startswith(('#', '|', '<'))]
     if not paragraphs:
         raise BundleError('Report summary section has no source paragraph')
-    first = paragraphs[0]
-    if len(first) > 1100:
-        raise BundleError('Summary paragraph is too long; edit without truncating conditions')
-    # Keep complete source statements; a long metrics list is not a useful lead.
-    conclusion_text = first
-    lines = [line.strip() for line in first.splitlines() if line.strip()]
-    if len(lines) > 3:
-        lead = next((line for line in lines if re.match(r'XAUUSD\s*(?:[:：]|は)', line)), None)
-        if lead:
-            conclusion_text = lead
-    candidates = [p.strip() for p in re.split(r'\n\s*\n', source.split('## 図表に使用した観測値')[0])
-                  if p.strip() and not p.lstrip().startswith(('#', '|', '<')) and p.strip() != first and len(p) <= 700]
+    lines = [line.strip() for p in paragraphs for line in p.splitlines() if line.strip()]
+    conclusion = next((line for line in lines if re.match(r'XAUUSD\s*(?:[:：]|は)', line)), paragraphs[0])
+
     def plain(text):
-        # Cards use plain text. Preserve readable citation labels here and the
-        # complete original links in source_quote / the full source section.
         text = re.sub(r'\[([^\]\n]+)\]\(https?://[^\s)]+\)', r'\1', text)
-        return text.replace('**', '').replace('`', '').replace('  \n', '\n')
-    conditions = []
-    for line in lines:
-        if re.match(r'(?:観察時間|観察期限|最大リスク|無効化条件)[:：]', plain(line)):
-            title, text = re.split(r'[:：]', plain(line), maxsplit=1)
-            conditions.append({'title': title, 'text': text.strip(), 'source_quote': line})
-    # Preserve each plan's complete conditions, including negative qualifications.
-    # An arbitrary first match can select plan B and discard plan A's prerequisites.
-    for match in re.finditer(r'^#{2,3}\s+([^\n]*プラン\s*[ABＡＢ12１２][^\n]*)\n(.*?)(?=^#{1,3}\s|\Z)',
-                             source.split('## 図表に使用した観測値')[0], re.M | re.S):
-        title, body = match.group(1).strip(), match.group(2).strip()
-        if not body or len(body) > 2800:
-            raise BundleError('Plan conditions require a complete readable source passage')
-        display = []
-        for paragraph in re.split(r'\n\s*\n', body):
-            if paragraph.lstrip().startswith('|'):
-                rows = [[cell.strip() for cell in row.strip().strip('|').split('|')]
-                        for row in paragraph.splitlines() if row.strip()]
-                if rows[0][0] == '#':
-                    continue  # score arithmetic stays in the score/full-source sections
-                display.extend(': '.join(row) for row in rows[2:])
-            elif not re.fullmatch(r'\*\*スコア内訳[^\n]*\*\*[:：]?', paragraph.strip()):
-                display.append(paragraph)
-        if not display:
-            raise BundleError('Plan conditions are missing')
-        conditions.append({'title': title, 'text': plain('\n\n'.join(display)), 'source_quote': match.group(0).strip()})
-    if not conditions:
-        condition = next((p for p in candidates if re.search('確認|条件|見送', p)), None)
-        if condition:
-            conditions.append({'title': '次に確認する条件', 'text': plain(condition), 'source_quote': condition})
-    metrics = []
-    score_line = next((line for line in lines if '信頼度' in line and 'スコア' in line), None)
-    if score_line:
-        match = re.search(r'信頼度[:：]\s*(\w+)', score_line)
-        if match:
-            metrics.append({'label': '信頼度', 'value': match.group(1), 'context': plain(score_line), 'source_quote': score_line})
+        return text.replace('**', '').replace('`', '')
+    if len(plain(conclusion)) > CONCLUSION_MAX:
+        raise BundleError(f'Conclusion line is over {CONCLUSION_MAX} characters; shorten it without dropping conditions')
+    stamp = timestamp(as_of)
+    end = timestamp(cutoff) if cutoff else stamp
+    span = stamp.strftime('%H:%M') + (f'〜{end.strftime("%H:%M")}' if end.strftime('%H:%M') != stamp.strftime('%H:%M') else '')
     return {'eyebrow': f'GOLD {mode.upper()}', 'short_title': 'チャート外分析',
-            'report_date': timestamp(as_of).date().isoformat(), 'status': '観測・条件・未確認事項',
-            'conclusion': {'title': '今回の見立て', 'text': plain(conclusion_text), 'source_quote': first},
-            'metrics': metrics,
-            'conditions': conditions,
-            'source_note': '収集時刻と市場の観測時点は異なります。各図の出典・本文の制約を確認してください。',
-            'note': '判断条件と数値は原稿の引用です。売買の確率を示すものではありません。'}
+            'report_date': stamp.date().isoformat(),
+            'as_of_label': f'{stamp.strftime("%m/%d")}（{"月火水木金土日"[stamp.weekday()]}）{span} JST 収集',
+            'conclusion': {'title': '結論', 'text': plain(conclusion), 'source_quote': conclusion},
+            'chips': list(lead),
+            'note': '向き・価格・指標は原稿と収集データの引用です。売買の確率や到達を示すものではありません。'}
 
 
 def prepare(md_path, data_path, mode, now=None):
     md_path, data_path = Path(md_path), Path(data_path)
     data = json.loads(data_path.read_text())
     source = md_path.read_text(encoding='utf-8')
-    marker = '\n\n## 図表に使用した観測値\n'
-    source = source.split(marker)[0].rstrip()
+    source = source.split(APPENDIX)[0].rstrip()
     result = observations(data, now, mode, source)
     source += result['appendix']
     md_path.write_text(source, encoding='utf-8')
-    summary = make_summary(source, mode, result['asOf'])
+    summary = make_summary(source, mode, result['asOf'], result['lead'], result['cutoff'])
     summary['limitations'] = [{'title': '今回の制約と直近の変化', 'text': note, 'source_quote': note}
                               for note in result['limitations']]
     summary_path, figures_path, manifest_path = [md_path.with_suffix(s) for s in ('.summary.json', '.figures.json', '.bundle.json')]
     check_bindings(data, result, result['figures'])
     for path, value in ((summary_path, summary), (figures_path, result['figures'])):
         path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n')
-    manifest = {'schemaVersion': 1, 'kind': mode, 'asOf': result['asOf'],
+    manifest = {'schemaVersion': MANIFEST_VERSION, 'kind': mode, 'asOf': result['asOf'],
                 'reportDate': timestamp(result['asOf']).date().isoformat(), 'synthetic': data.get('synthetic') is True,
                 'dataPath': str(data_path.absolute()), 'dataSha256': digest(data_path),
                 'sourcePath': str(md_path.absolute()), 'sourceSha256': digest(md_path),

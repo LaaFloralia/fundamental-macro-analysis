@@ -259,6 +259,8 @@ def fetch_fred_series(series_id: str, api_key: Optional[str] = None) -> dict:
         # 相関計算用（correlation.py が消費）。scraped_data JSON からは
         # main.save_scraped が容量削減のため落とす（実行中のみ在る）。
         "observations": obs.get("observations", []),
+        # 図のミニ折れ線用の直近 21 観測（古い順 [date, value]）。観測列と違い保存する。
+        "recent": [[d, v] for d, v in reversed(obs.get("observations", [])[:21])],
     })
 
     # 系列別 stale 判定: as_of_date が SERIES_CONFIG[series_id]["stale_days"] を超えたら stale=true
