@@ -65,6 +65,15 @@ def test_board_and_table_render_every_field_and_validate_against_quotes():
     bad = price_figure(); bad['band']['upper'] = 4250.0
     with pytest.raises(ValueError, match='Band edges'):
         visual_blocks.validate([bad], SOURCE)
+    bad = board_figure(); bad['items'][0]['direction'] = '上向き'  # a word the quote does not carry
+    with pytest.raises(ValueError, match='text not in quote'):
+        visual_blocks.validate([bad], SOURCE)
+    bad = price_figure(); bad['items'][0]['tag'] = '5000'
+    with pytest.raises(ValueError, match='numbers not in quote'):
+        visual_blocks.validate([bad], SOURCE)
+    wide = price_figure(); wide['band'] = {'lower': 4126.58, 'upper': 4412.64, 'label': 'b'}  # upper edge is offscale
+    html = visual_blocks.price_map(wide, 'figure-9')
+    assert 'band-shade' in html and 'y="44.00"' in html
 
 
 def test_price_map_without_new_fields_keeps_old_layout():
@@ -90,3 +99,11 @@ def test_build_html_places_band_first_and_uses_configurable_labels():
     assert '<aside class="limitations"><h3>読み違えを防ぐために</h3><ul>' in html and '<details class="limitations"' not in html and '根拠を詳しく読む' in html
     with pytest.raises(ValueError, match='Unknown summary keys'):
         render_report.build_html(SOURCE, summary={'unexpected': 1}, figures=[])
+
+
+def test_rail_first_figure_without_band_keeps_leading_the_overview():
+    rail = price_figure(); rail['placement'] = 'rail'
+    html, _ = render_report.build_html(SOURCE, summary={'conclusion': {'title': 't', 'text': '本文。'},
+                                                         'limitations': [{'title': 'a', 'text': 'b'}]}, figures=[rail])
+    assert 'class="overview-grid has-visual">' in html and html.index('figure-price_map') < html.index('<aside class="decision-rail">')
+    assert html.count('figure-price_map') == 1

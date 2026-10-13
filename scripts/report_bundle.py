@@ -110,18 +110,21 @@ def observations(data, now=None, mode='daily', source=None):
     for key, label in (('band_upper', '想定変動 上限（+1σ）'), ('band_lower', '想定変動 下限（−1σ）')):
         if isinstance(liq.get(key), (int, float)) and not isinstance(liq.get(key), bool):
             price_specs.append((label, liq[key], f'liquidity_levels.{key}', 2, '', band_detail))
-    levels = [lv for lv in liq.get('levels') or [] if isinstance(lv, dict)
+    levels = [(index, lv) for index, lv in enumerate(liq.get('levels') or []) if isinstance(lv, dict)
               and isinstance(lv.get('level'), (int, float)) and not isinstance(lv.get('level'), bool)]
     if levels:
-        for index, lv in enumerate(levels):
-            above = number(lv['level']) > price
+        for index, lv in levels:  # index is the position in the original list, which the binding path names
+            level = number(lv['level'])
+            side = '上' if level > price else '下' if level < price else '同値'
             inside = (isinstance(liq.get('band_upper'), (int, float)) and isinstance(liq.get('band_lower'), (int, float))
-                      and number(liq['band_lower']) <= number(lv['level']) <= number(liq['band_upper']))
-            stops = 'ショートの損切り（買い注文）が少し外に集まりやすい' if above else 'ロングの損切り（売り注文）が少し外に集まりやすい'
-            price_specs.append((f'キリ番 {number(lv["level"]):,.0f}（{"上" if above else "下"}）', lv['level'],
-                                f'liquidity_levels.levels.{index}.level', 2, '',
-                                f'現在値より{"上" if above else "下"}{"・想定変動の範囲内" if inside else "・想定変動の範囲外"}。'
-                                f'{"100ドル" if lv.get("major") else "50ドル"}刻み。{stops}とされる（為替研究の傾向。金の注文量は未検証、支持抵抗の強さではない）'))
+                      and number(liq['band_lower']) <= level <= number(liq['band_upper']))
+            stops = {'上': 'ショートの損切り（買い注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証、支持抵抗の強さではない）',
+                     '下': 'ロングの損切り（売り注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証、支持抵抗の強さではない）',
+                     '同値': '現在値と同じ水準で、どちらの損切りが近いかは言えない'}[side]
+            position = f'現在値より{side}' if side != '同値' else '現在値と同値'
+            price_specs.append((f'キリ番 {level:,.0f}（{side}）', lv['level'], f'liquidity_levels.levels.{index}.level', 2, '',
+                                f'{position}{"・想定変動の範囲内" if inside else "・想定変動の範囲外"}。'
+                                f'{"100ドル" if lv.get("major") else "50ドル"}刻み。{stops}'))
     else:
         for key, label, detail in (('nearest_below', 'キリ番（下）', '現在値より下。ロングの損切り（売り注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証）'),
                                    ('nearest_above', 'キリ番（上）', '現在値より上。ショートの損切り（買い注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証）')):

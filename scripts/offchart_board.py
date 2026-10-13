@@ -8,7 +8,7 @@ verdict tiles only count the rows shown. No collection, LLM, Brain or network he
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import math
 import re
 from zoneinfo import ZoneInfo
@@ -25,7 +25,7 @@ SYMBOL = {('up', 'strong'): '▲', ('up', 'weak'): '△', ('down', 'strong'): '�
           ('flat', 'none'): '—', ('unknown', 'none'): '？'}
 WORD = {'up': '上向き', 'down': '下向き', 'flat': '中立', 'unknown': '判定保留'}
 TONE = {'up': 'positive', 'down': 'negative', 'flat': 'neutral', 'unknown': 'caution'}
-LONG_GROUP = '長期（構造: 実質金利・ドル・政策織り込み・フロー）'
+LONG_GROUP = '長期（構造: 実質金利・ドル・ETF・中銀フロー）'
 SHORT_GROUP = {'daily': '短期（当日の材料と今後24時間）', 'weekly': '今週の材料と来週の予定'}
 TALLY_RULE = '強い向き（▲▼）1票・弱い向き（△▽）0.5票で比べ、差が1票未満なら中立、2票以上で強い向き'
 
@@ -102,6 +102,27 @@ def _asof(series):
     return f"{series.get('as_of_date') or '時点未取得'}{'・古い値' if series.get('stale') else ''}"
 
 
+def _fresh(series, side, strength):
+    """Stale FRED observations stay visible but do not vote."""
+    if series.get('stale'):
+        return 'unknown', 'none', '古い値・判定保留'
+    return side, strength, None
+
+
+def _bounded(value):
+    """Probabilities and percentiles are only meaningful within 0-100."""
+    p = num(value)
+    return p if p is not None and 0.0 <= p <= 100.0 else None
+
+
+def _parse_jst(value):
+    try:
+        t = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    return t.replace(tzinfo=JST) if t.tzinfo is None else t.astimezone(JST)
+
+
 def _lowest_range(fedwatch):
     rates = fedwatch.get('target_rates') or []
     parsed = []
@@ -121,17 +142,23 @@ def _fedwatch_row(group, data, key, threshold, label, rule_window):
     if not usable(fw):
         return None
     index, rate = _lowest_range(fw)
-    if rate is None or num(rate.get('current')) is None:
+    if rate is None or _bounded(rate.get('current')) is None:
         return None
-    delta = (fw.get('deltas') or {}).get(key) or {}
-    change = num((delta.get('by_range') or {}).get(rate.get('range')))
     current = number(rate['current'], 1)
-    if change is None:
-        baseline, change_text = f'{rule_window}は取得不可', '—'
-    else:
-        change = number(change, 1)
-        baseline = f'{rule_window} {current - change:.1f}%（{delta.get("source") or "出所未記載"}）'
+    previous = _bounded(rate.get(key))  # the provider table's own "1 day ago" / "1 week ago" column
+    if previous is not None:
+        change = number(current - previous, 1)
+        baseline = f'{rule_window} {previous:.1f}%（提供表の{rule_window}列）'
         change_text = f'{change:+.1f}pp'
+    else:
+        delta = (fw.get('deltas') or {}).get(key) or {}
+        change = num((delta.get('by_range') or {}).get(rate.get('range')))
+        if change is None or _bounded(current - change) is None:
+            change, baseline, change_text = None, f'{rule_window}の確率は取得不可', '—'
+        else:
+            change = number(change, 1)
+            baseline = f'{rule_window} {current - change:.1f}%（自前履歴 {delta.get("source") or "出所未記載"}）'
+            change_text = f'{change:+.1f}pp'
     side, strength = judge(change, threshold, +1)
     return row(group, label, f'{rate["range"]}: {current:.1f}%', baseline, change_text, side, strength,
                f'次回FOMC {fw.get("next_fomc_date") or "未取得"}',
@@ -156,22 +183,21 @@ def bias_rows(data, stamp, mode):
     s = _series(fred, 'DFII10')
     if s and num(s.get('change_20obs')) is not None and num(s.get('value_20obs_ago')) is not None:
         change = number(s['change_20obs'], 2)
-        side, strength = judge(change, 0.10, -1)
+        side, strength, word = _fresh(s, *judge(change, 0.10, -1))
         keep(row(LONG_GROUP, '実質金利（米10年TIPS）', f'{fmt(s["value"])}%',
                  f'20営業日前 {fmt(s["value_20obs_ago"])}%（{s.get("as_of_20obs_ago") or "日付未取得"}）',
-                 f'{change:+.2f}pp', side, strength, _asof(s), '上昇は金の逆風、低下は追い風。±0.10pp未満は弱',
-                 value=s['change_20obs'], path='fred.DFII10.change_20obs', unit='pp'))
+                 f'{change:+.2f}pp', side, strength, _asof(s), '上昇は金の逆風、低下は追い風。±0.10pp未満は弱。古い値は判定保留',
+                 word=word, value=s['change_20obs'], path='fred.DFII10.change_20obs', unit='pp'))
     s = _series(fred, 'DTWEXBGS')
-    if s and num(s.get('change_20obs')) is not None and num(s.get('value_20obs_ago')):
+    if s and num(s.get('change_20obs')) is not None and (num(s.get('value_20obs_ago')) or 0) > 0:
         change = number(s['change_20obs'], 2)
         pct = number(change / s['value_20obs_ago'] * 100, 2)
-        side, strength = judge(pct, 1.0, -1)
+        side, strength, word = _fresh(s, *judge(pct, 1.0, -1))
         keep(row(LONG_GROUP, 'ドル（FRB広義ドル指数）', fmt(s['value']),
                  f'20営業日前 {fmt(s["value_20obs_ago"])}（{s.get("as_of_20obs_ago") or "日付未取得"}）',
                  f'{change:+.2f}（{pct:+.2f}%）', side, strength, _asof(s),
-                 'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%未満は弱',
-                 value=s['change_20obs'], path='fred.DTWEXBGS.change_20obs', unit='index'))
-    keep(_fedwatch_row(LONG_GROUP, data, 'prev_week', 10.0, '政策金利の織り込み（前週比）', '前週'))
+                 'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%未満は弱。古い値は判定保留',
+                 word=word, value=s['change_20obs'], path='fred.DTWEXBGS.change_20obs', unit='index'))
     etf = data.get('gold_etf')
     if usable(etf) and num(etf.get('change_20d_t')) is not None:
         change = number(etf['change_20d_t'], 2)
@@ -196,11 +222,11 @@ def bias_rows(data, stamp, mode):
         s = _series(fred, 'DGS2')
         if s and num(s.get('change')) is not None and num(s.get('prev_value')) is not None:
             change = number(s['change'], 2)
-            side, strength = judge(change, 0.05, -1)
+            side, strength, word = _fresh(s, *judge(change, 0.05, -1))
             keep(row(short, '米2年債利回り（前営業日比）', f'{fmt(s["value"])}%',
                      f'前営業日 {fmt(s["prev_value"])}%（{s.get("prev_as_of_date") or "日付未取得"}）', f'{change:+.2f}pp',
-                     side, strength, _asof(s), '上昇は金の逆風。FREDは1〜2営業日遅れ。±0.05pp未満は弱',
-                     value=s['change'], path='fred.DGS2.change', unit='pp'))
+                     side, strength, _asof(s), '上昇は金の逆風。FREDは1〜2営業日遅れ。±0.05pp未満は弱。古い値は判定保留',
+                     word=word, value=s['change'], path='fred.DGS2.change', unit='pp'))
         dxy = data.get('dxy')
         if usable(dxy) and num(dxy.get('change_pct')) is not None and num(dxy.get('current_price')) is not None:
             pct = number(dxy['change_pct'], 2)
@@ -212,20 +238,27 @@ def bias_rows(data, stamp, mode):
                      'ドル高は金の逆風、ドル安は追い風。±0.3%未満は弱',
                      value=dxy['change_pct'], path='dxy.change_pct', unit='%'))
         keep(_fedwatch_row(short, data, 'prev_day', 5.0, '政策金利の織り込み（前日比）', '前日'))
+    else:
+        keep(_fedwatch_row(short, data, 'prev_week', 10.0, '政策金利の織り込み（前週比）', '前週'))
 
     hours = int(data.get('macro_surprise_hours') or (7 * 24 if weekly else 36))
     span = f'直近{hours // 24}日' if hours % 24 == 0 and hours >= 48 else f'直近{hours}時間'
-    surprises = [e for e in data.get('macro_surprises') or []
-                 if e.get('country') == 'United States' and isinstance(e.get('surprise'), dict)
-                 and str(e.get('forecast_provenance', '')).startswith('発表前記録')]
-    for ev in surprises[:4]:
-        s = ev['surprise']
-        sign, diff = gold_sign(ev), num(s.get('diff'))
-        if diff is None:
+    surprises = []
+    for ev in data.get('macro_surprises') or []:
+        released_at = _parse_jst(ev.get('released_at_jst'))
+        if (ev.get('country') != 'United States' or released_at is None
+                or not (stamp - timedelta(hours=hours) <= released_at <= stamp)
+                or not str(ev.get('forecast_provenance', '')).startswith('発表前記録')):
             continue
+        s = compute_surprise(ev)  # recomputed from the record's own actual/forecast, never a cached difference
+        if s is not None:
+            surprises.append((released_at, ev, s))
+    surprises.sort(key=lambda x: x[0], reverse=True)
+    for released_at, ev, s in surprises[:4]:
+        sign, diff = gold_sign(ev), s['diff']
         side, strength = ('flat', 'none') if diff == 0 or sign == 0 else ('up' if diff * sign > 0 else 'down', 'strong')
         word = {'flat': '予想どおり' if sign else '規則なし（この指標は対象外）'}.get(side)
-        released = str(ev.get('released_at_jst') or '')[:16].replace('T', ' ')
+        released = released_at.strftime('%Y-%m-%d %H:%M')
         keep(row(short, f'指標サプライズ: {re.sub(r"\s+", " ", str(ev.get("indicator", "")))}', f'結果 {ev.get("actual")}',
                  f'予想 {ev.get("forecast")}（発表前記録）', f'結果−予想 {diff:+g}{s["unit"]}', side, strength,
                  f'{released} JST 発表', '米指標の一般則: 予想より強い結果はドル・金利高で金に逆風。実際の反応は別に確認', word=word))
@@ -263,7 +296,7 @@ def bias_rows(data, stamp, mode):
     r = (data.get('retail_sentiment') or {}).get('XAUUSD')
     if usable(r) and num(r.get('long_pct')) is not None:
         p = (positioning.get('retail') or {}).get('XAUUSD') or {}
-        pct, n = num(p.get('percentile')), p.get('history_n')
+        pct, n = _bounded(p.get('percentile')), p.get('history_n')
         asof = f'観測日 {r["as_of_date"]}' if r.get('as_of_date') else f'記録 {stamp_text(r.get("timestamp"))}'
         if pct is None:
             keep(row(short, '個人のロング比率', f'ロング {fmt(r["long_pct"], 1)}%（{r.get("source") or "提供元未確認"}）',
@@ -282,7 +315,7 @@ def bias_rows(data, stamp, mode):
     mm = ((cot or {}).get('data') or {}).get('managed_money') if usable(cot) else None
     if isinstance(mm, dict) and num(mm.get('net')) is not None:
         p = positioning.get('cot_gold_mm') or {}
-        pct, n = num(p.get('percentile')), p.get('history_n')
+        pct, n = _bounded(p.get('percentile')), p.get('history_n')
         net = number(mm['net'], 0)
         change = num(mm.get('net_change'))
         oi = f'（OI比 {fmt(mm["net_pct_oi"], 1)}%）' if num(mm.get('net_pct_oi')) is not None else ''
@@ -331,10 +364,12 @@ def source_verdict(source):
     match = re.search(r'^(時間軸別の向き[:：].+)$', source, re.M)
     if match:
         line = match.group(1).strip()
-        found = dict(re.findall(r'(長期|短期|総合)\s*[:：]?\s*([^｜|]+)', line.split('：', 1)[-1].split(':', 1)[-1]))
-        overall = found.get('総合', '記載なし').strip()
-        detail = '／'.join(f'{k} {found[k].strip()}' for k in ('長期', '短期') if k in found)
-        return _verdict_tile(overall, detail, line)
+        body = re.split(r'[:：]', line, maxsplit=1)[-1]
+        found = dict(re.findall(r'(長期|短期|総合)\s*[:：]?\s*([^｜|]+)', body))
+        if '総合' in found:
+            cut = body.find('総合')
+            detail = (body[:cut] if cut > 0 else '').strip().rstrip('｜| ').strip()  # verbatim slice of the quoted line
+            return _verdict_tile(found['総合'].strip(), detail, line)
     match = re.search(r'^(方向付与[:：].+)$', source, re.M)
     if match:
         line = match.group(1).strip()
@@ -371,14 +406,17 @@ def bias_figure(data, stamp, mode, source=None):
         verdicts.append({'label': label, 'direction': t['word'], 'symbol': t['symbol'], 'tone': t['tone'],
                          'detail': t['detail'], 'source_quote': quote})
     own = source_verdict(source)
-    verdicts.append(own or {'label': '原稿の判断（分析本文の結論）', 'direction': '記載なし', 'symbol': '？',
-                            'tone': 'caution', 'detail': '原稿に固定形式の向きの行がありません',
-                            'source_quote': rows[0]})
+    if own is None:
+        quote = '原稿の判断: ？ 記載なし（原稿に固定形式の向きの行がありません）'
+        rows.append(quote)
+        own = {'label': '原稿の判断（分析本文の結論）', 'direction': '記載なし', 'symbol': '？', 'tone': 'caution',
+               'detail': '原稿に固定形式の向きの行がありません', 'source_quote': quote}
+    verdicts.append(own)
     figure = {'id': 'bias', 'type': 'bias_board', 'placement': 'band', 'kicker': '一目で見る向き',
               'title': 'チャート外バイアス盤（長期・短期）',
               'subtitle': f'向きは金（XAUUSD）に対する方向 / 収集: {stamp.strftime("%Y-%m-%d %H:%M")} JST（各行の時点は右端）',
               'caption': ('各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は規則の閾値以上、△▽は閾値未満の弱い向き、'
-                          '—は中立・票なし、？は判定保留。集計は表示した行だけを数え、確率や的中率ではありません。'
+                          '—は中立・票なし、？は判定保留。閾値の判定は表示桁に丸めた値で行います。集計は表示した行だけを数え、確率や的中率ではありません。'
                           '比率（個人・COT）は極端値のときだけ逆方向の票で、通常は警告用です。原稿の判断は分析本文の結論で、規則集計と食い違うことがあります。'),
               'source_label': 'FRED / Investing.com / CME FedWatch / SPDR / IMF / CFTC / MyFXBook', 'source_url': 'https://fred.stlouisfed.org/',
               'verdicts': verdicts, 'items': items}
@@ -396,7 +434,7 @@ def _killzone(when):
 
 
 def _stop_window(ev, when, blackouts):
-    found = blackouts.get((str(ev.get('indicator', '')), when.isoformat()))
+    found = blackouts.get((str(ev.get('country', '')), _norm(ev.get('indicator')), when.isoformat()))
     if found and found.get('window_start') and found.get('window_end'):
         start, end = found['window_start'][11:16], found['window_end'][11:16]
     else:
@@ -406,10 +444,18 @@ def _stop_window(ev, when, blackouts):
     return f'停止 {start}〜{end}'
 
 
-def _direction_from(gold_direction, country=None):
-    fallback = '規則なし（この指標は対象外）' if country == 'United States' else '規則なし（米指標以外）'
-    return {'金に上向き': ('▲', '上向き', 'positive'), '金に下向き': ('▼', '下向き', 'negative'),
-            '予想どおり': ('—', '予想どおり', 'neutral')}.get(gold_direction, ('—', fallback, 'neutral'))
+def _norm(text):
+    return re.sub(r'\s+', ' ', str(text or '')).strip()
+
+
+def _direction(sign, diff, country):
+    """Glyph, word and tone for a released US surprise; the sign already encodes the country rule."""
+    if sign == 0:
+        return '—', ('規則なし（この指標は対象外）' if country == 'United States' else '規則なし（米指標以外）'), 'neutral'
+    if diff == 0:
+        return '—', '予想どおり', 'neutral'
+    side = 'up' if diff * sign > 0 else 'down'
+    return mark(side, 'strong'), WORD[side], TONE[side]
 
 
 def event_figure(data, stamp, mode):
@@ -418,8 +464,9 @@ def event_figure(data, stamp, mode):
         return None
     weekly = mode == 'weekly'
     past = timedelta(days=7 if weekly else 2)
-    surprises = {(str(e.get('indicator', '')), str(e.get('released_at_jst', ''))): e for e in data.get('macro_surprises') or []}
-    blackouts = {(str(b.get('event', '')), str(b.get('time_jst', ''))): b
+    surprises = {(str(e.get('country', '')), _norm(e.get('indicator')), str(e.get('released_at_jst', ''))): e
+                 for e in data.get('macro_surprises') or []}
+    blackouts = {(str(b.get('country', '')), _norm(b.get('event')), str(b.get('time_jst', ''))): b
                  for b in (data.get('offchart_features') or {}).get('event_blackouts') or []}
     rows, items = [], []
     selected = []
@@ -429,10 +476,11 @@ def event_figure(data, stamp, mode):
             selected.append((when, ev))
     selected.sort(key=lambda pair: pair[0])
     if len(selected) > 18:
-        released = [pair for pair in selected if pair[0] <= stamp]
-        selected = released + [pair for pair in selected if pair[0] > stamp][:18 - len(released)]
+        released = [pair for pair in selected if pair[0] <= stamp][-18:]  # newest released rows keep priority
+        selected = released + [pair for pair in selected if pair[0] > stamp][:max(0, 18 - len(released))]
     for when, ev in selected:
-        clean = lambda key: '—' if ev.get(key) in (None, '', 'N/A') else str(ev.get(key))
+        clean_of = lambda obj, key: '—' if obj.get(key) in (None, '', 'N/A') else str(obj.get(key))
+        clean = lambda key: clean_of(ev, key)
         label = re.sub(r'\s+', ' ', str(ev.get('indicator', ''))).strip()
         country = COUNTRY.get(ev.get('country'), str(ev.get('country') or '国不明'))
         importance = {'high': '高', 'medium': '中', 'low': '低'}.get(ev.get('importance'), '高')
@@ -441,14 +489,17 @@ def event_figure(data, stamp, mode):
         window = _killzone(when)
         if released:
             status = '発表済み'
-            s = surprises.get((str(ev.get('indicator', '')), when.isoformat()))
-            surprise = s.get('surprise') if s else (compute_surprise(ev) if actual != '—' else None)
+            s = surprises.get((str(ev.get('country', '')), _norm(ev.get('indicator')), when.isoformat()))
+            if s:  # show the pre-release record's own values so the displayed difference matches them
+                previous, forecast, actual = clean_of(s, 'previous'), clean_of(s, 'forecast'), clean_of(s, 'actual')
+            record = s or ev
+            surprise = compute_surprise(record) if actual != '—' else None
             if actual == '—':
                 actual, diff, (symbol, word, tone) = '未取得', '差: 結果未取得', ('—', '結果待ち', 'neutral')
             elif surprise:
                 provenance = '発表前記録の予想' if s and str(s.get('forecast_provenance', '')).startswith('発表前記録') else '予想は発表後に取得'
                 diff = f'結果−予想 {surprise["diff"]:+g}{surprise["unit"]}（{provenance}）'
-                symbol, word, tone = _direction_from(surprise.get('gold_direction'), ev.get('country'))
+                symbol, word, tone = _direction(gold_sign(record), surprise['diff'], record.get('country'))
             else:
                 diff, (symbol, word, tone) = '差: 計算不可（予想欠測または単位不一致）', ('—', '判定なし', 'neutral')
         else:
@@ -467,7 +518,7 @@ def event_figure(data, stamp, mode):
                     side = 'up' if d * sign > 0 else 'down'
                     symbol, word, tone = mark(side, 'weak'), f'予想どおりなら{WORD[side]}', TONE[side]
             else:
-                diff = '差: 予想なし' if f is None else '差: 前回なし'
+                diff = '差: 予想なし' if f is None else '差: 前回なし' if p is None else '差: 単位不一致'
                 symbol, word, tone = '—', '判定なし', 'neutral'
         date, time = when.strftime('%Y-%m-%d'), when.strftime('%H:%M') + ' JST'
         quote = (f'{date} {time}｜{country}｜{label}｜{status}｜重要度 {importance}｜前回 {previous}｜予想 {forecast}'
