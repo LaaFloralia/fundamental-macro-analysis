@@ -15,7 +15,8 @@ labour-market releases the Fed watches between payroll reports.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
+import math
 import re
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -23,6 +24,8 @@ from zoneinfo import ZoneInfo
 JST = ZoneInfo("Asia/Tokyo")
 NOWCAST_MAX_AGE_DAYS = 6    # a nowcast whose last data point is older is not used
 GAP_NEUTRAL_PP = 0.05       # |nowcast - consensus| below this is 予想並み
+NOWCAST_MAX_PER_WINDOW = 3  # nowcast rows kept (nearest releases first); parent input, board and table share them
+NOWCAST_CLOCK_SKEW = timedelta(minutes=5)  # a fetch time this far after the cutoff is still the same collection
 # Whole JST days shown after the stamp's date per tier; results run from the previous weekday
 # (Daily; Friday on a Monday) or seven days back (Weekly).
 AHEAD_DAYS = {("daily", "A"): 7, ("daily", "B"): 2, ("weekly", "A"): 8, ("weekly", "B"): 8}
@@ -134,11 +137,29 @@ def nowcast_gap(event: dict, nowcast: dict) -> Optional[dict]:
     month = target_month(event.get("indicator"), when.date()) if when and key else None
     point = ((nowcast.get("months") or {}).get(month) or {}).get(key) if month else None
     forecast = parse_value(event.get("forecast"))
-    if not point or forecast is None or forecast[1] != "%":
+    value = point.get("value") if isinstance(point, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
-    gap = float(Decimal(str(point["value"])) - Decimal(str(forecast[0])))
-    return {"nowcast": point["value"], "as_of": point.get("as_of"), "forecast": forecast[0],
+    if forecast is None or forecast[1] != "%" or not math.isfinite(forecast[0]):
+        return None
+    gap = float(Decimal(str(value)) - Decimal(str(forecast[0])))
+    return {"nowcast": value, "as_of": point.get("as_of"), "forecast": forecast[0],
             "gap": gap, "month": month, "series": key}
+
+
+def gap_display(gap: dict) -> tuple[str, str, str]:
+    """(nowcast, consensus, difference) as text without units, with enough decimals that the shown
+    difference is the difference of the shown values and sits on the same side of zero and of
+    +-GAP_NEUTRAL_PP as the exact gap (0.2496 vs 0.2 -> '0.2496', '0.2', '+0.0496', never 0.25 / +0.05)."""
+    forecast, exact = Decimal(f"{gap['forecast']:g}"), Decimal(str(gap["gap"]))
+    neutral = Decimal(str(GAP_NEUTRAL_PP))
+    forecast_places = max(0, -forecast.as_tuple().exponent)
+    for places in range(max(2, forecast_places), 11):
+        value = Decimal(str(gap["nowcast"])).quantize(Decimal(1).scaleb(-places), ROUND_HALF_UP)
+        diff = value - forecast
+        if (diff == 0) == (exact == 0) and (abs(diff) >= neutral) == (abs(exact) >= neutral):
+            break
+    return f"{value:.{places}f}", f"{forecast:.{forecast_places}f}", f"{diff:+.{places}f}"
 
 
 def nowcast_age(as_of, stamp: datetime) -> Optional[int]:
@@ -155,15 +176,40 @@ def nowcast_age(as_of, stamp: datetime) -> Optional[int]:
     return (stamp.date() - day).days
 
 
+def nowcast_fetch_problem(nowcast, stamp: datetime) -> Optional[str]:
+    """Why the nowcast record cannot be used at the cutoff, or None: no fetch time, a fetch after the
+    cutoff (plus NOWCAST_CLOCK_SKEW), or a fetch older than NOWCAST_MAX_AGE_DAYS."""
+    raw = nowcast.get("timestamp") if isinstance(nowcast, dict) else None
+    fetched = stamp_of(raw) if raw else None
+    if fetched is None:
+        return "取得時刻の記録なし"
+    if fetched > stamp + NOWCAST_CLOCK_SKEW:
+        return "取得が収集時刻より後"
+    if fetched < stamp - timedelta(days=NOWCAST_MAX_AGE_DAYS):
+        return f"取得が{NOWCAST_MAX_AGE_DAYS}日より前"
+    return None
+
+
 def adopted_nowcasts(events, nowcast, stamp: datetime, mode: str) -> list[tuple]:
-    """(when, event, gap) for CPI / PCE releases after the stamp inside their tier window whose
-    nowcast is at most NOWCAST_MAX_AGE_DAYS old; one per series and month, nearest first.
-    The parent input, the board and the event table all use this one list."""
+    """(when, event, gap) for CPI / PCE releases after the stamp inside their tier window. The
+    nowcast must have been fetched at or before the cutoff (nowcast_fetch_problem) and its last
+    data point be at most NOWCAST_MAX_AGE_DAYS old. One per series and month (the earliest release),
+    at most NOWCAST_MAX_PER_WINDOW, nearest first. `events` is the calendar's event list or the
+    calendar record itself; a record with an error adopts nothing. The parent input, the board and
+    the event table all use this one list."""
     from scrapers.macro_surprise import event_datetime_jst
+    if isinstance(events, dict):
+        if events.get("error"):
+            return []
+        events = events.get("events")
+    if nowcast_fetch_problem(nowcast, stamp):
+        return []
+    dated = sorted(((event_datetime_jst(ev), k, ev) for k, ev in enumerate(events or [])),
+                   key=lambda x: (x[0] is None, x[0] or stamp, x[1]))
     picked, seen = [], set()
-    for ev in events or []:
-        when, level = event_datetime_jst(ev), tier(ev)
-        if when is None or level is None or not (stamp < when < event_window(stamp, mode, level)[1]):
+    for when, _, ev in dated:
+        level = tier(ev) if when is not None else None
+        if level is None or not (stamp < when < event_window(stamp, mode, level)[1]):
             continue
         gap = nowcast_gap(ev, nowcast)
         age = nowcast_age(gap.get("as_of"), stamp) if gap else None
@@ -171,7 +217,7 @@ def adopted_nowcasts(events, nowcast, stamp: datetime, mode: str) -> list[tuple]
             continue
         seen.add((gap["series"], gap["month"]))
         picked.append((when, ev, gap))
-    return sorted(picked, key=lambda x: x[0])
+    return picked[:NOWCAST_MAX_PER_WINDOW]
 
 
 def stamp_of(value) -> Optional[datetime]:
@@ -202,8 +248,9 @@ def format_us_event_lines(events, nowcast, now, mode: str = "daily") -> list[str
         gap = adopted.get(id(ev))
         extra = ""
         if gap:
-            extra = (f"｜Cleveland連銀nowcast {gap['nowcast']:.2f}%（{gap['as_of']}時点）− 市場予想 {gap['forecast']:g}% = "
-                     f"{gap_text(gap['gap'])}")
+            shown_now, shown_consensus, shown_diff = gap_display(gap)
+            extra = (f"｜Cleveland連銀nowcast {shown_now}%（{gap['as_of']}時点）− 市場予想 {shown_consensus}% = "
+                     f"{shown_diff}pp")
         rows.append((when, f"- Tier {level}｜{when.strftime('%m/%d %H:%M')} JST｜{display_name(ev.get('indicator'))}"
                            f"｜前回 {ev.get('previous', 'N/A')}｜予想 {ev.get('forecast', 'N/A')}"
                            + (f"｜結果 {ev.get('actual')}" if ev.get("actual") not in (None, "", "N/A") else "")

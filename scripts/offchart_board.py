@@ -19,8 +19,9 @@ import re
 from zoneinfo import ZoneInfo
 
 from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_sign
-from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, adopted_nowcasts, display_name, event_window,
-                                 results_start, tier, window_label)
+from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, NOWCAST_MAX_PER_WINDOW, adopted_nowcasts,
+                                 display_name, event_window, gap_display, nowcast_age, nowcast_fetch_problem,
+                                 nowcast_gap, results_start, tier, window_label)
 from scripts.report_bundle import number
 
 JST = ZoneInfo('Asia/Tokyo')
@@ -35,7 +36,7 @@ TALLY_RULE = ('同じ要因の行は1票にまとめる（米2年債・政策金
               'COT・個人の比率＝建玉の偏り、nowcastとの差＝発表前の予測）。まとめた票は向きが揃えば強い方、食い違えば0で、'
               '建玉の偏りと発表前の予測は最大0.5票。▲▼は1票、△▽は0.5票。上向きと下向きの差が1票未満なら中立、'
               '2票以上で強、それ以外は弱')
-BLEND_RULE = '原稿に総合の記載がない場合: 長期と短期が同じ向きならその向き、片方が中立ならもう片方の向き（弱）、逆向きなら中立'
+BLEND_RULE = '原稿に総合の記載がない場合: 長期と短期が同じ向きならその向き、片方が中立か材料なしならもう片方の向き（弱、材料なしは総合の欄に書く）、逆向きなら中立'
 CAVEAT = ('金利・ドル・織り込みは同じ材料で同時に動きやすいため、同じ要因の行は1票にまとめています。'
           '閾値と票の重みは経験則の目安で、予測力は検証していません')
 LADDER_RANGE_PCT = {'daily': 2.5, 'weekly': 5.0}
@@ -46,6 +47,7 @@ FLOAT_NOISE = 1e-9  # binary floating-point error only; the inputs carry at most
 MAX_AGE_DAYS = {'DFII10': 7, 'DGS2': 7, 'DXY': 7, 'DTWEXBGS': 14, 'GLD': 7, 'COT': 14}
 CB_MAX_MONTHS = 4                  # IMF IRFCL is one to two months behind
 QUOTE_MAX_HOURS = 24               # FedWatch table, DXY quote and retail ratio come from this collection
+CLOCK_SKEW = timedelta(minutes=5)  # a record time this far after the cutoff is still treated as at the cutoff
 FEDWATCH_HISTORY_DAYS = {'daily': 4, 'weekly': 10}  # own-history baseline when the table has no column
 # Rows that measure the same driver give one vote: the larger vote when they agree, none when they disagree.
 FACTOR = {'実質金利': '実質金利', 'ドル（20営業日）': 'ドル', 'ニュース・地政学': 'ニュース・地政学', '中銀の金購入': '中銀',
@@ -177,11 +179,12 @@ def stale_day(value, stamp, days):
 
 
 def stale_time(value, stamp, hours=QUOTE_MAX_HOURS):
-    """None when the record time is within `hours` before the stamp (or up to an hour after it)."""
+    """None when the record time is within `hours` before the cutoff (or at most CLOCK_SKEW after it:
+    the cutoff is the end of collection, so a later record is not part of this collection)."""
     t = _parse_jst(value)
     if t is None:
         return '取得時刻の記録なし'
-    if t > stamp + timedelta(hours=1):
+    if t > stamp + CLOCK_SKEW:
         return f'取得 {t.strftime("%m/%d %H:%M")} JST が収集時刻より後'
     if t < stamp - timedelta(hours=hours):
         return f'取得 {t.strftime("%m/%d %H:%M")} JST・{hours}時間より前'
@@ -255,6 +258,32 @@ def _correlation_note(data, series_id):
     return ''
 
 
+def _meeting_date(text):
+    """The date of a meeting text ('Oct 28, 2026' or '2026-10-28'); None when it is not a date."""
+    for pattern in ('%b %d, %Y', '%B %d, %Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(_clean(text), pattern).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _rate_ranges(target_rates):
+    """Rate rows with their bounds ('_low', '_mid'), sorted; None unless every range is 'low-high' with finite
+    low < high and no range appears twice."""
+    rates, seen = [], set()
+    for rate in target_rates or []:
+        try:
+            low, high = (float(x) for x in str(rate.get('range')).split('-'))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if not (math.isfinite(low) and math.isfinite(high) and low < high) or (low, high) in seen:
+            return None
+        seen.add((low, high))
+        rates.append({**rate, '_low': low, '_mid': (low + high) / 2})
+    return sorted(rates, key=lambda r: r['_low'])
+
+
 def _expected_rate(rates, key):
     """Probability-weighted midpoint (%) over the ranges, or None unless the column sums to about 100."""
     pairs = []
@@ -284,14 +313,14 @@ def _fedwatch(data, mode, stamp):
     meeting = _clean(fw.get('next_fomc_date'))
     if not meeting:
         return None, '次回FOMCの日付なし'
-    rates = []
-    for rate in fw.get('target_rates') or []:
-        try:
-            low, high = (float(x) for x in str(rate.get('range')).split('-'))
-        except (TypeError, ValueError):
-            return None, '確率表を読めない'
-        rates.append({**rate, '_low': low, '_mid': (low + high) / 2})
-    rates.sort(key=lambda r: r['_low'])
+    meeting_day = _meeting_date(meeting)
+    if meeting_day is None:
+        return None, '次回FOMCの日付を読めない'
+    if meeting_day < stamp.date():
+        return None, f'次回FOMCの日付 {_md(meeting_day.isoformat())} が収集日より前'
+    rates = _rate_ranges(fw.get('target_rates'))
+    if rates is None:
+        return None, '確率表を読めない（レンジの上下・重複）'
     now = _expected_rate(rates, 'current')
     if now is None:
         return None, '確率の合計が100%前後でない'
@@ -303,7 +332,9 @@ def _fedwatch(data, mode, stamp):
         found = re.search(r'(\d{4}-\d{2}-\d{2})', str(history.get('source') or ''))
         if set(by_range) != {r.get('range') for r in rates} or any(num(v) is None for v in by_range.values()):
             return None, f'{window_name}比の比較元なし（同じレンジ構成の履歴がない）'
-        if history.get('meeting') and _clean(history['meeting']) != meeting:
+        if _meeting_date(history.get('meeting')) is None:
+            return None, f'{window_name}比の比較元なし（履歴の会合が不明）'
+        if _meeting_date(history['meeting']) != meeting_day:
             return None, f'{window_name}比の比較元なし（別の会合の履歴）'
         late = stale_day(found.group(1), stamp, FEDWATCH_HISTORY_DAYS[mode]) if found else '履歴の日付なし'
         if late:
@@ -325,7 +356,8 @@ def _fedwatch(data, mode, stamp):
                side, strength, f'次回FOMC {_meeting(meeting)}',
                '確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。'
                f'±{threshold:g}bp以上で強（隣のレンジへ確率{4 * threshold:g}ppの移動に相当）。'
-               '確率の合計が100%前後でない表と、次回会合の日付がない表は使わない',
+               '確率の合計が100%前後でない表、次回会合の日付がない・読めない・収集日より前の表、'
+               'レンジの上下や重複が不正な表は使わない',
                note=f'確率 {distribution}', viz={'type': 'probs', 'segments': segments}), None
 
 
@@ -432,6 +464,7 @@ def bias_rows(data, stamp, mode, source=None):
     us2y = yields.get('US2Y') if isinstance(yields, dict) else None
     # Only a quote from the current US trading date is "today"; otherwise FRED with its own date.
     if not weekly and isinstance(us2y, dict) and us2y.get('stale') is False and \
+            not stale_time(us2y.get('as_of_jst'), stamp) and \
             all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close')):
         change, places = shown(us2y['change'], 3, 0.05)
         side, strength = judge(us2y['change'], 0.05, -1)
@@ -583,6 +616,9 @@ def bias_rows(data, stamp, mode, source=None):
             if name not in got:
                 detail = f'{origin}・{why[name]}' if why.get(name) else origin
                 notes.append(f'欠測: {name}（{detail}）。{GROUPS["long"] if group == "long" else short_g}の集計に入れていない')
+    reason = nowcast_missing(data, stamp, mode)
+    if reason:
+        notes.append(f'欠測: 予測との差（Cleveland Fed・{reason}）。{short_g}の集計に入れていない')
     if source is not None and 'ニュース・地政学' not in got:
         notes.append(f'欠測: ニュース・地政学（原稿の「ニュース・地政学:」行）。{long_g}の集計に入れていない')
     return items, bindings, notes
@@ -640,23 +676,61 @@ def surprise_rows(data, stamp, mode):
     return out
 
 
+def nowcast_missing(data, stamp, mode):
+    """Why a scheduled CPI / PCE release (a mapped nowcast series, inside the event-table window) has no
+    nowcast gap, or None when none is scheduled or every one is adopted. The first NOWCAST_MAX_PER_WINDOW
+    releases per series and month are the ones the board would show."""
+    from scrapers.inflation_nowcast import series_key, target_month
+    calendar = data.get('economic_calendar')
+    if not present(calendar):
+        return None
+    scheduled = {}
+    for when, ev in sorted(((event_datetime_jst(e), e) for e in calendar.get('events') or []),
+                           key=lambda x: (x[0] is None, x[0] or stamp)):
+        level, key = (tier(ev) if when else None), series_key(ev.get('indicator'))
+        if level is None or key is None or not (stamp < when < event_window(stamp, mode, level)[1]):
+            continue
+        scheduled.setdefault((key, target_month(ev.get('indicator'), when.date())), (when, ev))
+    if not scheduled:
+        return None
+    adopted = {(gap['series'], gap['month']) for _, _, gap in
+               adopted_nowcasts(calendar, data.get('inflation_nowcast'), stamp, mode)}
+    wanted = list(scheduled.items())[:NOWCAST_MAX_PER_WINDOW]
+    nowcast = data.get('inflation_nowcast')
+    problem = ('取得失敗' if not isinstance(nowcast, dict) else f'取得失敗（{nowcast["error"]}）' if nowcast.get('error')
+               else nowcast_fetch_problem(nowcast, stamp))
+    reasons = {}
+    for key, (when, ev) in wanted:
+        if key in adopted:
+            continue
+        gap = None if problem else nowcast_gap(ev, nowcast)
+        age = nowcast_age(gap.get('as_of'), stamp) if gap else None
+        reason = (problem or ('対象月の予測か市場予想がない' if not gap else '予測の更新日を読めない' if age is None
+                              else f'予測の更新が{NOWCAST_MAX_AGE_DAYS}日より前' if age > NOWCAST_MAX_AGE_DAYS
+                              else '予測の更新日が収集日より後' if age < 0 else '同じ月の別の発表を採用'))
+        reasons.setdefault(reason, []).append(display_name(ev.get('indicator')).split('（')[0])
+    return '・'.join(f'{"・".join(names)}は{reason}' for reason, names in reasons.items()) or None
+
+
 def nowcast_rows(data, stamp, mode):
     """Upcoming CPI / PCE (month-over-month) inside the event-table window: Cleveland Fed nowcast
-    minus the consensus, a weak forecast-based vote. us_events.adopted_nowcasts decides which."""
-    events = (data.get('economic_calendar') or {}).get('events') or []
+    minus the consensus, a weak forecast-based vote. us_events.adopted_nowcasts decides which (the same
+    list the parent input and the event table use). The gap is judged exactly; the shown nowcast has
+    enough decimals that the shown difference is the difference of the shown values."""
     out = []
-    for when, ev, gap in adopted_nowcasts(events, data.get('inflation_nowcast'), stamp, mode)[:3]:
-        value, places = shown(gap['gap'], 2, GAP_NEUTRAL_PP)
+    for when, ev, gap in adopted_nowcasts(data.get('economic_calendar'), data.get('inflation_nowcast'), stamp, mode):
+        shown_now, shown_consensus, shown_diff = gap_display(gap)
+        value = float(shown_diff)
         side = 'flat' if abs(gap['gap']) < GAP_NEUTRAL_PP else ('up' if gap['gap'] < 0 else 'down')
         out.append(row(GROUPS['short'][mode], f'予測との差: {display_name(ev.get("indicator"))}',
-                       f'nowcast {gap["nowcast"]:.2f}%', f'市場予想 {gap["forecast"]:g}%', f'{value:+.{places}f}pp', side, 'weak',
+                       f'nowcast {shown_now}%', f'市場予想 {shown_consensus}%', f'{shown_diff}pp', side, 'weak',
                        f'{when.strftime("%m/%d %H:%M")} JST 発表・nowcast {gap["as_of"]}時点',
                        'Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。'
                        f'発表前の参考で、票は弱（0.5）。{NOWCAST_MAX_AGE_DAYS}日より古い予測は使わない',
                        word='中立（予想並み）' if side == 'flat' else None,
                        viz={'type': 'gap', 'value': -value, 'scale': max(abs(value), 0.2)},
                        bind=(f'inflation_nowcast.months.{gap["month"]}.{gap["series"]}.value', gap['nowcast']),
-                       digits=2, unit='%'))
+                       digits=len(shown_now.partition('.')[2]), unit='%'))
     return out
 
 
@@ -683,8 +757,10 @@ def vote_mark(vote):
 def tally(items, group):
     factors = factor_votes(items, group)
     if not factors:
+        # No material is not a neutral verdict: blend() still reads the side as flat (arithmetic unchanged),
+        # but `available` keeps the two apart wherever the result is explained.
         return {'side': 'flat', 'strength': 'none', 'symbol': '—', 'word': '材料なし', 'detail': '材料なし',
-                'tone': 'neutral', 'factors': []}
+                'tone': 'neutral', 'factors': [], 'available': False}
     up = sum(v for _, v in factors if v > 0)
     down = -sum(v for _, v in factors if v < 0)
     diff = up - down
@@ -694,7 +770,7 @@ def tally(items, group):
         side, strength = ('up' if diff > 0 else 'down'), ('strong' if abs(diff) >= 2 else 'weak')
     detail = '・'.join(f'{name} {vote_mark(v)}' for name, v in factors)
     return {'side': side, 'strength': strength, 'symbol': mark(side, strength), 'word': word_of(side, strength),
-            'detail': detail, 'tone': TONE[side], 'factors': factors}
+            'detail': detail, 'tone': TONE[side], 'factors': factors, 'available': True}
 
 
 def _verdict_word(text):
@@ -758,10 +834,18 @@ def blend(long_t, short_t):
     return 'flat', 'none'
 
 
+def blend_note(long_t, short_t):
+    """Which horizon had no material (so the 総合 came from the other alone); '' when both had."""
+    empty = [name for name, t in (('長期', long_t), ('短期', short_t)) if not t.get('available', True)]
+    if len(empty) == 2:
+        return '長期・短期とも材料なし'
+    return f'{empty[0]}は材料なし（{"短期" if empty[0] == "長期" else "長期"}だけで判定）' if empty else ''
+
+
 def rule_verdicts(items, mode):
-    """{'長期': tally, '短期': tally, '総合': (side, strength)} from the rows alone."""
+    """{'長期': tally, '短期': tally, '総合': (side, strength), '総合の注記': text} from the rows alone."""
     long_t, short_t = tally(items, GROUPS['long']), tally(items, GROUPS['short'][mode])
-    return {'長期': long_t, '短期': short_t, '総合': blend(long_t, short_t)}
+    return {'長期': long_t, '短期': short_t, '総合': blend(long_t, short_t), '総合の注記': blend_note(long_t, short_t)}
 
 
 def _rule_pair(rules, name):
@@ -783,6 +867,7 @@ def bias_figure(data, stamp, mode, source=None):
         return None
     groups = {'長期': GROUPS['long'], '短期': GROUPS['short'][mode]}
     rules = rule_verdicts(items, mode)
+    blend_text = rules['総合の注記']
     own = source_verdicts(source)
     reason = reason_line(source)
     missing = {name: [n.split('（')[0].removeprefix('欠測: ') for n in notes if f'{group}の集計' in n]
@@ -791,12 +876,15 @@ def bias_figure(data, stamp, mode, source=None):
     for name in ('長期', '短期', '総合'):
         side, strength = _rule_pair(rules, name)
         rule_word = rules[name]['word'] if name in groups else word_of(side, strength)
+        if name == '総合' and blend_text == '長期・短期とも材料なし':
+            rule_word = '材料なし'
         short = ''
         if name in own:
             o_side, o_strength, text = own[name]
             differs = (o_side, o_strength) != (side, strength)
             main = {'symbol': mark(o_side, o_strength), 'word': text, 'tone': TONE[o_side],
-                    'origin': '原稿の判断・集計と異なる' if differs else '原稿の判断'}
+                    'origin': '原稿の判断・集計と異なる' if differs else
+                    '原稿の判断（集計は材料なし）' if rule_word == '材料なし' else '原稿の判断'}
         else:
             differs = False
             main = {'symbol': mark(side, strength) if rule_word != '材料なし' else '—', 'word': rule_word,
@@ -807,11 +895,12 @@ def bias_figure(data, stamp, mode, source=None):
                    + (f'。欠測: {"・".join(missing[name])}' if missing[name] else ''))
             short = f'規則の集計 {rule_word}' + (f'・要因{len(factors)}' if factors else '')
         else:
-            sub = f'長期×短期の規則: {rule_word}'
+            sub = f'長期×短期の規則: {rule_word}' + (f'。{blend_text}' if blend_text and rule_word != '材料なし' else '')
         quote = f'バイアス｜{name}: {main["symbol"]} {main["word"]}（{main["origin"]}）｜{sub}' + (f'｜{short}' if short else '')
         rows.append(quote)
         # The detail is shown when the verdict differs, when a horizon has no material, or when one is missing.
-        show = differs or (name in groups and (rule_word == '材料なし' or bool(missing[name])))
+        show = differs or (name in groups and (rule_word == '材料なし' or bool(missing[name]))) \
+            or (name == '総合' and bool(blend_text))
         # A verdict that follows the tally only names what is missing (the tally is in the group header).
         detail = (f'欠測: {"・".join(missing[name])}' if name in groups and missing[name] and not differs
                   and rule_word != '材料なし' else sub)
@@ -821,7 +910,8 @@ def bias_figure(data, stamp, mode, source=None):
     legend = ('各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は閾値以上の強い向き、△▽は閾値未満の弱い向き、'
               '—は中立です。向きは丸める前の値で判定します。データがない材料と古い材料は行ごと省き、欠測として理由と一緒に示します。'
               + TALLY_RULE + '。' + BLEND_RULE + '。' + CAVEAT + '。'
-              '小図は、線が基準から現在値への動き（傾きは閾値に対する大きさ）、棒が期間ごとの量、帯が百分位や比率です。'
+              '小図は、推移線がその行だけの自動尺度（行ごとの最小〜最大に合わせるため、傾きを行どうしで比べることはできません）、'
+              '2点の比較線がその行の閾値を基準にした尺度、棒が期間ごとの量、帯が百分位や比率です。'
               '大きな記号は原稿（分析本文）の判断で、規則の集計と違う場合は「集計と異なる」と理由を示します。')
     rows.append('バイアス盤の読み方: ' + legend)
     figure = {'id': 'bias', 'type': 'bias_board', 'kicker': '期間ごとのバイアス',

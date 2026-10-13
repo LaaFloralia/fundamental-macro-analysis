@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
+from scrapers import us_events as ue
 from scripts import offchart_board as board
 from scripts import report_bundle as bundle
 
@@ -62,8 +63,10 @@ def sample():
         'fedwatch': {'next_fomc_date': 'Oct 28, 2026', 'error': None, 'timestamp': '2026-10-13T22:10:00+09:00',
                      'target_rates': [{'range': '4.00-4.25', 'current': 19.5, 'prev_day': 19.5, 'prev_week': 24.1},
                                       {'range': '3.75-4.00', 'current': 80.5, 'prev_day': 80.5, 'prev_week': 75.9}],
-                     'deltas': {'prev_day': {'by_range': {'3.75-4.00': -1.1}, 'source': '履歴 4日前 (2026-10-09)'},
-                                'prev_week': {'by_range': {'3.75-4.00': 3.5}, 'source': '履歴 8日前 (2026-10-05)'}}},
+                     'deltas': {'prev_day': {'by_range': {'3.75-4.00': -1.1}, 'meeting': 'Oct 28, 2026',
+                                             'source': '履歴 4日前 (2026-10-09)'},
+                                'prev_week': {'by_range': {'3.75-4.00': 3.5}, 'meeting': 'Oct 28, 2026',
+                                              'source': '履歴 8日前 (2026-10-05)'}}},
         'gold_etf': {'tonnes': 1055.41, 'as_of_date': '2026-10-12', 'change_5d_t': -0.86, 'change_20d_t': 7.99, 'error': None},
         'gold_cb': {'cumulative_3m_t': 154.2, 'as_of_date': '2026-M08', 'error': None,
                     'cumulative_periods': ['2026-M08', '2026-M07', '2026-M06'],
@@ -77,7 +80,7 @@ def sample():
         'offchart_features': {'positioning': {'retail': {'XAUUSD': {'percentile': 54.4, 'history_n': 57}},
                                               'cot_gold_mm': {'percentile': 43.9, 'history_n': 156,
                                                               'report_date': '2026-10-06'}}},
-        'inflation_nowcast': {'error': None, 'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'},
+        'inflation_nowcast': {'error': None, 'timestamp': '2026-10-13T13:12:00+00:00', 'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'},
                                                                   'core_cpi': {'value': 0.202, 'as_of': '10/09'}}}},
         'macro_surprises': [
             {'date': 'Monday, October 12, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': 'Initial Jobless Claims',
@@ -804,3 +807,256 @@ def test_release_rows_are_rechecked_against_their_records():
     changed['inflation_nowcast']['months']['2026-9']['cpi']['value'] = 0.61
     with pytest.raises(bundle.BundleError, match='Figure number does not match'):
         bundle.check_bindings(changed, result, result['figures'])
+
+
+# ------------------------------------------------------------------ review round 3 (lane B)
+
+def test_nowcast_rows_judge_exactly_and_show_values_whose_difference_is_the_shown_difference():
+    # 0.2496 vs 0.2 is a gap of 0.0496pp: 予想並み. Rounding the nowcast to 0.25 first would make it +0.05pp.
+    cases = [(0.2496, 'nowcast 0.2496%', '+0.0496pp', 'flat'), (0.2504, 'nowcast 0.25%', '+0.05pp', 'down'),
+             (0.202, 'nowcast 0.202%', '+0.002pp', 'flat'), (0.1504, 'nowcast 0.1504%', '-0.0496pp', 'flat'),
+             (0.1496, 'nowcast 0.15%', '-0.05pp', 'up'), (0.53, 'nowcast 0.53%', '+0.33pp', 'down')]
+    for value, shown_value, change, side in cases:
+        data = sample()
+        data['inflation_nowcast']['months']['2026-9']['core_cpi']['value'] = value
+        data['economic_calendar']['events'][5]['forecast'] = '0.2%'
+        core = rows_of(data)['予測との差: コアCPI（前月比・9月）']
+        assert (core['display'], core['baseline'], core['change'], core['side']) == \
+            (shown_value, '市場予想 0.2%', change, side), value
+        assert core['strength'] == 'weak' or side == 'flat'
+        # The shown difference is the difference of the shown values.
+        assert round(float(core['display'][8:-1]) - 0.2, 6) == float(core['change'][:-2])
+    # A binding digits matches the shown nowcast, so the recorded value is what the page prints.
+    bound = bundle.observations(data, NOW, 'daily', SOURCE)
+    bundle.check_bindings(data, bound, bound['figures'])
+
+
+def test_us_event_lines_use_the_same_gap_text_as_the_board():
+    data = sample()
+    data['inflation_nowcast']['months']['2026-9']['cpi']['value'] = 0.2496
+    data['economic_calendar']['events'][4]['forecast'] = '0.2%'
+    lines = ue.format_us_event_lines(data['economic_calendar']['events'], data['inflation_nowcast'], NOW)
+    assert any('nowcast 0.2496%（10/09時点）− 市場予想 0.2% = +0.0496pp' in line for line in lines)
+    assert ue.gap_display({'nowcast': 0.202, 'forecast': 0.2, 'gap': 0.002}) == ('0.202', '0.2', '+0.002')
+    assert ue.gap_display({'nowcast': 0.531, 'forecast': 0.6, 'gap': -0.069}) == ('0.53', '0.6', '-0.07')
+
+
+@pytest.mark.parametrize('change,symbol', [(0.04999999999999982, '▼'), (0.0499, '▽'), (-0.05000000000000071, '▲')])
+def test_unrounded_us2y_change_is_judged_on_the_threshold(change, symbol):
+    data = sample()
+    data['us_yields']['US2Y'].update(value=4.841 if change > 0 else 4.741, change=change)
+    assert rows_of(data)['米2年債利回り（当日）']['symbol'] == symbol
+
+
+@pytest.mark.parametrize('pct,symbol', [(-0.30000000000000004, '▲'), (-0.2999, '△'), (0.3000000000000003, '▼')])
+def test_unrounded_dxy_change_is_judged_on_the_threshold(pct, symbol):
+    data = sample()
+    data['dxy']['change_pct'] = pct
+    assert rows_of(data)['ドル指数DXY（当日）']['symbol'] == symbol
+
+
+def nowcast_data():
+    data = sample()
+    data['inflation_nowcast']['months']['2026-9'].update(pce={'value': 0.3, 'as_of': '10/09'},
+                                                         core_pce={'value': 0.21, 'as_of': '10/09'})
+    return data
+
+
+def test_adopted_nowcasts_sort_before_deduplicating_and_cap_at_three():
+    events = [ev('Thursday, October 15, 2026', '21:30', 'CPI (MoM) (Sep)', '0.4%', '0.9%'),  # a later duplicate, listed first
+              ev('Thursday, October 15, 2026', '21:30', 'Core PCE Price Index (MoM) (Sep)', '0.2%', '0.2%'),
+              ev('Wednesday, October 14, 2026', '21:30', 'CPI (MoM) (Sep)', '0.4%', '0.6%'),
+              ev('Wednesday, October 14, 2026', '21:30', 'Core CPI (MoM) (Sep)', '0.3%', '0.3%'),
+              ev('Thursday, October 15, 2026', '22:00', 'PCE Price Index (MoM) (Sep)', '0.3%', '0.3%')]
+    data = nowcast_data()
+    adopted = ue.adopted_nowcasts(events, data['inflation_nowcast'], NOW, 'daily')
+    assert [(w.strftime('%m/%d %H:%M'), g['series']) for w, _, g in adopted] == \
+        [('10/14 21:30', 'cpi'), ('10/14 21:30', 'core_cpi'), ('10/15 21:30', 'core_pce')]  # PCE is the fourth: cut
+    assert adopted[0][1]['forecast'] == '0.6%' and adopted[0][2]['forecast'] == 0.6  # not the later 0.9% record
+    # The board, the parent input and the table use that one list.
+    data['economic_calendar']['events'] = events
+    labels = [l for l in rows_of(data) if l.startswith('予測との差')]
+    assert labels == ['予測との差: CPI（前月比・9月）', '予測との差: コアCPI（前月比・9月）', '予測との差: コアPCE価格指数（前月比・9月）']
+    lines = ue.format_us_event_lines(events, data['inflation_nowcast'], NOW)
+    assert sum('Cleveland連銀nowcast' in line for line in lines) == 3
+    table = board.event_figure(data, NOW, 'daily')['figure']['items']
+    assert sum('nowcast' in str(i.get('diff', '')) for i in table) == 3
+
+
+@pytest.mark.parametrize('timestamp,usable', [
+    ('2026-10-13T13:12:00+00:00', True), ('2026-10-13T13:19:00+00:00', True),   # 22:19 JST: 5 minutes after the cutoff
+    ('2026-10-13T13:20:00+00:00', False),                                        # 22:20 JST: after the collection ended
+    ('2026-10-07T13:15:00+00:00', True), ('2026-10-07T13:00:00+00:00', False),   # just inside / outside six days
+    (None, False), ('', False), ('not a time', False)])
+def test_a_nowcast_needs_a_fetch_time_within_the_cutoff_and_six_days(timestamp, usable):
+    data = sample()
+    if timestamp is None:
+        del data['inflation_nowcast']['timestamp']
+    else:
+        data['inflation_nowcast']['timestamp'] = timestamp
+    assert bool(ue.adopted_nowcasts(data['economic_calendar'], data['inflation_nowcast'], NOW, 'daily')) is usable
+    assert any(l.startswith('予測との差') for l in rows_of(data)) is usable
+    lines = ue.format_us_event_lines(data['economic_calendar']['events'], data['inflation_nowcast'], NOW)
+    assert any('Cleveland連銀nowcast' in line for line in lines) is usable
+
+
+def test_a_calendar_record_with_an_error_adopts_no_nowcast():
+    data = sample()
+    assert len(ue.adopted_nowcasts(data['economic_calendar'], data['inflation_nowcast'], NOW, 'daily')) == 2
+    data['economic_calendar']['error'] = 'ページ取得失敗'
+    assert ue.adopted_nowcasts(data['economic_calendar'], data['inflation_nowcast'], NOW, 'daily') == []
+    assert not any(l.startswith('予測との差') for l in rows_of(data))
+    # The event list alone (the old call) still works.
+    events = sample()['economic_calendar']['events']
+    assert len(ue.adopted_nowcasts(events, sample()['inflation_nowcast'], NOW, 'daily')) == 2
+
+
+def test_a_non_finite_nowcast_value_gives_no_gap():
+    data = sample()
+    for value in (float('nan'), float('inf'), True, '0.5'):
+        data['inflation_nowcast']['months']['2026-9']['cpi']['value'] = value
+        assert ue.nowcast_gap(data['economic_calendar']['events'][4], data['inflation_nowcast']) is None
+
+
+def board_notes(data):
+    return board.bias_rows(data, NOW, 'daily', SOURCE)[2]
+
+
+def test_a_missing_or_failed_nowcast_is_listed_when_a_mapped_release_is_scheduled():
+    assert not any('予測との差' in n for n in board_notes(sample()))
+    for change, reason in ((lambda d: d.update(inflation_nowcast=None), 'Cleveland Fed・CPI・コアCPIは取得失敗）'),
+                           (lambda d: d['inflation_nowcast'].update(error='取得不可（ValueError）'),
+                            'Cleveland Fed・CPI・コアCPIは取得失敗（取得不可（ValueError））'),
+                           (lambda d: d['inflation_nowcast'].pop('timestamp'), 'CPI・コアCPIは取得時刻の記録なし'),
+                           (lambda d: d['inflation_nowcast']['months'].clear(), 'CPI・コアCPIは対象月の予測か市場予想がない'),
+                           (lambda d: d['inflation_nowcast']['months']['2026-9']['cpi'].update(as_of='10/01'),
+                            'CPIは予測の更新が6日より前')):
+        data = sample()
+        change(data)
+        notes = [n for n in board_notes(data) if '予測との差' in n]
+        assert len(notes) == 1 and reason in notes[0] and notes[0].startswith('欠測: 予測との差（'), notes
+        assert notes[0].endswith('短期（当日〜1、2日）の集計に入れていない')
+    # The short tile lists it with the other missing materials.
+    data = sample()
+    data['inflation_nowcast'] = None
+    tile = {t['label']: t for t in board.bias_figure(data, NOW, 'daily', SOURCE)['figure']['verdicts']}['短期']
+    assert '予測との差' in tile['detail'] and tile['show_detail'] is True
+    # Nothing is listed when no mapped release is scheduled in the window.
+    data['economic_calendar']['events'] = [e for e in data['economic_calendar']['events'] if 'CPI' not in e['indicator']]
+    assert not any('予測との差' in n for n in board_notes(data))
+
+
+def test_a_horizon_without_material_is_not_called_neutral_in_the_blend():
+    data = sample()
+    for key in ('DFII10', 'DTWEXBGS'):
+        del data['fred'][key]
+    del data['dxy']['recent_closes'], data['gold_cb']
+    source = '# R\n'                                   # no verdict line and no news row: 長期 has no material
+    figure = board.bias_figure(data, NOW, 'daily', source)['figure']
+    tiles = {t['label']: t for t in figure['verdicts']}
+    assert (tiles['長期']['direction'], tiles['長期']['symbol']) == ('材料なし', '—')
+    assert tiles['短期']['symbol'] == '△'
+    assert (tiles['総合']['symbol'], tiles['総合']['direction']) == ('△', '上向き（弱）')  # arithmetic unchanged
+    assert tiles['総合']['detail'] == '長期×短期の規則: 上向き（弱）。長期は材料なし（短期だけで判定）'
+    assert tiles['総合']['show_detail'] is True
+    assert all('長期は中立' not in t['detail'] and '中立' not in t['detail'] for t in tiles.values() if t['label'] != '短期')
+    # The report's own 中立 for that horizon is named as the report's, with the tally saying 材料なし.
+    own = '時間軸別の向き: 長期 中立｜短期 上向き・弱｜総合 上向き・弱\n'
+    tiles = {t['label']: t for t in board.bias_figure(data, NOW, 'daily', own)['figure']['verdicts']}
+    assert (tiles['長期']['direction'], tiles['長期']['origin']) == ('中立', '原稿の判断（集計は材料なし）')
+    assert '規則の集計: 材料なし' in tiles['長期']['detail']
+    # When both horizons have material nothing is added to the blend.
+    tiles = {t['label']: t for t in board.bias_figure(sample(), NOW, 'daily', SOURCE)['figure']['verdicts']}
+    assert tiles['総合']['detail'] == '長期×短期の規則: 中立'
+    # A short horizon without material is explained the same way.
+    data = sample()
+    data['us_yields']['US2Y']['stale'] = True
+    for key in ('fedwatch', 'gold_etf', 'retail_sentiment', 'cot_disaggregated', 'inflation_nowcast', 'macro_surprises'):
+        data.pop(key)
+    del data['fred']['DGS2'], data['dxy']['current_price']
+    tiles = {t['label']: t for t in board.bias_figure(data, NOW, 'daily', NEWS_LINE + '\n')['figure']['verdicts']}
+    assert tiles['短期']['direction'] == '材料なし'
+    assert tiles['総合']['detail'] == '長期×短期の規則: 下向き（弱）。短期は材料なし（長期だけで判定）'
+
+
+def test_fedwatch_needs_a_dated_upcoming_meeting_and_valid_ranges():
+    for meeting, why in (('Sept 31, 2026', '次回FOMCの日付を読めない'), ('soon', '次回FOMCの日付を読めない'),
+                         ('Oct 12, 2026', '収集日より前')):
+        data = sample()
+        data['fedwatch']['next_fomc_date'] = meeting
+        assert why in fed_note(data)[0], meeting
+    data = sample()
+    data['fedwatch']['next_fomc_date'] = 'Oct 13, 2026'      # the cutoff date itself is still ahead
+    assert '政策金利の織り込み（前日比）' in rows_of(data)
+    for rates, why in ((['4.25-4.00', '3.75-4.00'], 'レンジ'), (['4.00-4.00', '3.75-4.00'], 'レンジ'),
+                       (['nan-4.25', '3.75-4.00'], 'レンジ'), (['3.75-4.00', '3.75-4.00'], 'レンジ'),
+                       (['3.75-inf', '3.75-4.00'], 'レンジ'), (['4.00-4.25-4.5', '3.75-4.00'], 'レンジ')):
+        data = sample()
+        for rate, label in zip(data['fedwatch']['target_rates'], rates):
+            rate['range'] = label
+        assert why in fed_note(data)[0], rates
+        assert '政策金利の織り込み（前日比）' not in rows_of(data)
+
+
+def test_fedwatch_history_is_comparable_only_for_the_same_meeting_and_range_set():
+    def own_history():
+        data = sample()
+        data['fedwatch']['target_rates'][1]['prev_day'] = None
+        data['fedwatch']['deltas']['prev_day']['by_range'] = {'3.75-4.00': -1.1, '4.00-4.25': 1.1}
+        return data
+    assert '政策金利の織り込み（10/09比）' in rows_of(own_history())
+    data = own_history()
+    del data['fedwatch']['deltas']['prev_day']['meeting']       # a history with no meeting proves nothing
+    assert '履歴の会合が不明' in fed_note(data)[0] and '政策金利の織り込み（10/09比）' not in rows_of(data)
+    for meeting in ('', None, 'someday'):
+        data = own_history()
+        data['fedwatch']['deltas']['prev_day']['meeting'] = meeting
+        assert '履歴の会合が不明' in fed_note(data)[0]
+    data = own_history()
+    data['fedwatch']['deltas']['prev_day']['meeting'] = '2026-10-28'   # the same day in another notation
+    assert '政策金利の織り込み（10/09比）' in rows_of(data)
+    data = own_history()
+    data['fedwatch']['deltas']['prev_day']['meeting'] = 'Dec 9, 2026'
+    assert '別の会合の履歴' in fed_note(data)[0]
+    data = own_history()
+    data['fedwatch']['deltas']['prev_day']['by_range'] = {'3.75-4.00': -1.1, '4.00-4.25': float('nan')}
+    assert '同じレンジ構成の履歴がない' in fed_note(data)[0]
+
+
+def test_provider_comparison_columns_need_a_valid_table_time():
+    data = sample()
+    assert '政策金利の織り込み（前日比）' in rows_of(data)
+    for stamp in (None, 'garbage', '2026-10-13T22:30:00+09:00', '2026-10-12T21:00:00+09:00'):
+        data = sample()
+        data['fedwatch']['timestamp'] = stamp
+        assert fed_note(data) and not any(l.startswith('政策金利') for l in rows_of(data)), stamp
+
+
+@pytest.mark.parametrize('minutes,usable', [(-1, True), (4, True), (5, True), (6, False), (59, False)])
+def test_records_after_the_cutoff_are_rejected_after_five_minutes(minutes, usable):
+    stamp = (NOW + timedelta(minutes=minutes)).isoformat()
+    assert (board.stale_time(stamp, NOW) is None) is usable
+    data = sample()
+    data['dxy']['timestamp'] = stamp
+    data['retail_sentiment']['XAUUSD']['timestamp'] = stamp
+    data['fedwatch']['timestamp'] = stamp
+    assert any(l.startswith('ドル指数DXY（当日）') for l in rows_of(data)) is usable
+    assert any(l.startswith('個人のロング比率') for l in rows_of(data)) is usable
+    assert any(l.startswith('政策金利') for l in rows_of(data)) is usable
+    assert bool(board_notes(data)) is not usable
+
+
+def test_a_us2y_quote_after_the_cutoff_falls_back_to_fred():
+    data = sample()
+    data['us_yields']['US2Y']['as_of_jst'] = '2026-10-13 22:30'
+    rows = rows_of(data)
+    assert '米2年債利回り（当日）' not in rows and '米2年債利回り（前営業日比）' in rows
+    data['us_yields']['US2Y']['as_of_jst'] = None
+    assert '米2年債利回り（当日）' not in rows_of(data)
+
+
+def test_legend_separates_the_sparkline_scale_from_the_two_point_line_scale():
+    legend = board.bias_figure(sample(), NOW, 'daily', SOURCE)['figure']['legend']
+    assert '推移線がその行だけの自動尺度' in legend and '傾きを行どうしで比べることはできません' in legend
+    assert '2点の比較線がその行の閾値を基準にした尺度' in legend
+    assert '傾きは閾値に対する大きさ' not in legend
