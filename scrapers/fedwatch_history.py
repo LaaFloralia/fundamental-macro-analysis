@@ -239,7 +239,16 @@ def format_delta_lines(fedwatch: dict) -> list[str]:
     if not rates and not unavailable:
         return []
 
-    deltas = fedwatch.get("deltas") or {}
+    deltas = fedwatch.get("deltas")
+    provider_only = deltas is None
+    if provider_only:
+        # The parent's input drops the history deltas (chart-intel runner.model_input_payload). The provider
+        # table's comparison columns are the baseline the bias board uses first, so show those.
+        deltas = {}
+        for key, label in (("prev_day", "提供表の前日列"), ("prev_week", "提供表の前週列")):
+            by_range = _deltas_from_investing(rates, key)
+            if any(v is not None for v in by_range.values()):
+                deltas[key] = {"by_range": by_range, "source": label}
     day, week = deltas.get("prev_day"), deltas.get("prev_week")
 
     def _fmt(delta_info: Optional[dict], rng: str) -> str:
@@ -276,5 +285,6 @@ def format_delta_lines(fedwatch: dict) -> list[str]:
     if deltas.get("note"):
         lines.append(f"  ※ {deltas['note']}")
     if not day and not week:
-        lines.append("  前日比/前週比: N/A（履歴なし・Investing 前回値なし）")
+        lines.append("  前日比/前週比: N/A（提供表に比較欄なし）" if provider_only
+                     else "  前日比/前週比: N/A（履歴なし・Investing 前回値なし）")
     return lines

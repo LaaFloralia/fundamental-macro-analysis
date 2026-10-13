@@ -169,6 +169,19 @@ def test_format_delta_lines_renders_both_deltas():
     assert "前週比ソース: Investing prev_week" in text
 
 
+def test_format_delta_lines_without_deltas_uses_the_provider_columns():
+    """The parent's input has no history deltas; it shows the provider table's columns like the board."""
+    fw = _fedwatch([{"range": "3.75-4.00", "current": 77.0, "prev_day": 80.5, "prev_week": 78.2},
+                    {"range": "4.00-4.25", "current": 23.0, "prev_day": 19.5, "prev_week": 21.8}])
+    text = "\n".join(format_delta_lines(fw))
+    assert "3.75-4.00: 現在 77.0% | 前日比 -3.5pp | 前週比 -1.2pp" in text
+    assert "4.00-4.25: 現在 23.0% | 前日比 +3.5pp | 前週比 +1.2pp" in text
+    assert "前日比ソース: 提供表の前日列" in text and "前週比ソース: 提供表の前週列" in text
+    assert "N/A" not in text
+    text = "\n".join(format_delta_lines(_fedwatch([_rate("3.75-4.00", 77.0)])))
+    assert "前日比/前週比: N/A（提供表に比較欄なし）" in text
+
+
 def test_format_delta_lines_without_rates_returns_empty():
     assert format_delta_lines({"target_rates": []}) == []
 
