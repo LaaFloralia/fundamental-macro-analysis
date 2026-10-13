@@ -1,6 +1,16 @@
 # Session handoff
 
-Updated: 2026-09-23 (JST)
+Updated: 2026-10-13 (JST)
+
+## HP latest completed publication
+
+`scripts/hp_publication.py` publishes one independently reviewed, dated latest-completed XAUUSD document per Daily/Weekly. The author and its parent review remain local-only. The separate `hq/harness/chart_intel_publication.py` phase runs after Hermes confirms the scheduled author ended, using the existing protected subscription worker, immutable source input, and all readable PC/mobile evidence images. It cannot use a failed current run or an old successful manifest as that slot's completion.
+
+The publisher selects the newest nonhistorical `succeeded_local` edition, validates its source/sidecar/parent/render hashes, original six-hour generation freshness, and separate `.hp-review.json` acceptance. It preserves the real data timestamp and adds a reversible dated display notice. This is a latest-completed document, not a claim of fresh current market data. `sourceHtmlSha256` identifies the reviewed source and `sha256` identifies the displayed bytes.
+
+From this repo, `.venv/bin/python -m scripts.hp_publication daily` (or `weekly`) validates without network writes. `--publish` explicitly overwrites only `hp-reports/<kind>/latest.json` in the existing `laa-hp-media` R2 bucket through `cf`. It verifies public JSON and HP bytes; HP cache convergence is bounded to 130 seconds. The public origin is `https://reports-data.laa-inc.com`. There are no remote HTML versions. A pending journal under the job's `publication/hp-latest/active-<kind>.json` records exact object hashes before PUT and reconciles ambiguous timeouts or local receipt failures on the next explicit attempt.
+
+Markdown history stays in the existing `reports/<kind>/editions/` directories. `--cleanup-old-html` removes only old completed HTML whose preserved Markdown and HTML hashes match their proofs; it protects the newest completed edition, current manifest reference, and last published edition. Failed runs and all JSON/PNG evidence stay untouched. No Brain write or trading-rule change is part of this path. Synthetic tests do not establish a scheduled production review or live upload; those outcomes require separate readback evidence. Initial publication on 2026-10-13 completed for Daily 2026-10-12 and Weekly 2026-10-03: independent content review passed, R2 and production HP exact bytes verified. Old completed HTML removed: 23 Daily + 1 Weekly; all corresponding Markdown hashes rechecked. Production rendering evidence is in HP docs/atelier-verification/report-latest-20261013. Runtime policy addition is saved in docs/runtime-patches/20261013-hp-latest-policy.md. The next scheduled independent CLI review remains unobserved.
 
 ## Purpose and completed scope
 
