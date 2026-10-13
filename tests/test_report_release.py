@@ -379,10 +379,11 @@ def test_optional_average_entries_are_explicitly_unavailable():
     data=sample_data(); data['retail_sentiment']['XAUUSD'].update(avg_long_entry=None, avg_short_entry=None)
     result=bundle.observations(data,NOW)
     assert result['missing']==[]
-    assert result['limitations'] and '方向判断は行いません' in result['limitations'][0]
+    assert any('方向判断は行いません' in note for note in result['limitations'])
     price=next(f for f in result['figures'] if f['id']=='price')
-    assert price['title']=='価格・参考変動額・キリ番' and '取得できず' in price['caption']
+    assert price['title'].startswith('価格帯の目安') and '取得できず' in price['caption']
     assert len(price['items'])==1 and price['items'][0]['value']==3400.5 and price['availability']=='partial'
+    assert price['items'][0]['label']=='現在値' and price['items'][0]['tone']=='current'
     assert 'retail' in {f['id'] for f in result['figures']}
     bundle.check_bindings(data,result,result['figures'])
 
@@ -394,9 +395,36 @@ def test_price_figure_maps_expected_range_and_round_levels():
     result=bundle.observations(data,NOW)
     price=next(f for f in result['figures'] if f['id']=='price')
     labels=[i['label'] for i in price['items']]
-    assert labels[:5]==['XAUUSD 記録価格','参考変動額 下限','参考変動額 上限','下のキリ番','上のキリ番']
+    assert labels[:5]==['現在値','想定変動 上限（+1σ）','想定変動 下限（−1σ）','キリ番（下）','キリ番（上）']
     assert 'availability' not in price and 'GVZ 23.0' in price['caption']
+    assert price['band']=={'lower':3351.23,'upper':3449.77,'label':'想定変動 ±1σ'}
+    assert [i['tone'] for i in price['items'][:5]]==['current','reference','reference','caution','caution']
+    assert [i['label'] for i in price['items'] if i.get('offscale')]==['個人Long平均建値（上）','個人Short平均建値（下）']  # 2.9% away
     bundle.check_bindings(data,result,result['figures'])
+
+
+def test_price_figure_plots_every_round_level_by_index_and_lists_far_levels():
+    data=sample_data()
+    data['liquidity_levels']={'price':3400.5,'gvz':23.0,'gvz_as_of':'2026-09-28','band_lower':3351.23,'band_upper':3449.77,
+                              'nearest_below':3400.0,'nearest_above':3450.0,
+                              'levels':[{'level':3350.0,'major':False,'distance':-50.5,'distance_pct':-1.48},
+                                        {'level':3400.0,'major':True,'distance':-0.5,'distance_pct':-0.01},
+                                        {'level':3450.0,'major':False,'distance':49.5,'distance_pct':1.46}]}
+    data['retail_sentiment']['XAUUSD'].update(avg_long_entry=3600.0,avg_short_entry=3390.0)
+    result=bundle.observations(data,NOW)
+    price=next(f for f in result['figures'] if f['id']=='price')
+    labels=[i['label'] for i in price['items']]
+    assert labels[3:6]==['キリ番 3,350（下）','キリ番 3,400（下）','キリ番 3,450（上）']
+    assert labels[6:]==['個人Long平均建値（上）','個人Short平均建値（下）']
+    assert [i.get('offscale') for i in price['items'][6:]]==[True,None]
+    paths={b['label']:b['path'] for b in result['bindings'] if b['figure']=='price'}
+    assert paths['キリ番 3,400（下）']=='liquidity_levels.levels.1.level'
+    assert '想定変動の範囲外' in price['items'][3]['detail'] and '想定変動の範囲内' in price['items'][4]['detail']
+    assert 'ショートの損切り' in price['items'][5]['detail'] and 'ロングの損切り' in price['items'][3]['detail']
+    bundle.check_bindings(data,result,result['figures'])
+    data['liquidity_levels']['levels'][1]['level']=3401.0  # a changed source value must no longer match the figure
+    with pytest.raises(bundle.BundleError, match='does not match'):
+        bundle.check_bindings(data,result,result['figures'])
 
 
 def test_price_figure_average_entries_carry_their_own_observation_time():
@@ -408,7 +436,7 @@ def test_price_figure_average_entries_carry_their_own_observation_time():
     assert len(entries)==2
     for item in entries:
         assert '観測時刻は未確認 / 記録 '+NOW.isoformat() in item['source_quote']
-    quote_time=next(i for i in price['items'] if i['label']=='XAUUSD 記録価格')['source_quote'].split('観測: ')[1]
+    quote_time=next(i for i in price['items'] if i['label']=='現在値')['source_quote'].split('観測: ')[1]
     assert all(quote_time.split('。')[0] not in i['source_quote'] for i in entries)
     assert '価格の観測: ' in price['subtitle'] and '平均建値は' in price['caption']
     assert '観測時刻は未確認 / 記録 '+NOW.isoformat() in price['caption']

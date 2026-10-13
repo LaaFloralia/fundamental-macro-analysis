@@ -17,8 +17,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-import requests
-
 JST = timezone(timedelta(hours=9))
 FORECAST_HISTORY = Path(__file__).parent.parent / "output" / "history" / "calendar_forecasts.jsonl"
 FF_WEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
@@ -32,12 +30,12 @@ US_GOLD_SIGN = (
     ("unemployment rate", +1),
     ("jobless claims", +1),
     ("continuing claims", +1),
-    ("nonfarm payrolls", -1), ("non-farm", -1), ("nfp", -1),
+    ("nonfarm payrolls", -1), ("non-farm", -1), ("nfp", -1), ("adp", -1),
     ("average hourly earnings", -1),
     ("cpi", -1), ("pce", -1), ("ppi", -1),
     ("retail sales", -1),
     ("gdp", -1),
-    ("ism", -1), ("pmi", -1),
+    ("ism", -1), ("pmi", -1), ("philadelphia fed", -1), ("empire state", -1),
     ("durable goods", -1),
     ("jolts", -1),
     ("consumer confidence", -1), ("consumer sentiment", -1),
@@ -217,6 +215,8 @@ def released_surprises(events: list, now: datetime, lookback_hours: int = 36,
 
 def fetch_ff_week(timeout: int = 15) -> dict:
     """ForexFactory 週次フィード（今週分）。失敗しても例外を上げず error を返す。"""
+    import requests  # 遅延import: 図表生成側が本モジュールの純粋関数だけを使うため
+
     try:
         resp = requests.get(FF_WEEK_URL, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()

@@ -14,7 +14,8 @@ import re
 from zoneinfo import ZoneInfo
 
 JST = ZoneInfo('Asia/Tokyo')
-REQUIRED_FIGURES = ('price', 'retail', 'etf', 'cot', 'calendar')
+REQUIRED_FIGURES = ('bias', 'price', 'calendar', 'retail', 'etf', 'cot')
+LADDER_SCALE_PCT = 2.5  # levels farther than this from the price are listed, not plotted
 
 
 class BundleError(ValueError):
@@ -65,7 +66,8 @@ def quote_snapshot(data):
     return {key: quote.get(key) for key in ('symbol', 'close', 'datetime', 'timestamp', 'previous_close', 'high', 'low')}
 
 
-def observations(data, now=None):
+def observations(data, now=None, mode='daily', source=None):
+    from scripts import offchart_board
     stamp = require_fresh(data, now)
     figures, rows, missing, bindings, limitations = [], [], [], [], []
 
@@ -95,36 +97,68 @@ def observations(data, now=None):
     q = data.get('report_quote') or data.get('_raw_quote_XAUUSD')
     if not isinstance(q, dict) or number(q.get('close')) <= 0:
         raise BundleError('Required XAUUSD quote is missing')
+    price = number(q.get('close'))
     r = (data.get('retail_sentiment') or {}).get('XAUUSD')
     quote_time = str(q.get('datetime') or q.get('timestamp') or '市場観測時刻は未確認')
     liq = data.get('liquidity_levels') if isinstance(data.get('liquidity_levels'), dict) else {}
-    price_specs = [('XAUUSD 記録価格', q.get('close'), 'report_quote.close', 2, '', '')]
-    for key, label, detail in (('band_lower', '参考変動額 下限', 'GVZ（GLDオプション）を252営業日で日次換算した±1標準偏差'),
-                               ('band_upper', '参考変動額 上限', 'GVZ（GLDオプション）を252営業日で日次換算した±1標準偏差'),
-                               ('nearest_below', '下のキリ番', '50ドル刻み。為替研究による注目水準で金での注文量は未検証'),
-                               ('nearest_above', '上のキリ番', '50ドル刻み。為替研究による注目水準で金での注文量は未検証')):
+    board = offchart_board.bias_figure(data, stamp, mode, source)
+    if board:
+        figures.append(board['figure']); rows.extend(board['rows']); bindings.extend(board['bindings'])
+        limitations.extend(board['limitations'])
+    price_specs = [('現在値', q.get('close'), 'report_quote.close', 2, '', '図の基準。収集時点の記録価格')]
+    band_detail = 'GVZ（GLDオプションの予想変動率）を252営業日で日次換算した±1標準偏差。到達範囲の予測ではない'
+    for key, label in (('band_upper', '想定変動 上限（+1σ）'), ('band_lower', '想定変動 下限（−1σ）')):
         if isinstance(liq.get(key), (int, float)) and not isinstance(liq.get(key), bool):
-            price_specs.append((label, liq[key], f'liquidity_levels.{key}', 2, '', detail))
-    r = (data.get('retail_sentiment') or {}).get('XAUUSD')
-    quote_time = str(q.get('datetime') or q.get('timestamp') or '市場観測時刻は未確認')
+            price_specs.append((label, liq[key], f'liquidity_levels.{key}', 2, '', band_detail))
+    levels = [lv for lv in liq.get('levels') or [] if isinstance(lv, dict)
+              and isinstance(lv.get('level'), (int, float)) and not isinstance(lv.get('level'), bool)]
+    if levels:
+        for index, lv in enumerate(levels):
+            above = number(lv['level']) > price
+            inside = (isinstance(liq.get('band_upper'), (int, float)) and isinstance(liq.get('band_lower'), (int, float))
+                      and number(liq['band_lower']) <= number(lv['level']) <= number(liq['band_upper']))
+            stops = 'ショートの損切り（買い注文）が少し外に集まりやすい' if above else 'ロングの損切り（売り注文）が少し外に集まりやすい'
+            price_specs.append((f'キリ番 {number(lv["level"]):,.0f}（{"上" if above else "下"}）', lv['level'],
+                                f'liquidity_levels.levels.{index}.level', 2, '',
+                                f'現在値より{"上" if above else "下"}{"・想定変動の範囲内" if inside else "・想定変動の範囲外"}。'
+                                f'{"100ドル" if lv.get("major") else "50ドル"}刻み。{stops}とされる（為替研究の傾向。金の注文量は未検証、支持抵抗の強さではない）'))
+    else:
+        for key, label, detail in (('nearest_below', 'キリ番（下）', '現在値より下。ロングの損切り（売り注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証）'),
+                                   ('nearest_above', 'キリ番（上）', '現在値より上。ショートの損切り（買い注文）が少し外に集まりやすいとされる（為替研究の傾向。金の注文量は未検証）')):
+            if isinstance(liq.get(key), (int, float)) and not isinstance(liq.get(key), bool):
+                price_specs.append((label, liq[key], f'liquidity_levels.{key}', 2, '', detail))
     if usable(r):
         rt = ('観測日 ' + str(r['as_of_date'])) if r.get('as_of_date') else ('観測時刻は未確認 / 記録 ' + str(r.get('timestamp') or '未確認'))
         provider = r.get('source') or '提供元は未確認'
         provider_url = 'https://fxssi.com/tools/current-ratio' if provider.upper() == 'FXSSI' else 'https://www.myfxbook.com/community/outlook'
-        for key, label in (('avg_long_entry', 'Long 平均建値'), ('avg_short_entry', 'Short 平均建値')):
+        for key, label in (('avg_long_entry', '個人Long平均建値'), ('avg_short_entry', '個人Short平均建値')):
             if isinstance(r.get(key), (int, float)) and not isinstance(r.get(key), bool):
-                price_specs.append((label, r[key], f'retail_sentiment.XAUUSD.{key}', 2, '',
-                                    f'{provider}の平均建値。SL位置や注文集中を示さない', rt))
+                above = number(r[key]) > price
+                price_specs.append((f'{label}（{"上" if above else "下"}）', r[key], f'retail_sentiment.XAUUSD.{key}', 2, '',
+                                    f'現在値より{"上" if above else "下"}。{provider}の建玉集計の平均。損益率・SL位置・注文集中は示さない', rt))
     gvz_source = liq.get('gvz_source') or 'FRED GVZCLS'
-    gvz_note = (f"GVZ {liq.get('gvz')}（{liq.get('gvz_as_of')}時点・{gvz_source}）" if liq.get('gvz') else 'GVZは取得できず、参考変動額は表示していません')
+    gvz_note = (f"GVZ {liq.get('gvz')}（{liq.get('gvz_as_of')}時点・{gvz_source}）" if liq.get('gvz') else 'GVZは取得できず、想定変動は表示していません')
     entry_note = ''
     if any('平均建値' in spec[0] for spec in price_specs):
-        entry_note = f'Long・Short平均建値は{provider}の建玉集計（{rt}）で、価格とは提供元・時点が異なります。'
-    add('price', 'price_map', '価格・参考変動額・キリ番', 'USD/oz',
-        f'現在値の周りに、1日の参考変動額（{gvz_note}）と近いキリ番を並べています。到達範囲の予測や支持・抵抗の強さではありません。'
-        + entry_note + '観測した注文集中は取得できません。小数第2位へ丸めています。',
+        entry_note = f'個人の平均建値は{provider}の建玉集計（{rt}）で、価格とは提供元・時点が異なります。'
+    add('price', 'price_map', '価格帯の目安（現在値・想定変動・キリ番・個人平均建値）', 'USD/oz',
+        f'現在値の上下に、1日の想定変動（{gvz_note}、帯で表示）、キリ番、個人の平均建値を並べています。（上）（下）は現在値から見た側で、'
+        '上のキリ番の少し外にはショートの損切り（買い注文）、下のキリ番の少し外にはロングの損切り（売り注文）が集まりやすいという為替研究の傾向を示す参考です。'
+        '金での注文量・到達範囲・支持抵抗の強さは未検証です。' + entry_note + '観測した注文集中は取得できません。小数第2位へ丸めています。',
         ('Twelve Data / FRED GVZCLS', 'https://twelvedata.com/'), quote_time, price_specs)
     figures[-1]['subtitle'] = f'USD/oz / 価格の観測: {quote_time}'
+    figures[-1]['kicker'] = '価格帯の意識'
+    if isinstance(liq.get('band_lower'), (int, float)) and isinstance(liq.get('band_upper'), (int, float)):
+        figures[-1]['band'] = {'lower': number(liq['band_lower']), 'upper': number(liq['band_upper']), 'label': '想定変動 ±1σ'}
+    for item in figures[-1]['items']:
+        if item['label'] == '現在値':
+            item['tone'] = 'current'
+        elif item['label'].startswith('想定変動'):
+            item['tone'] = 'reference'
+        elif item['label'].startswith('キリ番'):
+            item['tone'] = 'caution'
+        if abs(item['value'] - price) / price * 100 > LADDER_SCALE_PCT:
+            item['offscale'] = True
     figures[-1]['source_links'] = [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
                                     {'label': 'TradingView CBOE:GVZ', 'url': 'https://www.tradingview.com/symbols/CBOE-GVZ/'}
                                     if gvz_source.startswith('TradingView') else
@@ -184,28 +218,11 @@ def observations(data, now=None):
                 ('CFTC Disaggregated', 'https://www.cftc.gov/dea/futures/other_lf.htm'), c['date'], specs)
         except BundleError:
             missing.append('cot: 主体別建玉の欠測または算術不整合')
-    calendar = data.get('economic_calendar')
-    upcoming = []
-    if usable(calendar):
-        for event in calendar.get('events') or []:
-            try:
-                day = datetime.strptime(event['date'], '%A, %B %d, %Y').date()
-                t = datetime.fromisoformat(f'{day.isoformat()}T{event["time_jst"]}').replace(tzinfo=JST)
-            except (KeyError, TypeError, ValueError):
-                continue
-            if stamp <= t <= stamp + timedelta(days=7) and event.get('country') in ('United States', 'Euro Zone'):
-                upcoming.append((t, event))
-        items = []
-        for t, event in sorted(upcoming, key=lambda pair: pair[0])[:6]:
-            label = (str(event.get('country', '')) + ' / ' + str(event.get('indicator', ''))).replace('|', ' ')[:180]
-            text = f'{t.date().isoformat()} {t.strftime("%H:%M")} JST {label}。提供カレンダーの掲載予定。発表元との日時照合の状況は本文を参照。'
-            rows.append(text)
-            items.append({'date': t.date().isoformat(), 'time': t.strftime('%H:%M') + ' JST',
-                          'label': label, 'source_quote': text, 'detail': '発表直前に日程を再確認'})
-        if items:
-            figures.append({'id': 'calendar', 'type': 'timeline', 'title': '今後の掲載予定',
-                            'subtitle': 'JST / 今後7日間の取得範囲', 'caption': '最大6件の掲載予定です。網羅性は未確認。予想欄は列の意味が未照合のため図に採用しません。',
-                            'source_label': 'Investing.com Calendar', 'source_url': 'https://www.investing.com/economic-calendar/', 'items': items})
+    events = offchart_board.event_figure(data, stamp, mode)
+    if events:
+        figures.append(events['figure']); rows.extend(events['rows'])
+    order = {key: index for index, key in enumerate(REQUIRED_FIGURES)}
+    figures.sort(key=lambda figure: order.get(figure['id'], len(order)))
     if data.get('synthetic') is True:
         for figure in figures:
             figure['caption'] = '合成値による表示検証です。リンクは参照用で、数値の取得元ではありません。' + figure['caption']
@@ -213,7 +230,9 @@ def observations(data, now=None):
     present = {f['id'] for f in figures}
     missing.extend(f'{key}: 図の作成に必要なデータが不足' for key in REQUIRED_FIGURES if key not in present)
     appendix = ('\n\n## 図表に使用した観測値\n\n'
-                f'データ収集: {stamp.isoformat()}。以下の数値は同じ収集JSONから図表と本文へ出力しています。丸めは各図に表示しています。\n\n' +
+                f'データ収集: {stamp.isoformat()}。以下の数値は同じ収集JSONから図表と本文へ出力しています。丸めは各図に表示しています。'
+                '各行は「項目: 現在値（時点）｜基準｜変化｜向き｜規則」または「日時｜国｜指標｜前回｜予想｜結果｜差｜向き｜時間帯」の順で、'
+                '向きは金（XAUUSD）に対する方向（▲▼ 閾値以上、△▽ 閾値未満、— 中立・票なし、？ 判定保留）です。\n\n' +
                 '\n\n'.join(rows) + '\n')
     if missing:
         appendix += '\n欠測・除外: ' + '。'.join(dict.fromkeys(missing)) + '\n'
@@ -230,7 +249,12 @@ def check_bindings(data, manifest, figures):
     for b in manifest['bindings']:
         value = data
         for key in b['path'].split('.'):
-            if key == 'report_quote' and key not in value:
+            if isinstance(value, list):
+                if not key.isdigit() or int(key) >= len(value):
+                    raise BundleError('Bound source field is missing')
+                value = value[int(key)]
+                continue
+            if key == 'report_quote' and isinstance(value, dict) and key not in value:
                 key = '_raw_quote_XAUUSD'
             if not isinstance(value, dict) or key not in value:
                 raise BundleError('Bound source field is missing')
@@ -312,10 +336,11 @@ def make_summary(source, mode, as_of):
 def prepare(md_path, data_path, mode, now=None):
     md_path, data_path = Path(md_path), Path(data_path)
     data = json.loads(data_path.read_text())
-    result = observations(data, now)
     source = md_path.read_text(encoding='utf-8')
     marker = '\n\n## 図表に使用した観測値\n'
-    source = source.split(marker)[0].rstrip() + result['appendix']
+    source = source.split(marker)[0].rstrip()
+    result = observations(data, now, mode, source)
+    source += result['appendix']
     md_path.write_text(source, encoding='utf-8')
     summary = make_summary(source, mode, result['asOf'])
     summary['limitations'] = [{'title': '今回の制約と直近の変化', 'text': note, 'source_quote': note}

@@ -1,6 +1,6 @@
 # Session handoff
 
-Updated: 2026-10-13 (JST)
+Updated: 2026-10-13 (JST, bias board)
 
 ## HP latest completed publication
 
@@ -104,3 +104,21 @@ M04 remained reproducible on `a74f89898aba7299178e98180787e9e6c0c95a13`: the rea
 Verification: 66 focused and 455 full-suite tests passed with synthetic inputs, including the real parser, Daily/Weekly projection, missing/alias-only/conflicting dates, meeting rollover, JSON persistence, other-feature invariance and the existing history rollover guard. The full run initially exposed an unrelated stale test requiring a non-empty Drive path, also reproduced on unchanged master. That assertion now allows the empty-string disabled state already committed in `a74f898`; no configuration or delivery logic was edited. No live fetch, report regeneration, AI/Bot start, trade, schedule or model change was performed.
 
 Use the existing locked snapshot path for deployment. Its prior revision is `47f2e43`, so normal distribution also includes the previously committed `a74f898` Drive-copy-disabled configuration; distinguish this pre-existing arrival from the sole runtime code change in `scrapers/offchart_features.py`. Preserve completed editions and existing runtime output/history hashes. The next normal report/feature output remains unverified until its ordinary execution; do not regenerate it for this check. Rollback of this change is its Git revert plus the same locked snapshot path, retaining `a74f898`. Deployment receipts and exact preimages are in the delegated review workspace's `fedwatch-evidence`.
+
+## 2026-10-13: Bias board, event table and price ladder (HTML redesign)
+
+Scope: the owner asked for an HTML that shows at a glance the long-horizon and short-horizon bias and the price levels participants watch, without lowering information quality. Model and effort were already at the top profile (gpt-6.1-sol / xhigh); the fix is in data design, prompts and the renderer. Markdown stays agent-oriented.
+
+Repo changes:
+
+- `scripts/offchart_board.py` (new): deterministic bias board rows. Long group: real rate 20 business days, broad dollar 20 days, FedWatch lowest-range probability prev-week, GLD 20 days, central banks 3-month cumulative. Short group: US 2y, DXY, FedWatch prev-day, US surprises with pre-release forecast records (direction recomputed at render time from `gold_sign`), forecast-vs-previous for US events within 24h (weekly: 7 days), GLD 5 days, retail long percentile, COT managed-money percentile. Each row quotes current, baseline, change, direction, as-of and rule into the appendix line it is bound to. Tallies: strong 1, weak 0.5, abs diff below 1 neutral, 2 or more strong. The third tile quotes the fixed report line `時間軸別の向き:` (fallback: `方向付与:` or `XAUUSD：`, else 記載なし). Event table: previous, forecast, actual, diff, direction, importance, KZ and blackout window; released rows stay 2 days (weekly 7) as PD-array references.
+- `scripts/report_bundle.py`: six required figures (`bias`, `price`, `calendar`, `retail`, `etf`, `cot`); price ladder with current value, plus/minus 1 sigma band, round numbers above and below, retail average entries; levels more than 2.5% away are listed as offscale; list-index binding paths.
+- `scrapers/macro_surprise.py`: ADP, Philadelphia Fed and Empire State added to the US sign table; `requests` import deferred. `scrapers/economic_calendar.py` and `main.py`: importance field (Investing.com 3/3 only) and a note under the calendar heading.
+- `master_prompt.md` and `master_prompt_weekly.md`: fixed line `時間軸別の向き: 長期 …｜ 短期 …｜ 総合 …` in section 0; sections 4-1 and 5-1 now tabulate importance, previous, forecast, implied direction and KZ overlap, and recap released events.
+- Tests: `tests/test_offchart_board.py`, `tests/test_shared_renderer.py` (skipped when the shared skill is absent), `tests/test_report_release.py` updated.
+
+Runtime patch boundary (outside Git): `docs/runtime-patches/20261013-bias-board-renderer.patch` is the unified diff for `~/.agents/skills/human-first-docs/scripts/render_report.py`, `scripts/visual_blocks.py`, `assets/report.css` and `~/.codex/jobs/chart-intel/report_presentation.py` (preimages retained in the work folder). Text-only edits without a retained preimage: `~/.codex/jobs/chart-intel/PARENT-WORKFLOW.md` step 7 (six figures) and `~/.agents/skills/human-first-docs/references/figures.md` (band placement, new figure types, tone `current`, band and offscale). Visible limitations keep the `<aside>` markup because the BTC allow-list has no `open` attribute; the collapsed `<details>` variant is used only when a caller sets `limitations_open` to false (the XAU presentation labels do).
+
+Verification: repo pytest 820 passed (BTC pipeline included). Job-side `test_parent_workflow.py`, `test_report_presentation.py`, `test_visual_blocks.py`, `test_runner.py`: 68 passed with `PYTHONPATH` set to this repo (those tests need the runtime or the repo on the path). Local re-render of the Daily 2026-10-13 and Weekly 2026-10-03 editions produced six figures with no missing figure and passed browser_check; PC and mobile evidence is under `/Users/laa/work/chart-intel-html-20261013/`. No publication, Discord send, job run or Brain write was performed.
+
+Deployment: commit, push, then the existing locked snapshot path (`execution_lock()` plus `prepare_snapshot()`). The next scheduled Daily (18:00 JST) and Weekly runs are the first real applications; the fixed line exists only in reports generated after this change. Known limits: importance is 3/3 only, so every row reads 高; surprise rows require a pre-release forecast record; FedWatch provides only prev_day and prev_week deltas, so the Weekly board carries the weekly FedWatch row in the long group only.

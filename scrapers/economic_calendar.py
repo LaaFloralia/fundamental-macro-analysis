@@ -159,6 +159,9 @@ async def _scrape_week(page, week_label: str) -> list:
                 "actual": actual or "N/A",
                 "previous": previous or "N/A",
                 "forecast": forecast or "N/A",
+                # 収集は重要度3/3（★★★）の行だけなので、全件「high」。基準を明示して下流で重要度列に使う
+                "importance": "high",
+                "importance_basis": "Investing.com 3/3",
             })
 
         except Exception:

@@ -1006,6 +1006,7 @@ def format_scraped_data(data: dict) -> str:
     if calendar and isinstance(calendar, dict):
         lines.append("")
         lines.append("### 経済指標カレンダー（ハイインパクト）")
+        lines.append("※ 収集範囲は Investing.com の重要度3/3（★★★）のみ。重要度は全件「高」。前回・予想・結果は提供表の表示値")
         if calendar.get("events"):
             for ev in calendar["events"]:
                 forecast = ev.get('forecast', 'N/A')

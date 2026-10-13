@@ -1,0 +1,311 @@
+--- /Users/laa/work/chart-intel-html-20261013/before/render_report.py	2026-10-13 19:43:51
++++ /Users/laa/.agents/skills/human-first-docs/scripts/render_report.py	2026-10-13 20:14:21
+@@ -91,7 +91,8 @@
+ def validate_summary(summary: dict, source: str) -> list[str]:
+     if not isinstance(summary, dict):
+         raise ValueError('Summary must be a JSON object.')
+-    allowed = {'eyebrow', 'status', 'conclusion', 'metrics', 'conditions', 'evidence', 'limitations', 'note', 'source_note', 'report_date', 'short_title', 'related_url', 'related_label', 'evidence_title'}
++    allowed = {'eyebrow', 'status', 'conclusion', 'metrics', 'conditions', 'evidence', 'limitations', 'note', 'source_note', 'report_date', 'short_title', 'related_url', 'related_label', 'evidence_title',
++               'full_report_title', 'full_report_note', 'limitations_title', 'limitations_open', 'conditions_title', 'conditions_label'}
+     unknown = set(summary) - allowed
+     if unknown:
+         raise ValueError(f'Unknown summary keys: {sorted(unknown)}')
+@@ -156,9 +157,23 @@
+     evidence = ''.join(block(x, 'evidence-item') for x in summary.get('evidence', []))
+     limitations = ''.join(f'<li><strong>{e(x.get("title", ""))}</strong><span>{e(x.get("text", ""))}</span></li>' for x in summary.get('limitations', []))
+     visual_html = [visual_blocks.render(x,i) for i,x in enumerate(figures)]
+-    first_visual = visual_html[0] if visual_html else ''
+-    rail_visuals = ''.join(visual_html[i] for i in range(1,len(figures)) if figures[i].get('placement') == 'rail')
+-    other_visuals = ''.join(visual_html[i] for i in range(1,len(figures)) if figures[i].get('placement') != 'rail')
++    # Placement: 'band' spans the overview, the first remaining figure leads it, 'rail' sits beside the
++    # decision steps and everything else is evidence. Without placements the first figure leads.
++    band_visuals = ''.join(visual_html[i] for i in range(len(figures)) if figures[i].get('placement') == 'band')
++    lead_index = next((i for i in range(len(figures)) if figures[i].get('placement') not in ('band', 'rail')), None)
++    first_visual = visual_html[lead_index] if lead_index is not None else ''
++    rail_visuals = ''.join(visual_html[i] for i in range(len(figures)) if figures[i].get('placement') == 'rail')
++    other_visuals = ''.join(visual_html[i] for i in range(len(figures)) if figures[i].get('placement') not in ('band', 'rail') and i != lead_index)
++    limitations_title = summary.get('limitations_title', '読み違えを防ぐために')
++    if summary.get('limitations_open', True):  # default: always visible, same markup as before
++        limitations_block = f'<aside class="limitations"><h3>{e(limitations_title)}</h3><ul>{limitations}</ul></aside>' if limitations else ''
++    else:  # collapsed by default; the summary line keeps the count visible
++        limitations_block = (f'<details class="limitations"><summary><h3>{e(limitations_title)}</h3>'
++                             f'<span class="limitations-count">{len(summary.get("limitations", []))}件</span></summary><ul>{limitations}</ul></details>') if limitations else ''
++    full_report_title = summary.get('full_report_title', '根拠を詳しく読む')
++    full_report_note = summary.get('full_report_note', '見出しを開くと、確認した内容と出典を読めます。PDFには全文を収録しています。')
++    conditions_label = summary.get('conditions_label', '次に確認すること')
++    conditions_title = summary.get('conditions_title', '判断を進める順番')
+     source_note = summary.get('source_note', '出典・観測日時・欠測は本文を参照。')
+     related = ''
+     if summary.get('related_url'):
+@@ -173,10 +188,11 @@
+ <header class="masthead"><div><span class="eyebrow">{e(summary.get('eyebrow', 'REPORT'))}</span><h1>{e(summary.get('short_title',title))}</h1></div><div class="edition-date">{e(summary.get('report_date',''))}<span>{e(summary.get('status','分析資料'))}</span></div></header>
+ <div class="conclusion"><span class="section-label">今回の判断</span><h2>{e(conclusion.get('title','要約未作成'))}</h2><p>{e(conclusion.get('text','全文を確認してください。'))}</p></div>
+ {f'<div class="metrics" aria-label="主要数値">{metrics}</div>' if metrics else ''}
+-<div class="overview-grid {'has-visual' if first_visual else ''}">{first_visual}<aside class="decision-rail">{rail_visuals}<div class="rail-heading"><span class="section-label">次に確認すること</span><h2>判断を進める順番</h2></div><ol class="decision-steps">{conditions}</ol>{f'<p class="brief-note">{e(summary.get("note"))}</p>' if summary.get('note') else ''}</aside></div>
++{f'<div class="band-visuals">{band_visuals}</div>' if band_visuals else ''}
++<div class="overview-grid {'has-visual' if first_visual else ''}">{first_visual}<aside class="decision-rail">{rail_visuals}<div class="rail-heading"><span class="section-label">{e(conditions_label)}</span><h2>{e(conditions_title)}</h2></div><ol class="decision-steps">{conditions}</ol>{f'<p class="brief-note">{e(summary.get("note"))}</p>' if summary.get('note') else ''}</aside></div>
+ <p class="asof-note">{e(as_of)}<span>編集: {e(generated_at)}</span></p></section>
+-<section id="evidence" class="evidence"><div class="section-heading"><span class="section-label">判断の根拠</span><h2>{e(summary.get("evidence_title", "判断を支える根拠"))}</h2></div><div class="evidence-visuals">{other_visuals}</div><div class="evidence-notes">{evidence}</div>{f'<aside class="limitations"><h3>読み違えを防ぐために</h3><ul>{limitations}</ul></aside>' if limitations else ''}<p class="source-note">{e(source_note)}</p></section>
+-<section id="full-report" class="full-report"><div class="section-heading"><span class="section-label">本文・数値・出典</span><h2>根拠を詳しく読む</h2><p>見出しを開くと、確認した内容と出典を読めます。PDFには全文を収録しています。</p></div><div class="markdown-body">{chapters}</div></section>
++<section id="evidence" class="evidence"><div class="section-heading"><span class="section-label">判断の根拠</span><h2>{e(summary.get("evidence_title", "判断を支える根拠"))}</h2></div><div class="evidence-visuals">{other_visuals}</div><div class="evidence-notes">{evidence}</div>{limitations_block}<p class="source-note">{e(source_note)}</p></section>
++<section id="full-report" class="full-report"><div class="section-heading"><span class="section-label">本文・数値・出典</span><h2>{e(full_report_title)}</h2><p>{e(full_report_note)}</p></div><div class="markdown-body">{chapters}</div></section>
+ <details id="source-markdown" class="source-markdown"><summary>編集済み原稿を表示・保存</summary><p><a download="{e(source_name or 'report.md')}" href="data:text/markdown;charset=utf-8;base64,{encoded_source}">Markdown原稿を保存</a></p><p>原稿 SHA-256: <code>{digest}</code></p><pre>{e(source)}</pre></details>
+ <footer><span>{e(title)}</span><span>観測事実・解釈・未確認事項は本文に記載。</span></footer></main></body></html>'''
+     audit = {'source_sha256': digest, 'source_bytes': len(source.encode('utf-8')),
+--- /Users/laa/work/chart-intel-html-20261013/before/visual_blocks.py	2026-10-13 19:43:51
++++ /Users/laa/.agents/skills/human-first-docs/scripts/visual_blocks.py	2026-10-13 19:56:20
+@@ -16,26 +16,56 @@
+     return {Decimal(x.replace(',', '').replace('−', '-')) for x in found}
+ 
+ 
++TYPES = {'price_map', 'diverging_bars', 'bars', 'split', 'timeline', 'bias_board', 'event_table'}
++# Table-like figures carry their facts in several text fields; every visible field is checked.
++TEXT_CHECKED = {'bias_board', 'event_table'}
++NUMERIC_FIELDS = ('value', 'label', 'display', 'date', 'time', 'detail')
++
++
++def _check_item(item, source, index, pos, all_fields):
++    if not isinstance(item, dict):
++        raise ValueError(f'Figure {index}, item {pos}: item must be an object.')
++    quote = item.get('source_quote', '')
++    if not quote or re.sub(r'\s+', '', quote) not in re.sub(r'\s+', '', source):
++        raise ValueError(f'Figure {index}, item {pos}: quote missing from source.')
++    if all_fields:
++        values = ' '.join(str(v) for k, v in item.items()
++                          if k != 'source_quote' and isinstance(v, (str, int, float)) and not isinstance(v, bool))
++    else:
++        values = ' '.join(str(item.get(k, '')) for k in NUMERIC_FIELDS)
++    absent = numeric_tokens(values) - numeric_tokens(quote)
++    if absent:
++        raise ValueError(f'Figure {index}, item {pos}: numbers not in quote: {absent}')
++    if 'value' in item and not math.isfinite(float(item['value'])):
++        raise ValueError('Non-finite figure value.')
++
++
+ def validate(figures, source):
+     """Check each factual item against a local quote, not unrelated source numbers."""
+     checks = []
+     for index, fig in enumerate(figures):
+-        if fig.get('type') not in {'price_map', 'diverging_bars', 'bars', 'split', 'timeline'}:
++        if fig.get('type') not in TYPES:
+             raise ValueError(f'Unknown figure type: {fig.get("type")}')
+         items = fig.get('items', [])
+         if not items:
+             raise ValueError('A figure must have items.')
++        all_fields = fig['type'] in TEXT_CHECKED
+         for pos, item in enumerate(items):
+-            quote = item.get('source_quote', '')
+-            if not quote or re.sub(r'\s+', '', quote) not in re.sub(r'\s+', '', source):
+-                raise ValueError(f'Figure {index}, item {pos}: quote missing from source.')
+-            values = ' '.join(str(item.get(k, '')) for k in ('value', 'label', 'display', 'date', 'time', 'detail'))
+-            absent = numeric_tokens(values) - numeric_tokens(quote)
+-            if absent:
+-                raise ValueError(f'Figure {index}, item {pos}: numbers not in quote: {absent}')
+-            if 'value' in item and not math.isfinite(float(item['value'])):
+-                raise ValueError('Non-finite figure value.')
++            _check_item(item, source, index, pos, all_fields)
+             checks.append({'figure': index, 'item': pos, 'quote_verified': True})
++        for pos, tile in enumerate(fig.get('verdicts', []) or []):
++            _check_item(tile, source, index, f'verdict-{pos}', True)
++            checks.append({'figure': index, 'verdict': pos, 'quote_verified': True})
++        band = fig.get('band')
++        if band is not None:
++            if fig['type'] != 'price_map' or not isinstance(band, dict) or any(
++                    not isinstance(band.get(k), (int, float)) or isinstance(band.get(k), bool)
++                    or not math.isfinite(float(band[k])) for k in ('lower', 'upper')) \
++                    or float(band['lower']) > float(band['upper']):
++                raise ValueError('Band requires finite lower <= upper on a price_map.')
++            plotted = {float(x['value']) for x in items if 'value' in x}
++            if float(band['lower']) not in plotted or float(band['upper']) not in plotted:
++                raise ValueError('Band edges must be plotted, quoted items.')
+         if fig['type'] == 'split':
+             if len(items) != 2 or any(float(x['value']) < 0 for x in items):
+                 raise ValueError('Split requires two nonnegative percentages.')
+@@ -50,11 +80,37 @@
+ 
+ def tone(item):
+     value = item.get('tone', 'neutral')
+-    return value if value in {'positive', 'negative', 'neutral', 'reference', 'caution'} else 'neutral'
++    return value if value in {'positive', 'negative', 'neutral', 'reference', 'caution', 'current'} else 'neutral'
+ 
+ 
++def offscale_list(items):
++    if not items:
++        return ''
++    rows = ''.join(f'<li class="{tone(x)}"><span>{e(x["label"])}</span><strong>{e(x.get("display", x["value"]))}</strong>'
++                   f'<small>{e(x.get("detail", ""))}</small></li>' for x in items)
++    return f'<p class="offscale-note">図の範囲外（現在値から離れた水準）</p><ul class="offscale-levels">{rows}</ul>'
++
++
++def band_shade(fig, y):
++    band = fig.get('band')
++    if not band:
++        return ''
++    top, bottom = y(band['upper']), y(band['lower'])
++    label = e(band.get('label', ''))
++    return (f'<rect class="band-shade" x="70" y="{top:.2f}" width="336" height="{bottom-top:.2f}"/>'
++            + (f'<text class="band-label" x="402" y="{top+14:.2f}" text-anchor="end">{label}</text>' if label else ''))
++
++
++def plot_label(item):
++    tag = item.get('tag')
++    return (f'<tspan class="plot-tag">{e(tag)}</tspan> ' if tag else '') + e(item['label'])
++
++
+ def price_map(fig, ident):
+-    items = sorted(fig['items'], key=lambda x: float(x['value']), reverse=True)
++    offscale = [x for x in fig['items'] if x.get('offscale')]
++    items = sorted((x for x in fig['items'] if not x.get('offscale')), key=lambda x: float(x['value']), reverse=True)
++    if not items:
++        return offscale_list(offscale)
+     values = [float(x['value']) for x in items]
+     span = max(max(values)-min(values), 10)
+     step = 10 ** math.floor(math.log10(span))
+@@ -70,14 +126,15 @@
+         yy = y(tick)
+         parts.append(f'<line class="grid-line" x1="70" y1="{yy:.2f}" x2="406" y2="{yy:.2f}"/><text class="axis-label" x="57" y="{yy+4:.2f}" text-anchor="end">{tick:,.0f}</text>')
+         tick += step
++    parts.append(band_shade(fig, y))
+     dots = [y(item['value']) for item in items]
+     if all(b - a >= LABEL_GAP for a, b in zip(dots, dots[1:])):
+         for item, yy in zip(items, dots):
+             kind = tone(item)
+             ref = kind == 'reference'
+-            parts.append(f'<g class="{kind}"><line class="value-line {"dashed" if ref else ""}" x1="82" y1="{yy:.2f}" x2="403" y2="{yy:.2f}"/><circle class="value-dot" cx="87" cy="{yy:.2f}" r="5"/><rect class="label-ground" x="103" y="{yy-35:.2f}" width="294" height="28" rx="3"/><text class="plot-label" x="111" y="{yy-17:.2f}">{e(item["label"])}</text><text class="plot-value" x="395" y="{yy-17:.2f}" text-anchor="end">{e(item.get("display", item["value"]))}</text></g>')
++            parts.append(f'<g class="{kind}"><line class="value-line {"dashed" if ref else ""}" x1="82" y1="{yy:.2f}" x2="403" y2="{yy:.2f}"/><circle class="value-dot" cx="87" cy="{yy:.2f}" r="{6 if kind == "current" else 5}"/><rect class="label-ground" x="103" y="{yy-35:.2f}" width="294" height="28" rx="3"/><text class="plot-label" x="111" y="{yy-17:.2f}">{plot_label(item)}</text><text class="plot-value" x="395" y="{yy-17:.2f}" text-anchor="end">{e(item.get("display", item["value"]))}</text></g>')
+         parts.append(f'<text class="axis-caption" x="70" y="354">{e(fig.get("unit", ""))}</text></svg>')
+-        return ''.join(parts)
++        return ''.join(parts) + offscale_list(offscale)
+     # Close values: dots stay at their true price; labels move apart and a leader joins them.
+     rows = spread_labels(dots, top=24, gap=LABEL_GAP)
+     height = max(365, math.ceil(rows[-1] + 44))
+@@ -85,9 +142,9 @@
+     for item, yy, ly in zip(items, dots, rows):
+         kind = tone(item)
+         ref = kind == 'reference'
+-        parts.append(f'<g class="{kind}"><line class="value-line {"dashed" if ref else ""}" x1="70" y1="{yy:.2f}" x2="100" y2="{yy:.2f}"/><circle class="value-dot" cx="80" cy="{yy:.2f}" r="5"/><polyline class="leader-line" points="100,{yy:.2f} 114,{yy:.2f} 128,{ly:.2f} 132,{ly:.2f}" fill="none"/><rect class="label-ground" x="132" y="{ly-14:.2f}" width="283" height="28" rx="3"/><text class="plot-label" x="136" y="{ly+6:.2f}">{e(item["label"])}</text><text class="plot-value" x="414" y="{ly+6:.2f}" text-anchor="end">{e(item.get("display", item["value"]))}</text></g>')
++        parts.append(f'<g class="{kind}"><line class="value-line {"dashed" if ref else ""}" x1="70" y1="{yy:.2f}" x2="100" y2="{yy:.2f}"/><circle class="value-dot" cx="80" cy="{yy:.2f}" r="{6 if kind == "current" else 5}"/><polyline class="leader-line" points="100,{yy:.2f} 114,{yy:.2f} 128,{ly:.2f} 132,{ly:.2f}" fill="none"/><rect class="label-ground" x="132" y="{ly-14:.2f}" width="283" height="28" rx="3"/><text class="plot-label" x="136" y="{ly+6:.2f}">{plot_label(item)}</text><text class="plot-value" x="414" y="{ly+6:.2f}" text-anchor="end">{e(item.get("display", item["value"]))}</text></g>')
+     parts.append(f'<text class="axis-caption" x="70" y="{height-11}">{e(fig.get("unit", ""))}</text></svg>')
+-    return ''.join(parts)
++    return ''.join(parts) + offscale_list(offscale)
+ 
+ 
+ LABEL_GAP = 32
+@@ -142,10 +199,65 @@
+     return f'<ol class="event-timeline">{items}</ol>'
+ 
+ 
++def direction_cell(item):
++    klass = 'dir weak' if item.get('strength') == 'weak' else 'dir'
++    return (f'<span class="{klass} {tone(item)}"><span class="dir-symbol">{e(item.get("symbol", ""))}</span>'
++            f'{e(item.get("direction", ""))}</span>')
++
++
++def bias_board(fig, ident):
++    tiles = ''.join(
++        f'<div class="verdict {tone(v)}"><span class="verdict-label">{e(v.get("label", ""))}</span>'
++        f'<strong class="verdict-value"><span class="dir-symbol">{e(v.get("symbol", ""))}</span>{e(v.get("direction", ""))}</strong>'
++        f'<small>{e(v.get("detail", ""))}</small></div>' for v in fig.get('verdicts', []) or [])
++    rows, current = [], None
++    for item in fig['items']:
++        group = item.get('group', '')
++        if group != current:
++            current = group
++            rows.append(f'<tr class="bias-group"><th colspan="6" scope="colgroup">{e(group)}</th></tr>')
++        rule = f'<small>{e(item["rule"])}</small>' if item.get('rule') else ''
++        rows.append(f'<tr class="bias-row {tone(item)}"><th scope="row" data-label="項目">{e(item.get("label", ""))}{rule}</th>'
++                    f'<td class="numeric" data-label="現在">{e(item.get("display", ""))}</td>'
++                    f'<td data-label="基準">{e(item.get("baseline", ""))}</td>'
++                    f'<td class="numeric" data-label="変化">{e(item.get("change", ""))}</td>'
++                    f'<td class="dir-cell" data-label="金への向き">{direction_cell(item)}</td>'
++                    f'<td class="asof" data-label="時点">{e(item.get("asof", ""))}</td></tr>')
++    head = ('<thead><tr><th scope="col">項目</th><th scope="col" class="numeric">現在</th><th scope="col">基準</th>'
++            '<th scope="col" class="numeric">変化</th><th scope="col">金への向き</th><th scope="col">時点</th></tr></thead>')
++    return ((f'<div class="bias-verdicts">{tiles}</div>' if tiles else '')
++            + f'<div class="board-wrap"><table class="bias-table">{head}<tbody>{"".join(rows)}</tbody></table></div>')
++
++
++def event_table(fig, ident):
++    rows, current = [], None
++    for item in fig['items']:
++        status = item.get('status', '')
++        if status != current:
++            current = status
++            rows.append(f'<tr class="event-group"><th colspan="9" scope="colgroup">{e(status)}</th></tr>')
++        klass = 'event-row released' if item.get('released') else 'event-row'
++        rows.append(f'<tr class="{klass} {tone(item)}"><th scope="row" data-label="日時"><span class="event-date">{e(item.get("date", ""))}</span>'
++                    f'<span class="event-time">{e(item.get("time", ""))}</span></th>'
++                    f'<td data-label="国">{e(item.get("country", ""))}</td>'
++                    f'<td class="event-name" data-label="指標">{e(item.get("label", ""))}<small>重要度 {e(item.get("importance", ""))}</small></td>'
++                    f'<td class="numeric" data-label="前回">{e(item.get("previous", ""))}</td>'
++                    f'<td class="numeric" data-label="予想">{e(item.get("forecast", ""))}</td>'
++                    f'<td class="numeric" data-label="結果">{e(item.get("actual", ""))}</td>'
++                    f'<td data-label="差">{e(item.get("diff", ""))}</td>'
++                    f'<td class="dir-cell" data-label="金への向き">{direction_cell(item)}</td>'
++                    f'<td class="event-window" data-label="時間帯">{e(item.get("window", ""))}</td></tr>')
++    head = ('<thead><tr><th scope="col">日時 (JST)</th><th scope="col">国</th><th scope="col">指標・重要度</th>'
++            '<th scope="col" class="numeric">前回</th><th scope="col" class="numeric">予想</th><th scope="col" class="numeric">結果</th>'
++            '<th scope="col">差</th><th scope="col">金への向き</th><th scope="col">KZ・停止</th></tr></thead>')
++    return f'<div class="board-wrap"><table class="event-table">{head}<tbody>{"".join(rows)}</tbody></table></div>'
++
++
+ def render(fig, index):
+     ident = f'figure-{index}'
+     kind = fig['type']
+-    renderer = {'price_map': price_map, 'diverging_bars': bars, 'bars': bars, 'split': split, 'timeline': timeline}[kind]
++    renderer = {'price_map': price_map, 'diverging_bars': bars, 'bars': bars, 'split': split, 'timeline': timeline,
++                'bias_board': bias_board, 'event_table': event_table}[kind]
+     source_url = fig.get('source_url', '')
+     if source_url and not re.match(r'^https?://', source_url):
+         raise ValueError('Figure source URL must be HTTP(S).')
+--- /Users/laa/work/chart-intel-html-20261013/before/report.css	2026-10-13 19:43:51
++++ /Users/laa/.agents/skills/human-first-docs/assets/report.css	2026-10-13 19:55:14
+@@ -16,3 +16,15 @@
+ 
+ .footnote ol{padding-left:2.8em}.footnote li{padding-left:.2em}.footnote p{margin:.3em 0}
+ @media print{.footnote{font-size:8.3pt}.footnote hr{margin:8px 0 12px}.footnote ol{padding-left:2.8em;margin:8px 0}.footnote li{margin:.3em 0;break-inside:avoid}.footnote p{margin:0;line-height:1.55}.footnote a[href^="http"]::after{font-size:.92em}}
++
++/* Bias board, event table, price ladder additions (2026-10-13). Earlier rules unchanged. */
++.band-visuals{margin:24px 0 0}.band-visuals .data-figure{border:1px solid var(--line)}.figure-bias_board,.figure-event_table{grid-column:1/-1}
++.bias-verdicts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:12px 0 18px}.verdict{padding:14px 16px;background:var(--wash);border-left:4px solid var(--tone);min-width:0}.verdict-label{display:block;font-size:.72rem;color:var(--muted);font-weight:600;line-height:1.5}.verdict-value{display:block;font-size:1.45rem;letter-spacing:-.02em;line-height:1.45;color:var(--tone);margin-top:4px;overflow-wrap:anywhere}.verdict small{display:block;font-size:.7rem;color:var(--muted);line-height:1.6;margin-top:5px;overflow-wrap:anywhere}.verdict.current{--tone:var(--ink)}
++.dir{font-weight:700;white-space:nowrap;color:var(--tone)}.dir.weak{font-weight:600;opacity:.8}.dir-symbol{margin-right:5px}.current{color:var(--ink);fill:var(--ink);--tone:var(--ink)}
++.board-wrap{max-width:100%;margin:8px 0 14px}.board-wrap table{font-size:.78rem;line-height:1.6}.board-wrap th,.board-wrap td{padding:9px 9px;min-width:0;vertical-align:top}.board-wrap th[scope=row]{background:none;font-weight:600;min-width:150px}.board-wrap th[scope=row] small{display:block;font-weight:400;font-size:.68rem;color:var(--muted);line-height:1.5;margin-top:3px}.board-wrap tbody tr:nth-child(even){background:none}.board-wrap tr.bias-group th,.board-wrap tr.event-group th{background:var(--wash);font-size:.72rem;letter-spacing:.06em;color:var(--accent);padding:8px 9px}.board-wrap td.asof,.board-wrap td.event-window{font-size:.7rem;color:var(--muted);white-space:normal}.board-wrap td.dir-cell{white-space:nowrap}
++.event-table .event-date{display:block;font-weight:600}.event-table .event-time{display:block;font-size:.72rem;color:var(--muted);white-space:nowrap}.event-table .event-name small{display:block;font-size:.66rem;color:var(--muted);font-weight:400}.event-table tr.released td,.event-table tr.released th{color:var(--muted)}.event-table tr.released .dir{opacity:.75}
++.band-shade{fill:#e8efed;opacity:.9}.band-label{fill:#4f6a66;font-size:14px}.plot-tag{font-size:12px;fill:var(--muted)}.current .value-line{stroke-width:3}.current .plot-value{font-size:19px}
++.offscale-note{font-size:.72rem;color:var(--muted);margin:10px 0 4px}.offscale-levels{list-style:none;padding:0;margin:0 0 6px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.offscale-levels li{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:.76rem;line-height:1.55;border-top:1px solid var(--line);padding-top:6px;min-width:0}.offscale-levels li strong{color:var(--tone);white-space:nowrap}.offscale-levels li small{grid-column:1/-1;color:var(--muted);font-size:.68rem}
++details.limitations>summary{display:flex;align-items:center;gap:12px;cursor:pointer;list-style:none}details.limitations>summary::-webkit-details-marker{display:none}details.limitations>summary h3{margin:0}.limitations-count{font-size:.7rem;color:#6e4b1d}details.limitations>summary::after{content:"＋";margin-left:auto;color:var(--muted)}details.limitations[open]>summary::after{content:"−"}
++@media(max-width:760px){.bias-verdicts{grid-template-columns:1fr;gap:10px}.verdict-value{font-size:1.3rem}.board-wrap table,.board-wrap thead,.board-wrap tbody,.board-wrap tr,.board-wrap th,.board-wrap td{display:block}.board-wrap thead{display:none}.board-wrap tr.bias-row,.board-wrap tr.event-row{border-top:1px solid var(--line);padding:10px 0 12px;display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}.board-wrap tr.bias-row>th,.board-wrap tr.event-row>th{grid-column:1/-1;border:0;padding:0 0 4px;min-width:0}.board-wrap tr.bias-row>td,.board-wrap tr.event-row>td{border:0;padding:0;font-size:.8rem;text-align:left;white-space:normal}.board-wrap td[data-label]::before{content:attr(data-label);display:block;font-size:.64rem;color:var(--muted);letter-spacing:.04em}.board-wrap td.dir-cell{grid-column:1/-1;font-size:.95rem;padding-top:4px}.board-wrap tr.bias-group th,.board-wrap tr.event-group th{border:0;padding:12px 0 6px}.event-table .event-date,.event-table .event-time{display:inline;margin-right:8px}.offscale-levels{grid-template-columns:1fr}}
++@media print{.band-visuals{margin-top:14px}.bias-verdicts{gap:10px;margin:8px 0 12px}.verdict{padding:9px 12px}.verdict-label{font-size:7.5pt}.verdict-value{font-size:13pt}.verdict small{font-size:7pt}.board-wrap table{font-size:7.6pt;table-layout:auto}.board-wrap th,.board-wrap td{padding:5px 6px}.board-wrap th[scope=row] small{font-size:6.5pt}.board-wrap td.dir-cell{white-space:normal}.figure-bias_board,.figure-event_table{break-inside:auto}.offscale-levels li{font-size:7.5pt}details.limitations>summary{cursor:auto}details.limitations>summary::after{display:none}details.limitations::details-content{content-visibility:visible!important}details.limitations:not([open])>ul{display:block!important}.band-label,.plot-tag{font-size:11px}}
+--- /Users/laa/work/chart-intel-html-20261013/before/report_presentation.py	2026-10-13 19:43:51
++++ /Users/laa/.codex/jobs/chart-intel/report_presentation.py	2026-10-13 19:55:23
+@@ -18,6 +18,12 @@
+ RENDERER = Path('/Users/laa/.agents/skills/human-first-docs/scripts/render_report.py')
+ NO_FIGURES = '図表は未作成です。本文の数値・出典を確認してください。図表を含む資料の完成確認は未実施です。'
+ SUMMARY_FIELDS = ('conclusion', 'metrics', 'conditions', 'evidence', 'limitations')
++PRESENTATION_LABELS = {
++    'conditions_label': '次に確認すること', 'conditions_title': '条件と取り消し基準',
++    'limitations_title': '制約・除外した材料（開いて確認）', 'limitations_open': False,
++    'full_report_title': '全文・出典（確認用）',
++    'full_report_note': '各章を開くと原稿の全文・表・出典を読めます。図表の数値は末尾の「図表に使用した観測値」から引用しています。',
++}
+ 
+ 
+ def _load_json(path):
+@@ -98,6 +104,9 @@
+     _validate_quotes(summary, figures, source)
+     if not figures:
+         summary['note'] = '\n'.join(filter(None, [summary.get('note', ''), NO_FIGURES]))
++    # Presentation labels for this job's readers; the parent's summary content is unchanged.
++    for key, value in PRESENTATION_LABELS.items():
++        summary.setdefault(key, value)
+     # Stage validated outputs first: never leave an unvalidated new public artifact.
+     with tempfile.TemporaryDirectory(prefix='.presentation-', dir=md_path.parent) as temporary:
+         stage = Path(temporary)
+@@ -133,6 +142,7 @@
+ .conclusion{background:#f0f3ec;color:var(--ink);border:1px solid var(--line);border-radius:0}
+ .conclusion .section-label,.conclusion p{color:var(--ink)}.conclusion p{white-space:pre-line;font-size:16px}
+ .data-figure{overflow-x:auto}.data-svg{min-width:0}.bar-label{font-size:15px}.plot-label{font-size:15px}
++.verdict{background:#f0f3ec}.board-wrap tr.bias-group th,.board-wrap tr.event-group th{background:#f0f3ec}
+ @media(max-width:600px){.reading-nav{gap:10px;padding:12px 14px}.reading-nav>div{gap:14px}.overview-grid>.decision-rail{grid-row:1}.figure-heading p,.data-figure figcaption,.figure-source,.brief-note,.asof-note{font-size:12px}.conclusion{padding:18px}.data-figure{padding:16px 12px}.plot-label,.bar-label,.axis-label{font-size:18px}}
+ @media print{.reports-back{display:none}.data-svg{min-width:0}.conclusion p{font-size:10pt}}
+ </style>"""
