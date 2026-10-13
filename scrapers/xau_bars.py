@@ -5,7 +5,8 @@ statistics, correlation and sweep checks had no bars. This module fetches closed
 XAU/USD spot bars in UTC and keeps output/history/xau_h1.csv in the same format
 (timestamp ms, open, high, low, close), so those readers work unchanged.
 Unclosed bars and the weekend / daily maintenance breaks are excluded.
-15-minute bars are returned for news-candle levels only and are not cached.
+15-minute bars (news-candle levels only) are kept the same way in xau_m15.csv beside it, so a
+release candle survives a later failed or shorter 15-minute fetch.
 snapshot() / restore() store the exact bars a level computation used, with a SHA-256.
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ H1_CACHE = Path(__file__).parent.parent / "output" / "history" / "xau_h1.csv"
 H1_KEEP = 6000          # bars kept in the cache (about one year of trading hours)
 H1_FETCH = 5000         # Twelve Data maximum outputsize
 M15_FETCH = 800         # about eight trading days of 15-minute bars
+M15_KEEP = 2000         # about three weeks: longer than the release-candle windows (7 days)
 NY = ZoneInfo("America/New_York")
 SOURCE = "Twelve Data XAU/USD"
 
@@ -100,14 +102,16 @@ def update_cache(bars: list[dict], path: Path = H1_CACHE, keep: int = H1_KEEP) -
 
 
 def collect(now: Optional[datetime] = None, getter: Optional[Callable] = None,
-            cache: Path = H1_CACHE) -> tuple[dict, list[dict], list[dict]]:
-    """Fetch H1 (cached) and M15 (in memory) closed bars. Errors are reported, never raised.
+            cache: Path = H1_CACHE, m15_cache: Optional[Path] = None) -> tuple[dict, list[dict], list[dict]]:
+    """Fetch H1 and M15 closed bars and merge each into its cache. Errors are reported, never raised.
 
     Returns (JSON-safe metadata, H1 bars, M15 bars); the bars stay out of the saved data.
+    The M15 cache defaults to xau_m15.csv next to the H1 cache.
     """
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    m15_cache = Path(m15_cache) if m15_cache else Path(cache).with_name("xau_m15.csv")
     result = {"source": SOURCE, "h1_path": str(cache), "h1_count": 0, "h1_last_bar_utc": None,
-              "m15_count": 0, "error": None}
+              "m15_path": str(m15_cache), "m15_count": 0, "m15_last_bar_utc": None, "error": None}
     errors, bars, m15 = [], [], []
     try:
         h1, error = fetch_bars("1h", H1_FETCH, now, getter)
@@ -120,12 +124,15 @@ def collect(now: Optional[datetime] = None, getter: Optional[Callable] = None,
     if bars:
         result.update(h1_count=len(bars), h1_last_bar_utc=bars[-1]["ts"].strftime("%Y-%m-%d %H:%M"))
     try:
-        m15, error = fetch_bars("15min", M15_FETCH, now, getter)
+        fresh, error = fetch_bars("15min", M15_FETCH, now, getter)
         if error:
             errors.append(error)
-        result["m15_count"] = len(m15)
+        m15 = update_cache(fresh, m15_cache, M15_KEEP) if fresh else read_cache(m15_cache)
     except Exception as exc:
         errors.append(f"{SOURCE} 15min: {type(exc).__name__}")
+        m15 = read_cache(m15_cache)
+    if m15:
+        result.update(m15_count=len(m15), m15_last_bar_utc=m15[-1]["ts"].strftime("%Y-%m-%d %H:%M"))
     result["error"] = "／".join(errors) or None
     return result, bars, m15
 

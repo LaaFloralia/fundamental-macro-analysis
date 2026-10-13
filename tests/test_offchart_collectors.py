@@ -107,8 +107,9 @@ def test_cnbc_dollar_index_is_the_fallback_before_the_eur_usd_estimate():
     from scrapers import dxy
     payload = {'FormattedQuoteResult': {'FormattedQuote': [quote('.DXY', '102.215', '102.589', '2026-10-14T05:04:58.000-0400')]}}
     out = dxy._scrape_cnbc(lambda url, params: payload, utc('2026-10-14T09:10'))
-    assert (out['source'], out['current_price'], out['prev_close'], out['change_pct'], out['estimated'], out['stale']) == \
-        ('CNBC', 102.215, 102.589, -0.3646, False, False)
+    assert (out['source'], out['current_price'], out['prev_close'], out['change'], out['estimated'], out['stale']) == \
+        ('CNBC', 102.215, 102.589, -0.374, False, False)
+    assert out['change_pct'] == pytest.approx(-0.374 / 102.589 * 100, abs=1e-12)    # -0.36456..., not cut to -0.3646
     assert dxy._scrape_cnbc(lambda url, params: payload, utc('2026-10-14T21:30'))['stale'] is True  # next trading date
     assert dxy._scrape_cnbc(lambda url, params: {'FormattedQuoteResult': {'FormattedQuote': [
         quote('.DXY', '102.215', 'N/A', '2026-10-14T05:04:58.000-0400')]}}, utc('2026-10-14T09:00')) is None
@@ -116,6 +117,20 @@ def test_cnbc_dollar_index_is_the_fallback_before_the_eur_usd_estimate():
     def broken(url, params):
         raise RuntimeError('down')
     assert dxy._scrape_cnbc(broken, utc('2026-10-14T09:00')) is None
+
+
+def test_changes_next_to_a_threshold_are_kept_unrounded():
+    # US2Y is judged at 0.05pp and the DXY at 0.3%: rounding first would turn these into votes.
+    payload = {'FormattedQuoteResult': {'FormattedQuote': [quote('US2Y', '4.8496%', '4.80%', '2026-10-13T09:11:40.000-0400')]}}
+    change = uy.parse(payload, utc('2026-10-13T13:20'))['US2Y']['change']
+    assert change == 0.0496 and change < 0.05                                       # round(.., 3) gave 0.05
+    from scrapers import dxy
+    payload = {'FormattedQuoteResult': {'FormattedQuote': [quote('.DXY', '100.29996', '100', '2026-10-14T05:04:58.000-0400')]}}
+    out = dxy._scrape_cnbc(lambda url, params: payload, utc('2026-10-14T09:10'))
+    assert out['change'] == 0.29996 and out['change_pct'] < 0.3                     # round(.., 4) gave 0.3
+    shown = {'current_price': 100.29996, 'prev_close': 100.0, 'change': 0.29996, 'change_pct': None}
+    dxy._reconcile_change(shown)                                                     # Investing.com / MarketWatch
+    assert shown['change'] == 0.29996 and shown['change_pct'] < 0.3 and 'change_note' not in shown
 
 
 # ------------------------------------------------------------------ inflation_nowcast
@@ -133,6 +148,15 @@ def test_nowcast_takes_the_latest_point_of_each_series_and_skips_release_markers
                        {'chart': {'subcaption': 'Q3'}}])
     assert parsed['2026-9'] == {'cpi': {'value': 0.531, 'as_of': '10/09'}, 'core_cpi': {'value': 0.202, 'as_of': '10/09'}}
     assert parsed['_updated'] == 'Updated 10/09'
+
+
+def test_nowcast_values_are_not_rounded_before_the_gap_is_judged():
+    parsed = nc.parse([chart('2026-9', ['10/09'], {'CPI Inflation': ['0.2496']})])
+    assert parsed['2026-9']['cpi']['value'] == 0.2496                               # round(.., 3) gave 0.25
+    event = {'date': 'Wednesday, October 14, 2026', 'time_jst': '21:30', 'country': 'United States',
+             'indicator': 'CPI (MoM) (Sep)', 'forecast': '0.2%'}
+    gap = ue.nowcast_gap(event, {'months': parsed})['gap']
+    assert gap == 0.0496 and gap < ue.GAP_NEUTRAL_PP                                # 予想並み, not a 0.05pp vote
 
 
 @pytest.mark.parametrize('indicator,released,month,key', [

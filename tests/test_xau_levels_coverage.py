@@ -52,7 +52,10 @@ def test_a_missing_bar_in_the_scan_window_is_named_and_not_a_resting_candidate()
     assert near['low']['key'] == 'LONDON_L' and near['low']['gaps'] == {'formation': 0.0, 'scan': 0.0}
     lines = xl.format_level_lines(result)
     assert '- 前日高値（10/12）: 4,010.00（現在値比 +5.00／+0.12%）｜BSL｜未到達・欠測1時間' in lines
-    assert lines[3] == '- 欠測: 水準の形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、直近の未到達候補から外す'
+    assert lines[3] == ('- 欠測: 水準の形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、直近の未到達候補から外す。'
+                        '最終確定足の後の足が欠けている間は、どの水準も直近の未到達候補にしない')
+    assert (pdh['confirmed'], by_key(result, 'LONDON_L')['confirmed'], by_key(complete, 'PDH')['confirmed']) == \
+        (False, True, True)
     assert lines[-1] == '- 直近の未到達: 下 London安値（当日） 3,999.00'
 
 
@@ -62,6 +65,8 @@ def test_nearest_resting_takes_the_next_complete_level():
                          row('FORMED', 4008.0, {'formation': 1.0, 'scan': 0.0}),
                          row('FAR', 4030.0, {'formation': 0.0, 'scan': 0.0})]}
     assert xl.nearest_resting(levels, 4000.0)['high']['key'] == 'FAR'
+    levels['levels'][2]['confirmed'] = False                                          # complete gaps, not current
+    assert xl.nearest_resting(levels, 4000.0) == {}
 
 
 def test_a_missing_bar_in_the_previous_week_or_month_is_a_caution_and_a_note():
@@ -99,17 +104,39 @@ def test_closes_outside_count_only_across_a_contiguous_run():
     assert xl.sweep_state(4010, 'high', quarters + hours)[0] == 'broken'               # 6 hours
 
 
-def test_one_missing_bar_today_is_a_caution_and_stale_needs_two_bars():
+def test_one_missing_bar_today_is_a_caution_and_one_stale_bar_leaves_every_level_unconfirmed():
     today = xl.build_levels(drop(base(), '2026-10-13T05:00'), [], utc(NOW), price=4000.0)
     assert today['cautions'] == ['当日の1時間足に1本の欠落。その時間の値動きは状態に入っていない']
+    fresh = xl.build_levels(base(), [], utc(NOW), price=4000.0)
+    assert fresh['coverage']['stale_hours'] == 0 and all(lv['confirmed'] for lv in fresh['levels'] if lv['state'] != 'forming')
     one = xl.build_levels(base('2026-10-13T11:00'), [], utc(NOW), price=4000.0)
-    assert one['coverage']['stale_hours'] == 1 and one['cautions'] == []
-    # A provider one bar late is not a gap of every level: the states cover the bars received.
-    assert by_key(one, 'PDH')['state_word'] == '未到達' and xl.nearest_resting(one, 4000.0)
+    assert one['coverage']['stale_hours'] == 1
+    assert one['cautions'] == ['最終確定足が10/13 20:00 JSTで、その後の1時間分の足がない。以降の値動きは状態に入っていない']
+    # The state word still describes the bars received; the missing hour leaves it unconfirmed.
+    pdh = by_key(one, 'PDH')
+    assert (pdh['state_word'], pdh['gaps'], pdh['confirmed']) == ('未到達', {'formation': 0.0, 'scan': 0.0}, False)
+    assert not any(lv['confirmed'] for lv in one['levels']) and xl.nearest_resting(one, 4000.0) == {}
+    assert not any(line.startswith('- 直近の未到達') for line in xl.format_level_lines(one))
     two = xl.build_levels(base('2026-10-13T10:00'), [], utc(NOW), price=4000.0)
     assert two['coverage']['stale_hours'] == 2
     assert two['cautions'] == ['最終確定足が10/13 19:00 JSTで、その後の2時間分の足がない。以降の値動きは状態に入っていない']
     assert by_key(two, 'PDH')['state_word'] == '未到達' and xl.nearest_resting(two, 4000.0) == {}  # stale: no lead chip
+
+
+@pytest.mark.parametrize('now,latest', [('2026-10-13T13:04', '2026-10-13T11:00'),   # 12:00 bar closed 4 minutes ago
+                                        ('2026-10-13T13:05', '2026-10-13T12:00'),   # published 5 minutes after its close
+                                        ('2026-10-11T23:04', '2026-10-09T20:00'),   # Sunday's first bar not yet published
+                                        ('2026-10-11T23:05', '2026-10-11T22:00'),
+                                        ('2026-10-10T12:00', '2026-10-09T20:00')])  # weekend: Friday's last bar
+def test_a_bar_is_expected_five_minutes_after_its_close(now, latest):
+    assert xl.latest_expected_bar(utc(now)) == utc(latest)
+
+
+def test_the_publishing_lag_does_not_mark_a_just_closed_bar_missing():
+    early = xl.build_levels(base('2026-10-13T11:00'), [], utc('2026-10-13T13:04'), price=4000.0)
+    assert early['coverage']['stale_hours'] == 0 and early['cautions'] == [] and xl.nearest_resting(early, 4000.0)
+    late = xl.build_levels(base('2026-10-13T11:00'), [], utc('2026-10-13T13:05'), price=4000.0)
+    assert late['coverage']['stale_hours'] == 1 and xl.nearest_resting(late, 4000.0) == {}
 
 
 def test_a_started_hour_counts_each_missing_quarter():

@@ -23,11 +23,14 @@ Conventions:
       broken   抜けて定着 traded through, closes outside for SWEEP_HOURS or more
     A failed break returns inside within a few bars; this describes what happened and
     predicts nothing.
-  * Coverage: a stale last bar while the market is open and missing hours in the previous
-    day, week and month and the current trading day become cautions. Each level carries
-    gaps = {"formation", "scan"}: expected market hours (0.25 per 15-minute bar) missing from
-    its formation window and from the bars scanned for its state. A state is not asserted
-    across a gap: the state word names the missing hours and nearest_resting skips the level.
+  * Coverage: any expected closed hour missing after the last bar while the market is open
+    (stale_hours; a bar counts as expected once it closed PUBLISH_LAG ago) and missing hours in
+    the previous day, week and month and the current trading day become cautions. Each level
+    carries gaps = {"formation", "scan"}: expected market hours (0.25 per 15-minute bar) missing
+    from its formation window and from the bars scanned for its state, up to the last bar.
+    The state word describes the bars received and names the scan gap; `confirmed` says whether
+    that state is also the current one: False with any gap of the level or any stale hour.
+    nearest_resting takes confirmed levels only.
     Outside closes count towards SWEEP_HOURS only across a run with no missing bar.
   * Inputs are trimmed by level_inputs() and stored with xau_bars.snapshot(), so recompute()
     reproduces a result from the saved bars.
@@ -52,7 +55,8 @@ SESSIONS = (("asia", "アジア", "Asia/Tokyo", 9, 16), ("london", "London", "Eu
             ("ny", "NY", "America/New_York", 8, 13))  # local opening and closing hours
 STATE_WORD = {"resting": "未到達", "swept": "掃引済み", "beyond": "抜けて推移", "broken": "抜けて定着", "forming": "形成中"}
 MISSING_BARS = 1            # missing hourly bars in a formation window that raise a caution
-STALE_BARS = 2              # missing hourly bars after the last bar that raise a caution
+STALE_BARS = 1              # missing hourly bars after the last bar that raise a caution
+PUBLISH_LAG = timedelta(minutes=5)  # Twelve Data publishes a closed bar within a few minutes
 HOUR, QUARTER = timedelta(hours=1), timedelta(minutes=15)
 
 
@@ -134,8 +138,8 @@ def missing_bars(have: set, start: datetime, end: datetime, step: timedelta = HO
 
 
 def latest_expected_bar(now: datetime) -> Optional[datetime]:
-    """Start of the latest hourly bar that should be closed at `now`."""
-    t = now.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+    """Start of the latest hourly bar that should be closed and published at `now` (PUBLISH_LAG after its close)."""
+    t = (now.astimezone(timezone.utc) - PUBLISH_LAG).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     for _ in range(80):  # a weekend is 49 closed hours
         if market_open(t):
             return t
@@ -360,15 +364,16 @@ def _span(bars: list[dict]) -> dict:
             "last_utc": stamp(bars[-1]) if bars else None}
 
 
-def _level(key, name, side, value, price, formed_at, state, at, group, note, gaps) -> dict:
-    """One level row. Missing scan hours go into the state word, missing formation hours into the note."""
+def _level(key, name, side, value, price, formed_at, state, at, group, note, gaps, stale) -> dict:
+    """One level row. Missing scan hours go into the state word, missing formation hours into the note;
+    `confirmed` is False with any gap or any hour missing after the last bar (`stale`)."""
     word = STATE_WORD[state] + (f"・欠測{gaps['scan']:g}時間" if gaps["scan"] > 0 else "")
     if gaps["formation"] > 0:
         note = "・".join(filter(None, [note, f"形成期間に欠測{gaps['formation']:g}時間"]))
     return {"key": key, "name": name, "side": side, "price": round(value, 2), "group": group, "formed": _jst(formed_at),
             "state": state, "state_word": word, "touched_at": _jst(at), "touched_session": session_of(at) if at else None,
             "distance": round(value - price, 2), "distance_pct": round((value - price) / price * 100, 2),
-            "note": note, "gaps": gaps}
+            "note": note, "gaps": gaps, "confirmed": not stale and not any(gaps.values())}
 
 
 def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional[float] = None,
@@ -391,8 +396,8 @@ def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional
     result["coverage"], result["cautions"] = coverage(h1, days, today, now)
     have_h1, have_m15 = {b["ts"] for b in h1}, {b["ts"] for b in m15}
     # Per-level gaps are holes up to the last bar received; hours missing after it (a provider
-    # delay) are one caution for every level (coverage), not a gap of each level.
-    until = h1[-1]["ts"]
+    # delay) are one caution for every level (coverage) and leave every level unconfirmed.
+    until, stale = h1[-1]["ts"], result["coverage"]["stale_hours"]
     closed_end = until + HOUR
     levels = []
 
@@ -400,7 +405,7 @@ def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional
         state, at = sweep_state(value, side, scan_bars(h1, m15, scan_from))
         gaps = {"formation": float(missing_bars(have_h1, window[0], min(window[1], closed_end))) if window else 0.0,
                 "scan": scan_missing(have_h1, have_m15, scan_from, now, until)}
-        levels.append(_level(key, name, side, value, price, formed_at, state, at, group, note, gaps))
+        levels.append(_level(key, name, side, value, price, formed_at, state, at, group, note, gaps, stale))
 
     prev, prev_week, prev_month = _previous_periods(days, today)
     current = days.get(today)
@@ -444,7 +449,7 @@ def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional
                 if now < hi:  # forming: formation gaps so far, nothing scanned yet
                     gaps = {"formation": float(missing_bars(have_h1, lo, min(hi, closed_end))), "scan": 0.0}
                     levels.append(_level(f"{key.upper()}_{side[0].upper()}", f"{name}{suffix}（当日・形成中）", side,
-                                         value, price, at, "forming", None, "session", "", gaps))
+                                         value, price, at, "forming", None, "session", "", gaps, stale))
                 else:
                     add(f"{key.upper()}_{side[0].upper()}", f"{name}{suffix}（当日）", side, value, at, hi, "session",
                         (lo, hi))
@@ -454,7 +459,7 @@ def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional
             gaps = {"formation": float(missing_bars(have_h1, lv["first_at"], lv["formed_at"])),
                     "scan": scan_missing(have_h1, have_m15, lv["formed_at"] + HOUR, now, until)}
             levels.append(_level(key, f"{name}（{lv['count']}回・{_jst(lv['formed_at'])}まで）", side, lv["price"],
-                                 price, lv["formed_at"], "resting", None, "equal", "", gaps))
+                                 price, lv["formed_at"], "resting", None, "equal", "", gaps, stale))
     # Release candles stay through the next trading day (Friday's payrolls are still listed on Monday).
     # Weekly: only the top tier over the past week.
     since = _news_since(today, now, weekly)
@@ -497,17 +502,19 @@ def merge_levels(levels: list[dict]) -> list[dict]:
 def nearest_resting(lv: Optional[dict], price: Optional[float]) -> dict:
     """The closest untouched high above and low below the price: {'high': level, 'low': level}.
 
-    Levels with missing bars in their formation or scan window are skipped: their state is not certain.
-    Nothing is chosen while the last bar is stale (STALE_BARS or more hours missing after it).
+    Only confirmed levels: none with missing bars in its formation or scan window, and nothing
+    while the last bar is stale (STALE_BARS or more hours missing after it). Rows saved before
+    `confirmed` existed fall back to their gaps.
     """
     out = {}
     if not isinstance(lv, dict) or lv.get("error") or not isinstance(price, (int, float)):
         return out
     if ((lv.get("coverage") or {}).get("stale_hours") or 0) >= STALE_BARS:
         return out
+    confirmed = lambda x: x.get("confirmed", not any((x.get("gaps") or {}).values()))
     for side, ok in (("high", lambda p: p > price), ("low", lambda p: p < price)):
         rows = [x for x in lv.get("levels") or [] if x.get("side") == side and x.get("state") == "resting"
-                and ok(x["price"]) and not any((x.get("gaps") or {}).values())]
+                and ok(x["price"]) and confirmed(x)]
         if rows:
             out[side] = min(rows, key=lambda x: abs(x["price"] - price))
     return out
@@ -525,7 +532,8 @@ def format_level_lines(lv: Optional[dict]) -> list[str]:
     lines.append("- 状態: 未到達=確定足で一度も抜けていない／掃引済み=一度抜け、最新の終値は内側／"
                  "抜けて推移=最新の終値が外側で6時間未満／抜けて定着=6時間以上外側。時刻は最初に抜けた足。"
                  "高値の上をBSL、安値の下をSSLの候補と呼ぶ（損切りが置かれやすいとされる位置で、注文は観測していない）")
-    lines.append("- 欠測: 水準の形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、直近の未到達候補から外す")
+    lines.append("- 欠測: 水準の形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、直近の未到達候補から外す。"
+                 "最終確定足の後の足が欠けている間は、どの水準も直近の未到達候補にしない")
     lines.append("- セッションは各市場の現地時間: アジア 東京9〜16時、London ロンドン8〜13時、NY ニューヨーク8〜13時"
                  "（JSTでは夏時間 London 16〜21時・NY 21〜翌2時、冬時間 17〜22時・22〜翌3時）")
     for caution in lv.get("cautions") or []:

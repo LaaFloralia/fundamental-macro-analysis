@@ -24,7 +24,9 @@ MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", 
 
 
 def parse(payload) -> dict:
-    """{'YYYY-M': {'cpi': {'value': float, 'as_of': 'MM/DD'}, ...}, '_updated': str} for each target month."""
+    """{'YYYY-M': {'cpi': {'value': float, 'as_of': 'MM/DD'}, ...}, '_updated': str} for each target month.
+
+    Values stay as published (not rounded): the gap to the consensus is judged against a threshold."""
     out = {}
     for chart in payload or []:
         if not isinstance(chart, dict):
@@ -44,7 +46,7 @@ def parse(payload) -> dict:
                       for i, d in enumerate(dataset.get("data") or [])]
             points = [(label, float(v)) for label, v in points if v not in (None, "")]
             if points:
-                entry[key] = {"value": round(points[-1][1], 3), "as_of": points[-1][0]}
+                entry[key] = {"value": points[-1][1], "as_of": points[-1][0]}
         if entry:
             out[month] = entry
         out["_updated"] = (chart.get("chart") or {}).get("_comment") or out.get("_updated")

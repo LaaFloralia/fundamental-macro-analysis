@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from scrapers.us_events import tier
+
 JST = timezone(timedelta(hours=9))
 FORECAST_HISTORY = Path(__file__).parent.parent / "output" / "history" / "calendar_forecasts.jsonl"
 FF_WEEK_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
@@ -126,16 +128,29 @@ def archive_forecasts(events: list, captured_at: datetime, path: Path = FORECAST
 
 
 def archive_actuals(events: list, captured_at: datetime, known: set, path: Path = FORECAST_HISTORY) -> int:
-    """結果を初めて見た時刻を記録する（改定後の値で上書きされても初回値を残す）。"""
-    rows = []
+    """結果を初めて見た時刻を記録する（改定後の値で上書きされても初回値を残す）。
+
+    数値の結果がない発表済みの米国 Tier A/B（声明・会見・発言など）も type release_seen で一度だけ
+    記録し、カレンダーから消えた後も発表足の水準に残す。戻り値は結果の記録件数。
+    """
+    rows, count, released = [], 0, None
     for ev in events or []:
         when = event_datetime_jst(ev)
-        if when is None or parse_value(ev.get("actual")) is None:
+        if when is None:
             continue
         key = _event_key(ev, when)
+        if parse_value(ev.get("actual")) is None:
+            if when > captured_at or tier(ev) not in ("A", "B"):
+                continue
+            released = set(load_release_history(path)) if released is None else released
+            if key not in released:
+                released.add(key)
+                rows.append({"key": key, "type": "release_seen", "captured_at": captured_at.isoformat()})
+            continue
         if key in known:
             continue
         known.add(key)
+        count += 1
         rows.append({"key": key, "type": "actual_first_seen", "actual": ev.get("actual"),
                      "captured_at": captured_at.isoformat()})
     if rows:
@@ -143,11 +158,11 @@ def archive_actuals(events: list, captured_at: datetime, known: set, path: Path 
         with path.open("a", encoding="utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    return len(rows)
+    return count
 
 
-def load_actual_history(path: Path = FORECAST_HISTORY) -> dict:
-    """key → 結果を初めて見た記録。"""
+def _typed_rows(path: Path, kind: str) -> dict:
+    """key → 最初の type=kind の記録。"""
     first = {}
     if not path.exists():
         return first
@@ -156,9 +171,19 @@ def load_actual_history(path: Path = FORECAST_HISTORY) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if row.get("type") == "actual_first_seen" and row.get("key") not in first:
+        if isinstance(row, dict) and row.get("type") == kind and row.get("key") not in first:
             first[row["key"]] = row
     return first
+
+
+def load_release_history(path: Path = FORECAST_HISTORY) -> dict:
+    """key → 数値の結果なしで発表済みと記録した最初の行（release_seen）。"""
+    return _typed_rows(path, "release_seen")
+
+
+def load_actual_history(path: Path = FORECAST_HISTORY) -> dict:
+    """key → 結果を初めて見た記録。"""
+    return _typed_rows(path, "actual_first_seen")
 
 
 def load_forecast_history(path: Path = FORECAST_HISTORY) -> dict:
@@ -171,7 +196,7 @@ def load_forecast_history(path: Path = FORECAST_HISTORY) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if row.get("type") == "actual_first_seen":
+        if not isinstance(row, dict) or row.get("type"):  # actual_first_seen / release_seen
             continue
         try:
             row["_captured"] = datetime.fromisoformat(row["captured_at"])
@@ -184,19 +209,25 @@ def load_forecast_history(path: Path = FORECAST_HISTORY) -> dict:
 
 
 def history_events(since: datetime, until: datetime, forecast_history: Optional[dict] = None,
-                   actual_history: Optional[dict] = None, countries=("United States",)) -> list[dict]:
+                   actual_history: Optional[dict] = None, countries=("United States",),
+                   release_history: Optional[dict] = None) -> list[dict]:
     """Released events rebuilt from the archive (calendar_forecasts.jsonl), for the releases a
-    calendar page no longer lists (Monday's Daily looking back at Friday). Only releases whose
-    result was recorded; the forecast and previous are the last pre-release record, else N/A."""
+    calendar page no longer lists (Monday's Daily looking back at Friday): releases whose result
+    was recorded, and US Tier A/B releases recorded without a number (statements, speeches) with
+    actual N/A. The forecast and previous are the last pre-release record, else N/A."""
     out = []
-    for key, first in (actual_history or {}).items():
+    recorded = {**{key: {} for key in release_history or {}}, **(actual_history or {})}
+    for key, first in recorded.items():
         try:
             country, rest = key.split("|", 1)
             indicator, iso = rest.rsplit("|", 1)
             when = datetime.fromisoformat(iso).astimezone(JST)
         except (AttributeError, ValueError):
             continue
-        if country not in countries or not since <= when <= until or parse_value(first.get("actual")) is None:
+        if country not in countries or not since <= when <= until:
+            continue
+        if parse_value(first.get("actual")) is None and (key not in (release_history or {})
+                                                         or tier({"country": country, "indicator": indicator}) is None):
             continue
         prior = (forecast_history or {}).get(key) or {}
         before = prior.get("_captured") is not None and prior["_captured"] < when
@@ -204,14 +235,15 @@ def history_events(since: datetime, until: datetime, forecast_history: Optional[
                     "country": country, "indicator": indicator,
                     "previous": (prior.get("previous") if before else None) or "N/A",
                     "forecast": (prior.get("forecast") if before else None) or "N/A",
-                    "actual": first["actual"], "from_history": True})
+                    "actual": first.get("actual") or "N/A", "from_history": True})
     return sorted(out, key=event_datetime_jst)
 
 
 def merge_history_events(events: list, since: datetime, until: datetime, path: Path = FORECAST_HISTORY) -> int:
     """Adds archived released events the calendar does not list (same country, name and time); returns the count."""
     have = {_event_key(ev, when) for ev in events if (when := event_datetime_jst(ev)) is not None}
-    added = [ev for ev in history_events(since, until, load_forecast_history(path), load_actual_history(path))
+    added = [ev for ev in history_events(since, until, load_forecast_history(path), load_actual_history(path),
+                                         release_history=load_release_history(path))
              if _event_key(ev, event_datetime_jst(ev)) not in have]
     events.extend(added)
     return len(added)

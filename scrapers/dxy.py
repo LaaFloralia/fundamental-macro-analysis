@@ -29,6 +29,7 @@ from config import (
     TWELVEDATA_API_KEY,
     USER_AGENT,
 )
+from scrapers.us_yields import exact_change
 
 # EUR/USD 逆数推定の係数・シンボルは config.yaml（SSoT）の dxy_estimate から供給される
 
@@ -40,18 +41,19 @@ def _reconcile_change(result: dict) -> None:
     Investing.com の表示では前日比が別の基準（遅延気配など）で更新され、
     現在値−前日終値と合わないことがある（2026-09-26: 表示 -0.31、計算 -0.27）。
     前日終値があれば差を計算し直し、表示値と 0.02 以上ずれた場合は記録に残す。
+    差と変化率は閾値で判定するため丸めない（表示の丸めは図表側）。
     """
     cur, prev, shown = result.get("current_price"), result.get("prev_close"), result.get("change")
     if prev is None and shown is not None:
         result["prev_close"] = prev = cur - shown
     if prev is not None:
-        computed = round(cur - prev, 4)
+        computed = exact_change(cur, prev)
         if shown is not None and abs(shown - computed) >= 0.02:
             result["change_reported"] = shown
             result["change_note"] = "表示の前日比が現在値−前日終値と不一致のため計算値を採用"
         result["change"] = computed
         if prev:
-            result["change_pct"] = round(computed / prev * 100, 4)
+            result["change_pct"] = computed / prev * 100
 
 def _estimate_dxy_from_eurusd(eurusd: float) -> float:
     return (1 / eurusd) * EURUSD_DXY_FACTOR
@@ -460,13 +462,13 @@ def _scrape_cnbc(getter=None, now: Optional[datetime] = None) -> Optional[dict]:
         return None
     if last is None or not prev:
         return None
-    change = round(last - prev, 4)
+    change = exact_change(last, prev)  # unrounded: judged against a threshold, rounded only for display
     return {
         "source": "CNBC",
         "current_price": last,
         "prev_close": prev,
         "change": change,
-        "change_pct": round(change / prev * 100, 4),
+        "change_pct": change / prev * 100,
         "pdh": None, "pdl": None, "pwh": None, "pwl": None, "pmh": None, "pml": None,
         "ipda_20_high": None, "ipda_20_low": None, "ipda_40_high": None, "ipda_40_low": None,
         "ipda_60_high": None, "ipda_60_low": None,
@@ -573,8 +575,8 @@ def _estimate_from_eurusd() -> Optional[dict]:
             "source": "Twelve Data EUR/USD推定",
             "current_price": round(dxy_current, 3),
             "prev_close": round(dxy_prev, 3),
-            "change": round(dxy_current - dxy_prev, 3),
-            "change_pct": round(((dxy_current - dxy_prev) / dxy_prev) * 100, 3) if dxy_prev else None,
+            "change": dxy_current - dxy_prev,  # derived quotes: unrounded
+            "change_pct": ((dxy_current - dxy_prev) / dxy_prev) * 100 if dxy_prev else None,
             "pdh": None,
             "pdl": None,
             "pwh": None,

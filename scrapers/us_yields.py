@@ -3,13 +3,15 @@
 FRED DGS2 / DGS10 lag by one to two business days, so the short-term board had no
 same-day rate. CNBC publishes the live yield, the previous close and the quote time;
 the change is recomputed here from last minus previous close (the provider's own
-percentage field is not used). A quote counts as today's only when it belongs to the
+percentage field is not used) and kept unrounded: the board judges it against a threshold
+and rounds only for display. A quote counts as today's only when it belongs to the
 current New York trading date (17:00 boundary); otherwise it is flagged stale and the
 board falls back to FRED with its own date. Failures return an error, never an invented value.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
@@ -26,6 +28,11 @@ NY = ZoneInfo("America/New_York")
 def trading_date(ts: datetime):
     """New York trading date: a quote from 17:00 New York onwards belongs to the next day."""
     return (ts.astimezone(NY) + timedelta(hours=7)).date()
+
+
+def exact_change(last: float, prev: float) -> float:
+    """last - prev exact in decimal (not rounded): 4.8496 - 4.80 is 0.0496, not 0.05 and not 0.04959999."""
+    return float(Decimal(str(last)) - Decimal(str(prev)))
 
 
 def _percent(text) -> Optional[float]:
@@ -49,7 +56,7 @@ def parse(payload: dict, now: datetime) -> dict:
             at = None
         if last is None or prev is None or at is None:
             continue
-        out[symbol] = {"value": last, "prev_close": prev, "change": round(last - prev, 3),
+        out[symbol] = {"value": last, "prev_close": prev, "change": exact_change(last, prev),
                        "as_of": at.isoformat(), "as_of_jst": at.astimezone(JST).strftime("%Y-%m-%d %H:%M"),
                        "market_status": q.get("curmktstatus"), "trading_date": trading_date(at).isoformat(),
                        "stale": at > now or trading_date(at) != trading_date(now)}
