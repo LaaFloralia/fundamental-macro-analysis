@@ -90,9 +90,9 @@ def test_positioning_percentile_waits_for_enough_history(tmp_path):
             "cot_gold_mm": {"report_date": "2026-09-22", "mm_net_pct_oi": 32.8}}
     lines = "\n".join(ph.format_positioning_lines(snap, rows))
     assert "94.0パーセンタイル" in lines  # 履歴 40〜64 の25件: 23件より大きく1件と同値 → (23+0.5)/25
-    assert "判定保留（履歴0週" in lines
+    assert "百分位なし（履歴0週" in lines
     other_source = {**snap, "retail": {"XAUUSD": {"source": "IG", "long_pct": 63.0}}}
-    assert "判定保留（履歴0件" in "\n".join(ph.format_positioning_lines(other_source, rows))
+    assert "百分位なし（履歴0件" in "\n".join(ph.format_positioning_lines(other_source, rows))
 
 
 def test_backfill_uses_scraped_timestamps_once(tmp_path):

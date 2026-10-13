@@ -95,7 +95,7 @@ def format_positioning_lines(snapshot: dict, rows: list[dict]) -> list[str]:
         series = _retail_series(rows, symbol, r["source"], now)
         pct = percentile_rank(series, r["long_pct"])
         rank = (f"{pct}パーセンタイル" if pct is not None
-                else f"判定保留（履歴{len(series)}件・値{len(set(series))}種。{MIN_SAMPLES}件・{MIN_DISTINCT}種以上で判定）")
+                else f"百分位なし（履歴{len(series)}件・値{len(set(series))}種。{MIN_SAMPLES}件・{MIN_DISTINCT}種以上で判定）")
         lines.append(f"- {symbol} 個人ロング比率（{r['source']}）: {r['long_pct']}% → 同じ取得元の履歴で {rank}")
     cot = snapshot.get("cot_gold_mm")
     if cot:
@@ -104,7 +104,7 @@ def format_positioning_lines(snapshot: dict, rows: list[dict]) -> list[str]:
         pct = percentile_rank(series, cot["mm_net_pct_oi"])
         window = f"比較窓 {min(weeks)}〜{max(weeks)} の{len(weeks)}週、CFTC現在公表値" if weeks else "比較窓なし"
         rank = (f"{pct}パーセンタイル（{window}）" if pct is not None
-                else f"判定保留（履歴{len(series)}週。{MIN_SAMPLES}週以上で判定）")
+                else f"百分位なし（履歴{len(series)}週。{MIN_SAMPLES}週以上で判定）")
         lines.append(f"- 金 Managed Money 純ロング/OI（{cot['report_date']}時点）: {cot['mm_net_pct_oi']}% → {rank}")
     if len(lines) == 1:
         lines.append("- 取得不可（比率・COT とも今回値なし）")
