@@ -1319,9 +1319,10 @@ def event_figure(data, stamp, mode):
         else:
             gap = nowcasts.get(id(ev))
             if gap:
-                value, places = shown(gap['gap'], 2, GAP_NEUTRAL_PP)
+                # The same digits as the board row: the shown difference is that of the shown values.
+                shown_now, _, shown_diff = gap_display(gap)
                 side = 'flat' if abs(gap['gap']) < GAP_NEUTRAL_PP else ('up' if gap['gap'] < 0 else 'down')
-                diff = f'nowcast {gap["nowcast"]:.2f}%（予想との差 {value:+.{places}f}pp）'
+                diff = f'nowcast {shown_now}%（予想との差 {shown_diff}pp）'
                 symbol, word, tone = mark(side, 'weak'), ('中立（予想並み）' if side == 'flat' else f'{WORD[side]}（弱・予測）'), TONE[side]
             else:
                 diff, symbol, word, tone = '発表前', '—', '発表待ち', 'neutral'

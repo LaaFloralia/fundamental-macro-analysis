@@ -845,6 +845,14 @@ def test_us_event_lines_use_the_same_gap_text_as_the_board():
     assert any('nowcast 0.2496%（10/09時点）− 市場予想 0.2% = +0.0496pp' in line for line in lines)
     assert ue.gap_display({'nowcast': 0.202, 'forecast': 0.2, 'gap': 0.002}) == ('0.202', '0.2', '+0.002')
     assert ue.gap_display({'nowcast': 0.531, 'forecast': 0.6, 'gap': -0.069}) == ('0.53', '0.6', '-0.07')
+    # The event table prints the same digits as the board (not nowcast 0.20% with a +0.002pp gap).
+    data = sample()
+    for ev in data['economic_calendar']['events']:
+        if ev['indicator'].startswith('Core CPI (MoM)'):
+            ev['forecast'] = '0.2%'
+    by = {i['label']: i for i in board.event_figure(data, NOW, 'daily')['figure']['items']}
+    assert by['コアCPI（前月比・9月）']['diff'] == 'nowcast 0.202%（予想との差 +0.002pp）'
+    assert ': nowcast 0.202%（' in rows_of(data)['予測との差: コアCPI（前月比・9月）']['source_quote']
 
 
 @pytest.mark.parametrize('change,symbol', [(0.04999999999999982, '▼'), (0.0499, '▽'), (-0.05000000000000071, '▲')])
