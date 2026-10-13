@@ -248,10 +248,12 @@ def viz_svg(viz, tone):
                     f'<rect x="{x(high):.1f}" y="12" width="{x(100) - x(high):.1f}" height="6" class="zone"/>'
                     f'<circle cx="{x(value):.1f}" cy="15" r="4.2" fill="{color}" stroke="#fff" stroke-width="1.2"/>')
     if kind == 'split':
-        # Long and short as shares of 100%; nothing is rescaled or filled in.
-        left = min(max(float(viz['left']), 0), 100)
-        right = min(max(float(viz['right']), 0), 100 - left) if viz.get('right') is not None else 0
-        share, rest = left / 100, right / 100
+        # Long and short as shares of their own sum, so a ratio that rounds to 100.1% or 99.9% is drawn as given
+        # (no side is cut); a lone value is its share of 100%.
+        left = max(float(viz['left']), 0)
+        right = max(float(viz['right']), 0) if viz.get('right') is not None else 0
+        total = left + right if right else 100
+        share, rest = (left / total, right / total) if total > 0 else (0, 0)
         pct = float(viz.get('track', 50))
         x = lambda p: 4 + (W - 8) * p / 100
         return _svg(f'<rect x="4" y="4" width="{W - 8}" height="7" class="track"/>'
@@ -387,12 +389,14 @@ def liquidity_section(figure):
         f'{e(i["icon"])} {e(i["label"])} {e(i["price_text"])}（{e(i["distance_text"])}・{e(i["state_word"])}）'
         for i in aux) + '</p>') if aux else ''
     cautions = ''.join(f'<p class="caution" role="note">{e(c["text"])}</p>' for c in figure.get('cautions') or [])
-    howto = _details('水準の決め方と状態の意味（開いて確認）', f'<p>{e(figure.get("legend"))}</p>{_sources(figure)}')
+    # The retail average entry is not a liquidity level: it stays out of the main view, in the folded details.
+    howto = _details('水準の決め方と状態の意味' + ('・個人の平均建値' if aux else '') + '（開いて確認）',
+                     f'<p>{e(figure.get("legend"))}</p>{aux_html}{_sources(figure)}')
     return (f'<section class="data-figure fig-liq" id="liquidity" aria-labelledby="liq-title">'
             f'<div class="fig-head"><span class="kicker">{e(figure.get("kicker"))}</span>'
             f'<h2 id="liq-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>{cautions}'
             f'<div class="ladder-head" aria-hidden="true"><span>価格</span><span>水準</span><span>現在値からの距離</span><span>状態</span></div>'
-            f'<ul class="ladder">{"".join(rows)}</ul>{band_note}{offscale}{aux_html}{howto}</section>')
+            f'<ul class="ladder">{"".join(rows)}</ul>{band_note}{offscale}{howto}</section>')
 
 
 def event_section(figure):
@@ -417,9 +421,10 @@ def event_section(figure):
             f'<td class="cell-dir"><span class="dir-symbol" aria-hidden="true">{e(i["symbol"])}</span>'
             f'<span class="dir-word">{e(i["direction"])}</span></td></tr>')
     howto = _details('指標の選び方と向きの意味（開いて確認）', f'<p>{e(figure.get("legend"))}</p>{_sources(figure)}')
+    cautions = ''.join(f'<p class="caution" role="note">{e(c["text"])}</p>' for c in figure.get('cautions') or [])
     return (f'<section class="data-figure fig-events" id="calendar" aria-labelledby="ev-title">'
             f'<div class="fig-head"><span class="kicker">{e(figure.get("kicker"))}</span>'
-            f'<h2 id="ev-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>'
+            f'<h2 id="ev-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>{cautions}'
             f'<div class="board-wrap"><table class="events"><thead><tr><th scope="col">時刻</th><th scope="col">指標</th>'
             f'<th scope="col">前回</th><th scope="col">予想</th><th scope="col">結果</th><th scope="col">差・予測</th>'
             f'<th scope="col">金への向き</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>{howto}</section>')

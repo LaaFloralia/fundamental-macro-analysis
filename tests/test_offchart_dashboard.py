@@ -153,8 +153,8 @@ def test_liquidity_cautions_sit_above_the_ladder_and_entries_below_it():
     page, _ = dash.build(source, summary, result['figures'], title='t', source_name='s.md')
     liq = page[page.index('id="liquidity"'):page.index('id="calendar"')]
     caution = '<p class="caution" role="note">当日の1時間足に2本の欠落。その時間の値動きは状態に入っていない</p>'
-    assert liq.index(caution) < liq.index('class="ladder"') < liq.index('<p class="aux">参考（流動性の位置ではない）')
-    assert '個人ロングの平均建値' not in liq[liq.index('class="ladder"'):liq.index('<p class="aux">')]
+    assert liq.index(caution) < liq.index('class="ladder"') < liq.index('<details')
+    assert '個人ロングの平均建値' not in liq[:liq.index('<details')]  # the retail average is folded away (F17)
 
 
 def test_an_empty_release_window_renders_one_quoted_row():
@@ -168,11 +168,12 @@ def test_an_empty_release_window_renders_one_quoted_row():
     page, _ = dash.build(source, summary, result['figures'], title='t', source_name='s.md')
     assert '<tr class="empty"><td colspan="7">該当なし（Tier A/Bの米指標なし）</td></tr>' in page
     assert '10/12からの結果と、Tier Aは10/20・Tier Bは10/15までの予定' in page
-    # An empty calendar is a failed collection, not a quiet week: no table, a stated limitation.
+    # An empty calendar is a failed collection, not a quiet week: it is never reported as 「該当なし」.
     data['economic_calendar']['events'] = []
     result = bundle.observations(data, NOW, 'daily', SOURCE)
-    assert 'calendar' not in [f['id'] for f in result['figures']]
-    assert '米指標の表: 経済指標カレンダーの取得に失敗（予定が0件）' in result['limitations']
+    figure = next(f for f in result['figures'] if f['id'] == 'calendar')
+    assert [i['label'] for i in figure['items']] == ['予定を確認できない（取得失敗）']
+    assert 'カレンダー取得失敗のため予定を確認できない（Investing.com: 予定が0件）' in result['limitations']
 
 
 def test_probabilities_are_drawn_as_shares_of_100_without_rescaling():

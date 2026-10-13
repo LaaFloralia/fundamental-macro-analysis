@@ -63,7 +63,7 @@ from scrapers.correlation import (
 from scrapers.session_stats import compute_session_stats, format_session_stats_lines
 from scrapers.macro_surprise import (
     FORECAST_HISTORY, JST, archive_actuals, archive_forecasts, fetch_ff_week, fill_missing_forecasts, format_surprise_lines,
-    load_actual_history, load_forecast_history, merge_history_events, released_surprises,
+    history_events, load_actual_history, load_forecast_history, merge_history_events, released_surprises,
 )
 from scrapers.liquidity_levels import TV_HISTORY, build_liquidity, choose_gvz, format_liquidity_lines, latest_tv_gvz
 from scrapers.us_yields import fetch_us_yields
@@ -171,6 +171,18 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
             print(f"  [WARN]  forecast_archive: {e}")
         results["macro_surprises"] = released_surprises(events, now, lookback_hours=(now - since).total_seconds() / 3600,
                                                         forecast_history=history, actual_history=actuals)
+    else:
+        # The calendar failed or came back empty: the releases already recorded in the archive still count, so the
+        # event table keeps its results (the page cannot confirm the schedule; that is stated separately).
+        try:
+            history, actuals = load_forecast_history(), load_actual_history()
+            restored = history_events(since, now.astimezone(JST), history, actuals)
+            results["macro_surprises"] = released_surprises(
+                restored, now, lookback_hours=(now - since).total_seconds() / 3600,
+                forecast_history=history, actual_history=actuals)
+            print(f"  [OK]    calendar_history: カレンダー取得なし・発表済みの記録から {len(results['macro_surprises'])} 件を復元")
+        except Exception as e:
+            print(f"  [WARN]  calendar_history: {e}")
     quote = results.get(f"_raw_quote_{DEFAULT_SYMBOL}") or {}
     try:
         price = float(quote.get("close"))
@@ -261,7 +273,10 @@ def attach_levels(results: dict, h1_bars: list, m15_bars: list, now: datetime, p
     archive, so the event table, the release candles and the surprises see the same releases."""
     calendar = results.get("economic_calendar") or {}
     events = calendar.get("events") if isinstance(calendar, dict) and not calendar.get("error") else None
-    if events:
+    if isinstance(events, list):
+        # Also with an empty list: a calendar that lists nothing still gets the archived releases added. (A failed
+        # calendar is restored from the archive in enrich_offchart_inputs; the levels then use no calendar events,
+        # as report_bundle.check_regenerated recomputes them.)
         try:
             since = results_start(now, "weekly" if weekly else "daily")
             calendar["history_added"] = merge_history_events(events, since, now.astimezone(JST), history_path)

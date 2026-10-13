@@ -267,7 +267,12 @@ def test_attach_levels_keeps_fridays_release_candle_on_monday_and_stores_the_bar
     assert json.loads(json.dumps(again, default=str)) == stored["xau_levels"]
     results = {"economic_calendar": {"error": "timeout", "events": []}}
     main.attach_levels(results, bars, [], utc("2026-10-12T09:05"), 4000.0, False, history_path=path)
-    assert "history_added" not in results["economic_calendar"] and results["xau_levels"]["levels"]
+    # A failed page is not mixed with archived releases (its events stay empty); enrich restores them separately.
+    assert results["economic_calendar"]["events"] == [] and results["xau_levels"]["levels"]
+    results = {"economic_calendar": {"error": None, "events": []}}  # a calendar that lists nothing still gets the archive
+    main.attach_levels(results, bars, [], utc("2026-10-12T09:05"), 4000.0, False, history_path=path)
+    assert results["economic_calendar"]["history_added"] == 1
+    assert [ev["indicator"] for ev in results["economic_calendar"]["events"]] == ["Nonfarm Payrolls (Sep)"]
 
 
 def test_weekly_surprise_window_is_seven_days():

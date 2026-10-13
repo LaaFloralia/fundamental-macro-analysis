@@ -1006,6 +1006,21 @@ def _liq(kind, label, price_text, position, *, pool='', state='', state_word='',
     return item
 
 
+GVZ_MAX_AGE_DAYS = 5  # scrapers.fred.SERIES_CONFIG['GVZCLS']['stale_days']: the rule of the FRED series
+
+
+def _band_late(liq, stamp):
+    """Why the GVZ expected-move band cannot be shown (stale flag of its source, observation date
+    older than the series rule, or no value); None when it can."""
+    if not num(liq.get('expected_move_1sd')):
+        error = liq.get('gvz_error')
+        return f'GVZ の取得に失敗（{_clean(error)[:60]}）' if error else 'GVZ の値なし'
+    if liq.get('gvz_stale') is True:
+        return 'GVZ は提供元が古い値と表示'
+    late = stale_day(liq.get('gvz_as_of'), stamp, GVZ_MAX_AGE_DAYS)
+    return f'GVZ {late}' if late else None
+
+
 def liquidity_figure(data, stamp, mode, source=None):
     lv = data.get('xau_levels') or {}
     if not present(lv) or not lv.get('levels'):
@@ -1017,10 +1032,13 @@ def liquidity_figure(data, stamp, mode, source=None):
     span = LADDER_RANGE_PCT[mode]
     weekly = mode == 'weekly'
     liq = data.get('liquidity_levels') or {}
-    move = num(liq.get('expected_move_1sd'))
+    band_late = _band_late(liq, stamp)
+    move = None if band_late else num(liq.get('expected_move_1sd'))
     if weekly and move:
         move = number(move * math.sqrt(5), 1)
-    items, aux, bindings = [], [], []
+    items, aux, bindings, notes = [], [], [], []
+    if band_late:
+        notes.append(f'流動性マップ: 想定変動の帯を出していない（{band_late}）')
 
     def far(position):
         return abs(position - price) / price * 100 > span
@@ -1055,16 +1073,18 @@ def liquidity_figure(data, stamp, mode, source=None):
         bindings.append({'figure': 'liquidity', 'label': 'NY 0時の始値', 'path': 'xau_levels.midnight_open',
                          'value': number(mo), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc')})
     r = (data.get('retail_sentiment') or {}).get('XAUUSD') or {}
-    if present(r):
-        for key, label in (('avg_long_entry', '個人ロングの平均建値'), ('avg_short_entry', '個人ショートの平均建値')):
-            v = num(r.get(key))
-            if v is None:
-                continue
-            aux.append(_liq('retail', label, fmt(v), v, state='retail',
-                            state_word=f'{r.get("source") or "提供元不明"}・{_stamp(r.get("timestamp"))}',
-                            icon='◆', distance_text=away(v), value=v))
-            bindings.append({'figure': 'liquidity', 'label': label, 'path': f'retail_sentiment.XAUUSD.{key}', 'value': number(v),
-                             'digits': 2, 'unit': 'USD/oz', 'observedAt': str(r.get('timestamp') or '')})
+    entries = [(key, label, num(r.get(key))) for key, label in
+               (('avg_long_entry', '個人ロングの平均建値'), ('avg_short_entry', '個人ショートの平均建値'))] if present(r) else []
+    entries = [x for x in entries if x[2] is not None]
+    retail_late = stale_time(r.get('timestamp'), stamp) if entries else None  # the bias row's rule: 24 hours from its fetch
+    if retail_late:
+        notes.append(f'流動性マップ: 個人の平均建値を出していない（{retail_late}）')
+    for key, label, v in [] if retail_late else entries:
+        aux.append(_liq('retail', label, fmt(v), v, state='retail',
+                        state_word=f'{r.get("source") or "提供元不明"}・{_stamp(r.get("timestamp"))}',
+                        icon='◆', distance_text=away(v), value=v))
+        bindings.append({'figure': 'liquidity', 'label': label, 'path': f'retail_sentiment.XAUUSD.{key}', 'value': number(v),
+                         'digits': 2, 'unit': 'USD/oz', 'observedAt': str(r.get('timestamp') or '')})
     draw = _draw(source)
     if draw:
         # The draw must be one of the listed levels (same name and price) on its side of the price;
@@ -1097,12 +1117,14 @@ def liquidity_figure(data, stamp, mode, source=None):
               '（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。'
               f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）。'
               '距離の棒は現在値からの遠さで、中央の目盛りが想定変動1σ、右端が2σ以上です。'
-              + (f'計算に使った最終確定足は{last_bar}（Twelve Data 1時間足）。' if last_bar else '') +
+              + (f'計算に使った最終確定足は{last_bar}開始（Twelve Data 1時間足）。' if last_bar else '') +
               ('発表足の高値・安値は直近7日のTier A指標の発表15分足（なければ発表時刻を含む1時間足）です。' if weekly else
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
                '翌取引日の終わりまで表示します。') +
               'NY 0時の始値は当日の参考値で、判定には使いません。'
               '◆個人の平均建値（参考）は個人口座の建玉の平均で、流動性の位置ではありません。'
+              f'平均建値は取得から{QUOTE_MAX_HOURS}時間以内、帯のGVZは観測日が{GVZ_MAX_AGE_DAYS}日以内のときだけ出し、'
+              '古い・欠けているときは理由を制約に書きます。'
               'Order Block・FVGはチャートで判断する領域のため載せていません。')
     rows.append('流動性マップの読み方: ' + legend)
     figure = {'id': 'liquidity', 'type': 'liquidity_map', 'kicker': '意識する価格',
@@ -1112,7 +1134,7 @@ def liquidity_figure(data, stamp, mode, source=None):
               'sources': [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
                           {'label': 'FRED GVZCLS', 'url': 'https://fred.stlouisfed.org/series/GVZCLS'},
                           {'label': 'MyFXBook', 'url': 'https://www.myfxbook.com/community/outlook/XAUUSD'}]}
-    return {'figure': figure, 'rows': rows, 'bindings': bindings}
+    return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes}
 
 
 def nearest_chip(data):
@@ -1206,20 +1228,43 @@ def event_period(stamp, mode):
     return window_label(stamp, mode)
 
 
+def calendar_shortfall(calendar):
+    """None when the calendar fetch covered the whole window; else ('failed' | 'incomplete', line for the
+    reader). An error, an empty list or no record at all is a failed fetch (never "no event"); a week tab the
+    collector could not find leaves part of the window unchecked."""
+    calendar = calendar if isinstance(calendar, dict) else {}
+    # Records restored from the archive (from_history) say nothing about what the page listed.
+    events = [ev for ev in calendar.get('events') or [] if not (isinstance(ev, dict) and ev.get('from_history'))]
+    tabs = [str(t) for t in calendar.get('missing_tabs') or []]
+    why = None
+    if calendar.get('error'):
+        why = _clean(calendar['error'])[:80]
+    elif not events:
+        why = '予定が0件' + (f'・週タブ {"・".join(tabs)} が見つからない' if tabs else '') if calendar else '取得の記録なし'
+    if why:
+        return 'failed', f'カレンダー取得失敗のため予定を確認できない（Investing.com: {why}）'
+    if tabs:
+        return 'incomplete', f'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ {"・".join(tabs)} が見つからない）'
+    return None
+
+
 def event_figure(data, stamp, mode):
     calendar = data.get('economic_calendar')
-    if not present(calendar) or not calendar.get('events'):
+    calendar = calendar if isinstance(calendar, dict) else {}
+    rows_in = release_rows(data, stamp, mode)
+    if not calendar and not rows_in:
         return None
+    shortfall = calendar_shortfall(calendar)
     weekly = mode == 'weekly'
     surprises = {(_clean(e.get('indicator')), str(e.get('released_at_jst', ''))): (k, e)
                  for k, e in enumerate(data.get('macro_surprises') or [])}
     levels = data.get('xau_levels')
-    nowcasts = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar.get('events'), data.get('inflation_nowcast'), stamp, mode)}
+    nowcasts = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar.get('events') or [], data.get('inflation_nowcast'), stamp, mode)}
     groups = release_groups(data, stamp, mode)
     items, rows, bindings, notes, last_time = [], [], [], [], None
     period = event_period(stamp, mode)
     clean = lambda obj, key: '—' if obj.get(key) in (None, '', 'N/A') else str(obj.get(key))
-    for when, level, path, ev in release_rows(data, stamp, mode):
+    for when, level, path, ev in rows_in:
         label = display_name(ev.get('indicator'))
         released = when <= stamp
         previous, forecast, actual = clean(ev, 'previous'), clean(ev, 'forecast'), clean(ev, 'actual')
@@ -1280,17 +1325,28 @@ def event_figure(data, stamp, mode):
                       'status': '発表済み' if released else '予定', 'previous': previous, 'forecast': forecast,
                       'actual': actual, 'diff': diff, 'direction': word, 'symbol': symbol, 'tone': tone, 'memo': memo,
                       'released': released, 'group_start': first, 'source_quote': quote})
+    cautions = []
+    if shortfall:
+        text = shortfall[1]
+        cautions.append({'text': text, 'source_quote': f'米指標｜注意: {text}'})
+        rows.append(cautions[0]['source_quote'])
+        if shortfall[0] == 'failed':
+            notes.append(text)  # also among the limitations; the missing-tab note below covers a partial fetch
     if not items:
-        quote = f'米指標｜{period}｜該当なし（Tier A/Bの米指標なし）'
+        # Only a complete fetch can say 「該当なし」; a failed or partial one cannot confirm that nothing is scheduled.
+        label = ('予定を確認できない（' + ('取得失敗' if shortfall[0] == 'failed' else '取得が不完全') + '）') if shortfall \
+            else '該当なし（Tier A/Bの米指標なし）'
+        quote = f'米指標｜{period}｜{label}'
         rows.append(quote)
-        items.append({'date': period, 'time': '', 'tier': '', 'label': '該当なし（Tier A/Bの米指標なし）', 'status': '',
+        items.append({'date': period, 'time': '', 'tier': '', 'label': label, 'status': '',
                       'previous': '', 'forecast': '', 'actual': '', 'diff': '', 'direction': '', 'symbol': '',
                       'tone': 'neutral', 'memo': '', 'released': False, 'empty': True, 'source_quote': quote})
     if calendar.get('missing_tabs'):
         notes.append(f'米指標: Investing.comの週タブ（{"・".join(calendar["missing_tabs"])}）が見つからず、その週の予定は表に入っていない')
     legend = ('米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
               'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
-              f'期間は{period}（JSTの日付単位）。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます。'
+              f'期間は{period}（JSTの日付単位）。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
+              '（カレンダーの取得に失敗したときも）。取得が失敗・不完全なときは「該当なし」とせず、予定を確認できないと示します。'
               '発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。'
               '同時刻の系列をまとめた票はバイアス盤の「指標の結果」行（2系列以上がそろえば強）。'
               '予定の向きはCleveland連銀のnowcast（CPI・PCEの前月比）と市場予想の差で、発表前の参考（弱）です。'
@@ -1303,10 +1359,11 @@ def event_figure(data, stamp, mode):
     rows.append('米指標表の読み方: ' + legend)
     figure = {'id': 'calendar', 'type': 'event_table', 'kicker': '気をつける指標',
               'title': '米国の重要指標' + (f'（{period}）' if weekly else '（直近の結果とこの先の予定）'),
-              'subtitle': '時刻はJST。Tier Aは常に、Tier Bは近いときだけ表示', 'items': items, 'legend': legend,
+              'subtitle': '時刻はJST。Tier Aは常に、Tier Bは近いときだけ表示', 'items': items, 'cautions': cautions, 'legend': legend,
               'sources': [{'label': 'Investing.com', 'url': 'https://www.investing.com/economic-calendar/'},
                           {'label': 'Cleveland Fed nowcast', 'url': 'https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting'}]}
-    return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes}
+    return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes,
+            'coverage': shortfall[0] if shortfall else 'complete'}
 
 
 def lead_chips(data, stamp, mode):
