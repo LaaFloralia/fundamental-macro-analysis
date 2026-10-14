@@ -21,12 +21,12 @@ def test_rows_carry_one_difference_and_no_first_bar_tier_or_fetch_line():
 
 
 def test_a_sweep_and_a_break_read_apart():
-    assert board.shown_state('swept', '掃引済み') == '抜けて戻した'
+    assert board.shown_state('swept', '掃引済み') == '掃引済み'  # the owner keeps 掃引済み
     assert board.shown_state('beyond', '抜けて推移・欠測2時間') == '抜けたまま・欠測2時間'
     assert board.shown_state('broken', '抜けて定着') == '抜けて定着' and board.shown_state('resting', '未到達') == '未到達'
     legend = liquidity()['legend']
-    assert '✓抜けて戻した（掃引。一度抜けて、最新の終値は内側）' in legend and '↗↘抜けたまま（最新の終値が外側で6時間未満' in legend
-    assert '掃引済み' not in legend and '抜けて推移' not in legend
+    assert '✓掃引済み（一度抜けて、最新の終値は内側）' in legend and '↗↘抜けたまま（最新の終値が外側で6時間未満' in legend
+    assert '抜けて戻した' not in legend and '抜けて推移' not in legend
 
 
 def test_retail_entries_read_as_share_and_pl_in_a_few_characters():

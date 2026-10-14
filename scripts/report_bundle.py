@@ -21,8 +21,8 @@ MANIFEST_VERSION = 8  # 2: release rows carry text bindings; 3: figures are rege
                       # 6: retail entries and Order Book zones in the liquidity map, trend lines only (v5 not rebuilt)
                       # 7: short figure titles without kickers, retail wording (share, P/L, fetch line) and the
                       #    kept-clusters notice row (v6 editions are not rebuilt)
-                      # 8: shorter liquidity rows (one difference, no first bar or tier, no fetch line), 抜けて戻した・
-                      #    抜けたまま, 中立 alone, no release-candle line in the US table (v7 editions are not rebuilt)
+                      # 8: shorter liquidity rows (one difference, no first bar or tier, no fetch line), 抜けたまま,
+                      #    中立 alone, no release-candle line in the US table (v7 editions are not rebuilt)
 APPENDIX = '\n\n## 図表に使用した観測値\n'
 CONCLUSION_MAX = 220  # the master prompts ask for one line of 220 characters
 

@@ -133,7 +133,7 @@ def test_kept_clusters_take_their_state_from_the_stored_bars_after_the_fetch():
     rows = {i['price_text']: i for i in zones(board.liquidity_figure(data, stamp, 'daily')['figure'])}
     assert {i['touched'] for i in rows.values()} == {''}
     # 前日高値（10/13） 4,200.45 traded above the whole 4,173.86〜4,190.61 cluster after the fetch.
-    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・抜けて戻した（10/13 13:00 JST）'
+    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・掃引済み（10/13 13:00 JST）'
     assert rows['4,429.00〜4,434.56']['state_word'] == '15件・取得後は未到達'
     assert rows['4,104.00〜4,170.00']['state_word'] == '279件・到達・抜けていない（10/13 09:15 JST）'
     edition(data, real_source('2026-10-14T1800-r3.md'))

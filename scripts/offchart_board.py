@@ -1120,9 +1120,9 @@ ZONE_GAP_PCT = 0.5  # a price joins the band below it when the gap is under this
 ZONE_TOP = 3  # bands kept above and below
 # retail_analytics.detect_sweeps verdicts (the collector's last 24 hours of Dukascopy 1-hour bars)
 SWEEP_VERDICT = {'no sweep': '24時間は未到達', 'sweep→reversal': '到達後に反転', 'sweep→continuation': '到達後も戻りが小さい'}
-# The page's words for the level states (scrapers.xau_levels.STATE_WORD keeps the collected words): a sweep and
-# a break read apart at a glance.
-SHOWN_STATE = {'swept': '抜けて戻した', 'beyond': '抜けたまま'}
+# The page's words for the level states (scrapers.xau_levels.STATE_WORD keeps the collected words): 抜けたまま
+# reads apart from 掃引済み at a glance.
+SHOWN_STATE = {'beyond': '抜けたまま'}
 
 
 def shown_state(state, word):
@@ -1384,7 +1384,7 @@ def liquidity_figure(data, stamp, mode, source=None):
     last_bar = _bar_span(lv.get('last_bar_utc'))
     legend = ('名前付きの高値・安値と個人の注文・建玉の位置を価格順（上ほど高い価格）に並べています。価格の右の縦線は現在値より上が赤、下が緑で、'
               '濃い行が現在値です（画面を動かしても上端か下端に残ります）。価格の下の「差」は現在値との差（ドル）です。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
-              '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓抜けて戻した（掃引。一度抜けて、最新の終値は内側）、'
+              '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
               '↗↘抜けたまま（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
               '形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、冒頭の直近候補から外します。'
               '判定は確定した1時間足（発表15分足の直後はその時間の残りを15分足）、日足の区切りはNY 17:00。'

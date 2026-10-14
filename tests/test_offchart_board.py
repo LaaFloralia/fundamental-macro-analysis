@@ -628,9 +628,9 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     assert pdh['target'] == '◎ 目的地の仮説' and pdh['source_quote'].endswith('｜◎ 目的地の仮説')
     assert not any(i['kind'] == 'draw' for i in items)  # the draw marks its level instead of adding a row
     pwh = by['前週高値（10/05週）']
-    assert (pwh['icon'], pwh['touched'], pwh['state_word']) == ('✓', '', '抜けて戻した')  # r12: no first bar, the plain word
+    assert (pwh['icon'], pwh['touched'], pwh['state_word']) == ('✓', '', '掃引済み')  # r12: no first bar
     assert by['London安値（当日）']['icon'] == '↘' and by['London安値（当日）']['pool'] == 'SSL'  # left through the low
-    assert by['新規失業保険申請 発表15分足安値（10/12 21:30）']['state_word'] == '抜けて戻した'  # the tier is in the US table
+    assert by['新規失業保険申請 発表15分足安値（10/12 21:30）']['state_word'] == '掃引済み'  # the tier is in the US table
     assert by['現在値']['state_word'] == '市場時刻不明・参考価格'  # the sample kept no market time
     assert by['NY 0時の始値']['state_word'] == '当日の始値（参考）'  # not premium / discount
     retail = next(i for i in result['figure']['items'] if i['label'] == '個人ロングの平均建値')
