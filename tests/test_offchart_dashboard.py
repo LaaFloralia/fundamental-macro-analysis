@@ -25,27 +25,24 @@ def edition():
 def test_validate_accepts_a_bundled_edition_and_lists_each_verified_item():
     source, summary, figures = edition()
     checked = dash.validate(summary, figures, source)
-    assert len(checked) == sum(len(f['items']) + len(f.get('aux') or []) for f in figures)
-    assert 'liquidity.aux[0]' in checked
+    assert len(checked) == sum(len(f['items']) for f in figures)
+    assert any(f['items'][int(w.split('[')[1][:-1])]['kind'] == 'retail' for f in figures if f['id'] == 'liquidity'
+               for w in checked if w.startswith('liquidity['))
     assert checked[0] == 'bias[0]' and checked[-1].startswith('calendar[')
 
 
 @pytest.mark.parametrize('mutate,message', [
     (lambda s, f: f[0]['items'][0].update(display='2.88%'), r'bias\[0\]: "2.88%" is not in its source line'),
     (lambda s, f: f[0]['items'][0].update(source_quote='どこにもない行'), r'source_quote is missing'),
-    (lambda s, f: next(i for i in f[0]['items'] if i.get('viz', {}).get('type') == 'bars')['viz']['items'][0].update(value=99.9),
-     r"bias\[3\]\.viz: values \['99\.9'\]"),
     (lambda s, f: next(i for i in f[0]['items'] if i.get('viz', {}).get('type') == 'spark')['viz'].pop('path'),
      r'sparkline without its source series'),
-    (lambda s, f: next(i for i in f[0]['items'] if i.get('viz', {}).get('type') == 'probs')['viz']['segments'][0].update(value=70.0),
-     r"viz: values \['70'\]"),
-    (lambda s, f: next(i for i in f[0]['items'] if i.get('viz', {}).get('type') == 'probs')['viz']['segments'][0].update(label='4.25-4.50'),
-     r'"4.25-4.50" is not in its source line'),
-    (lambda s, f: next(i for i in f[0]['items'] if i.get('viz', {}).get('type') == 'gap')['viz'].update(value=-0.3),
-     r"viz: values \['0\.3'\]"),
+    (lambda s, f: f[0]['items'][4].update(viz={'type': 'bars', 'items': [{'label': '6月', 'value': 44.6}]}),
+     r'unknown diagram type bars'),
     (lambda s, f: f[0]['items'][0]['viz'].update(type='pie'), r'unknown diagram type pie'),
     (lambda s, f: f[1]['cautions'].append({'text': '足の欠落', 'source_quote': 'どこにもない行'}), r'cautions\[0\]: source_quote'),
-    (lambda s, f: f[1]['aux'][0].update(price_text='4,000.00'), r'liquidity.aux\[0\]'),
+    (lambda s, f: next(i for i in f[1]['items'] if i['kind'] == 'retail').update(state_word='56%・含み益 +5.3%'),
+     r'"56%・含み益 \+5\.3%" is not in its source line'),
+    (lambda s, f: f[1].update(missing=[{'text': '個人の建玉', 'source_quote': 'どこにもない行'}]), r'missing\[0\]: source_quote'),
     (lambda s, f: f[1].update(band={**f[1]['band'], 'label': '別の帯'}), r'band is not in the Markdown'),
     (lambda s, f: f[2].update(legend='独自の説明'), r'legend is not in the Markdown'),
     (lambda s, f: f[0]['rules'][0].update(rule='新しい規則'), r'rule text is not in the Markdown'),
@@ -78,7 +75,8 @@ def test_build_renders_one_page_with_collapsed_explanations_and_the_markdown_dow
     assert '<colgroup><col class="c-lbl">' in page and 'class="cell-text" colspan="2"' in page
     assert 'class="lv kind-level state-resting in-band is-target"' in page and '◎ 目的地の仮説' in page
     assert '<ul class="jump" aria-label="ページ内の移動"><li><a href="#bias">バイアス</a></li>' in page
-    assert '表示範囲の外' in page and 'class="band-edge">想定変動 上限 4,237.47' in page
+    assert '表示範囲の外' in page and 'class="band-edge">想定変動 ±1σ（1日・±60.0ドル） 上限 4,237.47' in page
+    assert 'class="prox"' not in page and 'band-note' not in page and '<th scope="col">推移</th>' not in page
     assert '全文' not in page and '条件と取り消し' not in page and 'キリ' not in page
     assert audit == {'source_sha256': hashlib.sha256(source.encode('utf-8')).hexdigest(),
                      'source_bytes': len(source.encode('utf-8')), 'figure_count': 3,
@@ -95,29 +93,38 @@ def test_page_shows_every_text_the_browser_check_expects():
 
 
 def test_band_edges_bracket_the_levels_inside_the_band():
-    figure = {'type': 'liquidity_map', 'title': 't', 'legend': '', 'band': {'lower': 95.0, 'upper': 105.0, 'label': '帯'},
+    figure = {'type': 'liquidity_map', 'title': 't', 'legend': '', 'band': {'lower': 95.0, 'upper': 105.0, 'label': '想定変動 ±1σ'},
               'items': [{'kind': 'level', 'label': name, 'price_text': f'{price:.2f}', 'position': price, 'state': 'resting',
                          'state_word': '未到達', 'icon': '●', 'distance_text': '', 'pool': 'BSL'}
                         for name, price in (('上', 110.0), ('中', 100.0), ('下', 90.0))]}
     html = dash.liquidity_section(figure)
-    order = [html.index(x) for x in ('>上<', '想定変動 上限 105.00', '>中<', '想定変動 下限 95.00', '>下<')]
+    order = [html.index(x) for x in ('>上<', '想定変動 ±1σ 上限 105.00', '>中<', '想定変動 ±1σ 下限 95.00', '>下<')]
     assert order == sorted(order) and html.count(' in-band') == 1
 
 
-@pytest.mark.parametrize('viz', [
-    {'type': 'spark', 'values': [1, 2, 3]}, {'type': 'delta', 'from': 1, 'to': 2},
-    {'type': 'probs', 'segments': [{'label': 'a', 'value': 80.5}, {'label': 'b', 'value': 19.5}], 'focus': 0},
-    {'type': 'bars', 'items': [{'label': 'x', 'value': -1.0}, {'label': 'y', 'value': 2.0}]},
-    {'type': 'track', 'value': 43.9}, {'type': 'split', 'left': 56.0, 'right': 44.0, 'track': 54.4},
-    {'type': 'gap', 'value': -0.07, 'scale': 0.2}])
-def test_each_mini_diagram_is_a_decorative_svg(viz):
-    svg = dash.viz_svg(viz, 'negative')
+def test_the_trend_line_is_a_decorative_svg_and_other_diagrams_are_gone():
+    svg = dash.viz_svg({'type': 'spark', 'values': [1, 2, 3]}, 'negative')
     assert svg.startswith('<svg class="viz"') and 'aria-hidden="true"' in svg
+    for gone in ({'type': 'delta', 'from': 1, 'to': 2}, {'type': 'bars', 'items': [{'label': 'x', 'value': 1.0}]},
+                 {'type': 'probs', 'segments': []}, {'type': 'track', 'value': 43.9}, {'type': 'gap', 'value': -0.07},
+                 {'type': 'split', 'left': 56.0, 'right': 44.0}, {'type': 'votes', 'up': 1}):
+        assert dash.viz_svg(gone, 'neutral') == ''
 
 
 def test_unknown_or_thin_diagrams_render_nothing():
     assert dash.viz_svg({'type': 'spark', 'values': [1, 2]}, 'neutral') == ''
     assert dash.viz_svg({'type': 'pie'}, 'neutral') == '' and dash.viz_svg(None, 'neutral') == ''
+
+
+def test_the_board_has_no_trend_column_and_the_line_sits_under_its_value():
+    source, summary, figures = edition()
+    page, _ = dash.build(source, summary, figures, title='t', source_name='s.md')
+    board_html = page[page.index('id="bias"'):page.index('id="liquidity"')]
+    assert board_html.count('<th scope="col">') == 4 and 'cell-viz' not in board_html
+    assert board_html.count('<svg class="viz"') == 2  # real rate and DXY over 20 observations
+    assert '<td class="cell-now"><span class="now-text">2.87%</span><svg class="viz"' in board_html
+    # A change without a value (「—」) is not drawn as a lone dash.
+    assert '<span class="chg">—</span>' not in board_html
 
 
 def test_a_mismatched_verdict_shows_its_rule_result_and_the_reports_reason():
@@ -148,7 +155,7 @@ def test_a_mismatched_verdict_shows_its_rule_result_and_the_reports_reason():
     assert tiles.count('tile-detail') == 1 and '欠測: 中銀の金購入' in tiles
 
 
-def test_liquidity_cautions_sit_above_the_ladder_and_entries_below_it():
+def test_liquidity_cautions_sit_above_the_ladder_and_far_entries_below_it():
     data = sample()
     data['xau_levels']['cautions'] = ['当日の1時間足に2本の欠落。その時間の値動きは状態に入っていない']
     result = bundle.observations(data, NOW, 'daily', SOURCE)
@@ -158,7 +165,8 @@ def test_liquidity_cautions_sit_above_the_ladder_and_entries_below_it():
     liq = page[page.index('id="liquidity"'):page.index('id="calendar"')]
     caution = '<p class="caution" role="note">当日の1時間足に2本の欠落。その時間の値動きは状態に入っていない</p>'
     assert liq.index(caution) < liq.index('class="ladder"') < liq.index('<details')
-    assert '個人ロングの平均建値' not in liq[:liq.index('<details')]  # the retail average is folded away (F17)
+    main_view = liq[:liq.index('<details')]
+    assert main_view.index('class="ladder"') < main_view.index('class="offscale"') < main_view.index('個人ロングの平均建値')
 
 
 def test_an_empty_release_window_renders_one_quoted_row():
@@ -178,18 +186,6 @@ def test_an_empty_release_window_renders_one_quoted_row():
     figure = next(f for f in result['figures'] if f['id'] == 'calendar')
     assert [i['label'] for i in figure['items']] == ['予定を確認できない（取得失敗）']
     assert 'カレンダー取得失敗のため予定を確認できない（Investing.com: 予定が0件）' in result['limitations']
-
-
-def test_probabilities_are_drawn_as_shares_of_100_without_rescaling():
-    svg = dash.viz_svg({'type': 'probs', 'segments': [{'label': 'a', 'value': 50.0}, {'label': 'b', 'value': 30.0}]}, 'neutral')
-    widths = [float(w) for w in re.findall(r'class="seg(?:-focus)?"', svg) and re.findall(r'width="([\d.]+)" height="12" class="seg', svg)]
-    assert widths == [pytest.approx((112 - 8) * 0.5 - 1), pytest.approx((112 - 8) * 0.3 - 1)]  # 20% of the track stays empty
-    assert svg.count('seg-focus') == 1
-
-
-def test_tally_votes_draw_one_square_per_series():
-    svg = dash.viz_svg({'type': 'votes', 'up': 2, 'down': 1, 'flat': 0}, 'positive')
-    assert svg.count('fill="var(--up)"') == 2 and svg.count('fill="var(--down)"') == 1
 
 
 def test_value_parts_do_not_break_inside_and_keep_the_quoted_text():

@@ -390,8 +390,9 @@ def test_liquidity_map_uses_named_levels_and_ignores_saved_round_numbers():
     data['liquidity_levels']['levels'] = [{'level': 3400.0, 'major': True, 'distance': -0.5, 'distance_pct': -0.01}]
     result = bundle.observations(data, NOW)
     liquidity = figure(result, 'liquidity')
-    assert [i['label'] for i in liquidity['items']] == ['前日高値（09/08）', '現在値', '前日安値（09/08）']
-    assert [i['label'] for i in liquidity['aux']] == ['個人ロングの平均建値', '個人ショートの平均建値']
+    levels = [i for i in liquidity['items'] if i['kind'] != 'retail']
+    assert [i['label'] for i in levels] == ['前日高値（09/08）', '現在値', '前日安値（09/08）']
+    assert [i['label'] for i in liquidity['items'] if i['kind'] == 'retail'] == ['個人ロングの平均建値', '個人ショートの平均建値']
     assert 'キリ' not in json.dumps(result, ensure_ascii=False) and '3,400.00' not in str(liquidity['band'])
     assert liquidity['band'] == {'lower': 3351.2, 'upper': 3449.8, 'label': '想定変動 ±1σ（1日・±49.3ドル）'}
     paths = {b['label']: b['path'] for b in result['bindings'] if b['figure'] == 'liquidity'}
@@ -405,8 +406,8 @@ def test_liquidity_map_uses_named_levels_and_ignores_saved_round_numbers():
 def test_average_entries_carry_their_own_provider_and_time():
     result = bundle.observations(sample_data(), NOW)
     liquidity = figure(result, 'liquidity')
-    aux = {i['label']: i for i in liquidity['aux']}
-    assert aux['個人ロングの平均建値']['state_word'] == aux['個人ショートの平均建値']['state_word'] == 'MyFXBook・09/09 17:30 JST'
+    retail = {i['label']: i for i in liquidity['items'] if i['kind'] == 'retail'}
+    assert retail['個人ロングの平均建値']['touched'] == retail['個人ショートの平均建値']['touched'] == 'MyFXBook・取得 09/09 17:30 JST'
     assert next(i for i in liquidity['items'] if i['label'] == '現在値')['state_word'] == '市場時刻不明・参考価格'  # not the collection time
 
 
@@ -430,8 +431,7 @@ def test_next_24h_calendar_coverage_keeps_ecb_and_jobless_claims():
 def test_etf_row_keeps_the_20_day_context_next_to_the_5_day_vote():
     result = bundle.observations(sample_data(), NOW)
     etf = next(i for i in figure(result, 'bias')['items'] if i['label'] == 'GLD保有量（5営業日）')
-    assert etf['symbol'] == '▼' and etf['note'] == '棒は左から5営業日・20営業日。20営業日 +17.80 t'
-    assert [b['value'] for b in etf['viz']['items']] == [-3.5, 17.8]
+    assert etf['symbol'] == '▼' and etf['note'] == '20営業日 +17.80 t' and etf['change'] == '-3.50 t'
 
 
 SUMMARY_SOURCE = '''# Report

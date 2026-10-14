@@ -77,8 +77,7 @@ def shown_texts(summary, figures):
             if item.get('kind') == 'text':  # a judgement in words: one wide cell, no baseline or change
                 keys = tuple(k for k in keys if k not in ('baseline', 'change'))
             texts += [item.get(key) for key in keys]
-        texts += [item.get(key) for item in figure.get('aux') or [] for key in ('label', 'price_text', 'state_word')]
-        texts += [c.get('text') for c in figure.get('cautions') or []]
+        texts += [c.get('text') for key in ('cautions', 'missing') for c in figure.get(key) or []]
         texts += [tile.get(key) for tile in figure.get('verdicts') or [] for key in ('label', 'direction', 'short')]
         if figure.get('reason'):
             texts.append(figure['reason'].get('text'))
