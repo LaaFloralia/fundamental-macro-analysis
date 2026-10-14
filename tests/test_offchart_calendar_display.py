@@ -214,7 +214,7 @@ def test_stale_retail_average_is_left_out_with_a_reason(timestamp, reason):
     data['retail_sentiment']['XAUUSD']['timestamp'] = timestamp
     result = liquidity(data)
     assert not any(i['kind'] == 'retail' for i in result['figure']['items'])
-    line = f'個人の平均建値（MyFXBook・{reason}）'
+    line = f'個人ロング・ショートの平均建値（MyFXBook）: {reason}'
     assert result['figure']['missing'][0] == {'text': line, 'source_quote': f'流動性｜欠測: {line}'}
     assert f'流動性マップ: {line}' in result['notes']
     assert not any(b['label'].endswith('の平均建値') for b in result['bindings'])

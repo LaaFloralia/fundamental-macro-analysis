@@ -1,0 +1,892 @@
+[
+  {
+    "id": "bias",
+    "type": "bias_board",
+    "kicker": "期間ごとのバイアス",
+    "title": "判断材料と金（XAUUSD）への向き",
+    "subtitle": "各行が判断材料。右端が金への向き（▲▼ 強い、△▽ 弱い、— 中立）",
+    "groups": [
+      "長期（数週間〜）",
+      "短期（当日〜1、2日）"
+    ],
+    "verdicts": [
+      {
+        "label": "長期",
+        "group": "長期（数週間〜）",
+        "symbol": "▽",
+        "direction": "下向き・弱",
+        "tone": "negative",
+        "origin": "原稿の判断",
+        "detail": "規則の集計: 下向き（弱）（実質金利 ▼・ドル ▼・ニュース・地政学 —・中銀 ▲）",
+        "short": "規則の集計 下向き（弱）・要因4",
+        "mismatch": false,
+        "show_detail": false,
+        "source_quote": "バイアス｜長期: ▽ 下向き・弱（原稿の判断）｜規則の集計: 下向き（弱）（実質金利 ▼・ドル ▼・ニュース・地政学 —・中銀 ▲）｜規則の集計 下向き（弱）・要因4"
+      },
+      {
+        "label": "短期",
+        "group": "短期（当日〜1、2日）",
+        "symbol": "▽",
+        "direction": "下向き・弱",
+        "tone": "negative",
+        "origin": "原稿の判断",
+        "detail": "規則の集計: 下向き（弱）（金利・織り込み —・ドル ▽・発表前の予測 △・ETF ▼・建玉の偏り —）",
+        "short": "規則の集計 下向き（弱）・要因5",
+        "mismatch": false,
+        "show_detail": false,
+        "source_quote": "バイアス｜短期: ▽ 下向き・弱（原稿の判断）｜規則の集計: 下向き（弱）（金利・織り込み —・ドル ▽・発表前の予測 △・ETF ▼・建玉の偏り —）｜規則の集計 下向き（弱）・要因5"
+      },
+      {
+        "label": "総合",
+        "group": null,
+        "symbol": "▽",
+        "direction": "下向き・弱",
+        "tone": "negative",
+        "origin": "原稿の判断",
+        "detail": "長期×短期の規則: 下向き（弱）",
+        "short": "",
+        "mismatch": false,
+        "show_detail": false,
+        "source_quote": "バイアス｜総合: ▽ 下向き・弱（原稿の判断）｜長期×短期の規則: 下向き（弱）"
+      }
+    ],
+    "items": [
+      {
+        "group": "長期（数週間〜）",
+        "label": "実質金利（米10年TIPS）",
+        "display": "2.91%",
+        "baseline": "20営業日前 2.60%（09/11）",
+        "change": "+0.31pp",
+        "direction": "下向き",
+        "symbol": "▼",
+        "side": "down",
+        "strength": "strong",
+        "tone": "negative",
+        "asof": "10/09",
+        "note": "金との20日相関 -0.53（通常どおり逆方向）",
+        "rule": "上昇は金の逆風、低下は追い風。20営業日で±0.10pp以上で強",
+        "source_quote": "長期（数週間〜）｜実質金利（米10年TIPS）: 2.91%（10/09）｜基準: 20営業日前 2.60%（09/11）｜変化: +0.31pp｜向き: ▼ 下向き｜金との20日相関 -0.53（通常どおり逆方向）｜規則: 上昇は金の逆風、低下は追い風。20営業日で±0.10pp以上で強",
+        "kind": "value",
+        "viz": {
+          "type": "spark",
+          "values": [
+            2.6,
+            2.6,
+            2.62,
+            2.68,
+            2.61,
+            2.68,
+            2.62,
+            2.63,
+            2.76,
+            2.85,
+            2.83,
+            2.9,
+            2.91,
+            2.93,
+            2.88,
+            2.92,
+            2.95,
+            2.91,
+            2.92,
+            2.87,
+            2.91
+          ],
+          "invert": true,
+          "path": "fred.DFII10.recent",
+          "count": 21
+        },
+        "value": 0.31,
+        "material": "実質金利",
+        "factor": "実質金利"
+      },
+      {
+        "group": "長期（数週間〜）",
+        "label": "ドル指数DXY（20営業日）",
+        "display": "102.230",
+        "baseline": "20営業日前 100.250（09/16）",
+        "change": "+1.98%",
+        "direction": "下向き",
+        "symbol": "▼",
+        "side": "down",
+        "strength": "strong",
+        "tone": "negative",
+        "asof": "10/14",
+        "note": "",
+        "rule": "ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強",
+        "source_quote": "長期（数週間〜）｜ドル指数DXY（20営業日）: 102.230（10/14）｜基準: 20営業日前 100.250（09/16）｜変化: +1.98%｜向き: ▼ 下向き｜規則: ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強",
+        "kind": "value",
+        "viz": {
+          "type": "spark",
+          "values": [
+            100.25,
+            100.25,
+            100.22,
+            100.43,
+            100.6,
+            101.1,
+            101.29,
+            100.97,
+            101.2,
+            101.37,
+            101.45,
+            102.1,
+            101.93,
+            102.17,
+            101.83,
+            102.24,
+            102.14,
+            102.21,
+            102.59,
+            102.18,
+            102.23
+          ],
+          "invert": true,
+          "path": "dxy.recent_closes",
+          "count": 21
+        },
+        "value": 102.23,
+        "material": "ドル（20営業日）",
+        "factor": "ドル"
+      },
+      {
+        "group": "長期（数週間〜）",
+        "label": "ニュース・地政学（原稿の判断）",
+        "display": "Fedの新着は過去の割引率会合議事録で、新たな政策決定ではない。",
+        "baseline": "直近のニュース・要人発言・地政学",
+        "change": "—",
+        "direction": "中立",
+        "symbol": "—",
+        "side": "flat",
+        "strength": "none",
+        "tone": "neutral",
+        "asof": "本文",
+        "note": "",
+        "rule": "原稿が見出し・本文の確認結果から付けた向き。金利・ドルの動きそのものは別の行で数えるため、それ以外の材料で判断する",
+        "source_quote": "長期（数週間〜）｜ニュース・地政学（原稿の判断）: Fedの新着は過去の割引率会合議事録で、新たな政策決定ではない。（本文）｜基準: 直近のニュース・要人発言・地政学｜変化: —｜向き: — 中立｜規則: 原稿が見出し・本文の確認結果から付けた向き。金利・ドルの動きそのものは別の行で数えるため、それ以外の材料で判断する",
+        "kind": "text",
+        "material": "ニュース・地政学",
+        "factor": "ニュース・地政学"
+      },
+      {
+        "group": "長期（数週間〜）",
+        "label": "中銀の金購入（IMF報告国・3ヶ月）",
+        "display": "+154.2 t（6〜8月）",
+        "baseline": "ゼロ（買い越しと売り越しの境）",
+        "change": "+154.2 t",
+        "direction": "上向き",
+        "symbol": "▲",
+        "side": "up",
+        "strength": "strong",
+        "tone": "positive",
+        "asof": "2026年08月分",
+        "note": "月別（棒は左から） 6月 +44.6 t・7月 +68.5 t・8月 +41.1 t",
+        "rule": "純購入は構造的な下支え、純売却は逆風。月次で1〜2ヶ月遅れ。3ヶ月で±20t以上で強",
+        "source_quote": "長期（数週間〜）｜中銀の金購入（IMF報告国・3ヶ月）: +154.2 t（6〜8月）（2026年08月分）｜基準: ゼロ（買い越しと売り越しの境）｜変化: +154.2 t｜向き: ▲ 上向き｜月別（棒は左から） 6月 +44.6 t・7月 +68.5 t・8月 +41.1 t｜規則: 純購入は構造的な下支え、純売却は逆風。月次で1〜2ヶ月遅れ。3ヶ月で±20t以上で強",
+        "kind": "value",
+        "viz": {
+          "type": "bars",
+          "items": [
+            {
+              "label": "6月",
+              "value": 44.6
+            },
+            {
+              "label": "7月",
+              "value": 68.5
+            },
+            {
+              "label": "8月",
+              "value": 41.1
+            }
+          ]
+        },
+        "value": 154.2,
+        "material": "中銀の金購入",
+        "factor": "中銀"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "米2年債利回り（当日）",
+        "display": "4.781%",
+        "baseline": "前日終値 4.793%",
+        "change": "-0.012pp",
+        "direction": "上向き（弱）",
+        "symbol": "△",
+        "side": "up",
+        "strength": "weak",
+        "tone": "positive",
+        "asof": "10/14 17:51 JST",
+        "note": "",
+        "rule": "上昇は金の逆風、低下は追い風。前日比±0.05pp以上で強（CNBCの当日値）",
+        "source_quote": "短期（当日〜1、2日）｜米2年債利回り（当日）: 4.781%（10/14 17:51 JST）｜基準: 前日終値 4.793%｜変化: -0.012pp｜向き: △ 上向き（弱）｜規則: 上昇は金の逆風、低下は追い風。前日比±0.05pp以上で強（CNBCの当日値）",
+        "kind": "value",
+        "viz": {
+          "type": "delta",
+          "from": 4.793,
+          "to": 4.781,
+          "invert": true,
+          "scale": 0.05
+        },
+        "value": -0.012,
+        "material": "米2年債",
+        "factor": "金利・織り込み"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "ドル指数DXY（当日）",
+        "display": "102.220",
+        "baseline": "前日終値 102.180",
+        "change": "+0.04%",
+        "direction": "下向き（弱）",
+        "symbol": "▽",
+        "side": "down",
+        "strength": "weak",
+        "tone": "negative",
+        "asof": "記録 10/14 18:03 JST",
+        "note": "",
+        "rule": "ドル高は金の逆風、ドル安は追い風。前日比±0.3%以上で強",
+        "source_quote": "短期（当日〜1、2日）｜ドル指数DXY（当日）: 102.220（記録 10/14 18:03 JST）｜基準: 前日終値 102.180｜変化: +0.04%｜向き: ▽ 下向き（弱）｜規則: ドル高は金の逆風、ドル安は追い風。前日比±0.3%以上で強",
+        "kind": "value",
+        "viz": {
+          "type": "delta",
+          "from": 102.18,
+          "to": 102.22,
+          "invert": true,
+          "scale": 0.307
+        },
+        "value": 0.04,
+        "material": "ドル（短期）",
+        "factor": "ドル"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "政策金利の織り込み（前日比）",
+        "display": "期待 3.930%",
+        "baseline": "3.927%（提供表の前日列）",
+        "change": "+0.3bp",
+        "direction": "下向き（弱）",
+        "symbol": "▽",
+        "side": "down",
+        "strength": "weak",
+        "tone": "negative",
+        "asof": "次回FOMC 10/28",
+        "note": "確率 3.75-4.00 78.2%・4.00-4.25 21.8%。前日列の比較日時は提供元の表示になく未確認",
+        "rule": "確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。±1.25bp以上で強（隣のレンジへ確率5ppの移動に相当）。確率の合計が100%前後でない表、次回会合の日付がない・読めない・収集日より前の表、レンジの上下や重なりが不正な表は使わない",
+        "source_quote": "短期（当日〜1、2日）｜政策金利の織り込み（前日比）: 期待 3.930%（次回FOMC 10/28）｜基準: 3.927%（提供表の前日列）｜変化: +0.3bp｜向き: ▽ 下向き（弱）｜確率 3.75-4.00 78.2%・4.00-4.25 21.8%。前日列の比較日時は提供元の表示になく未確認｜規則: 確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。±1.25bp以上で強（隣のレンジへ確率5ppの移動に相当）。確率の合計が100%前後でない表、次回会合の日付がない・読めない・収集日より前の表、レンジの上下や重なりが不正な表は使わない",
+        "kind": "value",
+        "viz": {
+          "type": "probs",
+          "segments": [
+            {
+              "label": "3.75-4.00",
+              "value": 78.2
+            },
+            {
+              "label": "4.00-4.25",
+              "value": 21.8
+            }
+          ]
+        },
+        "material": "政策金利の織り込み",
+        "factor": "金利・織り込み"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "予測との差: コアCPI（前月比・9月）",
+        "display": "nowcast 0.202%",
+        "baseline": "市場予想 0.2%",
+        "change": "+0.002pp",
+        "direction": "中立（予想並み）",
+        "symbol": "—",
+        "side": "flat",
+        "strength": "none",
+        "tone": "neutral",
+        "asof": "10/14 21:30 JST 発表・nowcast 10/13時点",
+        "note": "",
+        "rule": "Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。発表前の参考で、票は弱（0.5）。6日より古い予測は使わない",
+        "source_quote": "短期（当日〜1、2日）｜予測との差: コアCPI（前月比・9月）: nowcast 0.202%（10/14 21:30 JST 発表・nowcast 10/13時点）｜基準: 市場予想 0.2%｜変化: +0.002pp｜向き: — 中立（予想並み）｜規則: Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。発表前の参考で、票は弱（0.5）。6日より古い予測は使わない",
+        "kind": "value",
+        "viz": {
+          "type": "gap",
+          "value": -0.002,
+          "scale": 0.2
+        },
+        "value": 0.202,
+        "material": "予測との差",
+        "factor": "発表前の予測"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "予測との差: CPI（前月比・9月）",
+        "display": "nowcast 0.53%",
+        "baseline": "市場予想 0.6%",
+        "change": "-0.07pp",
+        "direction": "上向き（弱）",
+        "symbol": "△",
+        "side": "up",
+        "strength": "weak",
+        "tone": "positive",
+        "asof": "10/14 21:30 JST 発表・nowcast 10/13時点",
+        "note": "",
+        "rule": "Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。発表前の参考で、票は弱（0.5）。6日より古い予測は使わない",
+        "source_quote": "短期（当日〜1、2日）｜予測との差: CPI（前月比・9月）: nowcast 0.53%（10/14 21:30 JST 発表・nowcast 10/13時点）｜基準: 市場予想 0.6%｜変化: -0.07pp｜向き: △ 上向き（弱）｜規則: Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。発表前の参考で、票は弱（0.5）。6日より古い予測は使わない",
+        "kind": "value",
+        "viz": {
+          "type": "gap",
+          "value": 0.07,
+          "scale": 0.2
+        },
+        "value": 0.53,
+        "material": "予測との差",
+        "factor": "発表前の予測"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "GLD保有量（5営業日）",
+        "display": "1,054.20 t",
+        "baseline": "5営業日前 1,059.97 t",
+        "change": "-5.77 t",
+        "direction": "下向き",
+        "symbol": "▼",
+        "side": "down",
+        "strength": "strong",
+        "tone": "negative",
+        "asof": "10/13",
+        "note": "棒は左から5営業日・20営業日。20営業日 +3.92 t",
+        "rule": "保有量の増加（設定超過）は追い風、減少（解約超過）は逆風。5営業日で±2t以上で強。20営業日は参考",
+        "source_quote": "短期（当日〜1、2日）｜GLD保有量（5営業日）: 1,054.20 t（10/13）｜基準: 5営業日前 1,059.97 t｜変化: -5.77 t｜向き: ▼ 下向き｜棒は左から5営業日・20営業日。20営業日 +3.92 t｜規則: 保有量の増加（設定超過）は追い風、減少（解約超過）は逆風。5営業日で±2t以上で強。20営業日は参考",
+        "kind": "value",
+        "viz": {
+          "type": "bars",
+          "items": [
+            {
+              "label": "5営業日",
+              "value": -5.77
+            },
+            {
+              "label": "20営業日",
+              "value": 3.92
+            }
+          ]
+        },
+        "value": -5.77,
+        "material": "GLD保有量",
+        "factor": "ETF"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "投機筋の買い越し（COT Managed Money）",
+        "display": "110,987枚",
+        "baseline": "建玉比 28.0%の156週百分位 43.9（2023/10/10〜2026/09/29）",
+        "change": "前週比 -9,331枚",
+        "direction": "中立（偏りなし）",
+        "symbol": "—",
+        "side": "flat",
+        "strength": "none",
+        "tone": "neutral",
+        "asof": "10/06",
+        "note": "",
+        "rule": "百分位90以上は買いの混み合い（反転注意）で下向き、10以下は上向き。どちらも弱（0.5票）で、反転の確認ではない。週次で数日遅れる",
+        "source_quote": "短期（当日〜1、2日）｜投機筋の買い越し（COT Managed Money）: 110,987枚（10/06）｜基準: 建玉比 28.0%の156週百分位 43.9（2023/10/10〜2026/09/29）｜変化: 前週比 -9,331枚｜向き: — 中立（偏りなし）｜規則: 百分位90以上は買いの混み合い（反転注意）で下向き、10以下は上向き。どちらも弱（0.5票）で、反転の確認ではない。週次で数日遅れる",
+        "kind": "value",
+        "viz": {
+          "type": "track",
+          "value": 43.9,
+          "low": 10,
+          "high": 90
+        },
+        "value": 43.9,
+        "material": "投機筋の建玉",
+        "factor": "建玉の偏り"
+      },
+      {
+        "group": "短期（当日〜1、2日）",
+        "label": "個人のロング比率（MyFXBook）",
+        "display": "ロング 61.0%・ショート 39.0%",
+        "baseline": "自前履歴59件（05/16〜10/14）の百分位 66.1",
+        "change": "—",
+        "direction": "中立（偏りなし）",
+        "symbol": "—",
+        "side": "flat",
+        "strength": "none",
+        "tone": "neutral",
+        "asof": "記録 10/14 18:03 JST",
+        "note": "",
+        "rule": "多数派の逆。百分位90以上（ロング過多）は下向き、10以下は上向き。どちらも弱（0.5票）。その間は中立",
+        "source_quote": "短期（当日〜1、2日）｜個人のロング比率（MyFXBook）: ロング 61.0%・ショート 39.0%（記録 10/14 18:03 JST）｜基準: 自前履歴59件（05/16〜10/14）の百分位 66.1｜変化: —｜向き: — 中立（偏りなし）｜規則: 多数派の逆。百分位90以上（ロング過多）は下向き、10以下は上向き。どちらも弱（0.5票）。その間は中立",
+        "kind": "value",
+        "viz": {
+          "type": "split",
+          "left": 61.0,
+          "right": 39.0,
+          "track": 66.1
+        },
+        "value": 61.0,
+        "material": "個人の比率",
+        "factor": "建玉の偏り"
+      }
+    ],
+    "legend": "各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は閾値以上の強い向き、△▽は閾値未満の弱い向き、—は中立です。向きは丸める前の値で判定します。データがない材料と古い材料は行ごと省き、欠測として理由と一緒に示します。同じ要因の行は1票にまとめる（米2年債・政策金利の織り込み・指標の結果＝金利・織り込み、COT・個人の比率＝建玉の偏り、nowcastとの差＝発表前の予測）。まとめた票は向きが揃えば強い方、食い違えば0で、建玉の偏りと発表前の予測は最大0.5票。▲▼は1票、△▽は0.5票。上向きと下向きの差が1票未満なら中立、2票以上で強、それ以外は弱。原稿に総合の記載がない場合: 長期と短期が同じ向きならその向き、片方が中立か材料なしならもう片方の向き（弱、材料なしは総合の欄に書く）、逆向きなら中立。金利・ドル・織り込みは同じ材料で同時に動きやすいため、同じ要因の行は1票にまとめています。閾値と票の重みは経験則の目安で、予測力は検証していません。小図は、推移線がその行だけの自動尺度（行ごとの最小〜最大に合わせるため、傾きを行どうしで比べることはできません）、2点の比較線がその行の閾値を基準にした尺度、棒が期間ごとの量、帯が百分位や比率です。大きな記号は原稿（分析本文）の判断で、規則の集計と違う場合は「集計と異なる」と理由を示します。",
+    "rules": [
+      {
+        "label": "実質金利（米10年TIPS）",
+        "rule": "上昇は金の逆風、低下は追い風。20営業日で±0.10pp以上で強"
+      },
+      {
+        "label": "ドル指数DXY（20営業日）",
+        "rule": "ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強"
+      },
+      {
+        "label": "ニュース・地政学（原稿の判断）",
+        "rule": "原稿が見出し・本文の確認結果から付けた向き。金利・ドルの動きそのものは別の行で数えるため、それ以外の材料で判断する"
+      },
+      {
+        "label": "中銀の金購入（IMF報告国・3ヶ月）",
+        "rule": "純購入は構造的な下支え、純売却は逆風。月次で1〜2ヶ月遅れ。3ヶ月で±20t以上で強"
+      },
+      {
+        "label": "米2年債利回り（当日）",
+        "rule": "上昇は金の逆風、低下は追い風。前日比±0.05pp以上で強（CNBCの当日値）"
+      },
+      {
+        "label": "ドル指数DXY（当日）",
+        "rule": "ドル高は金の逆風、ドル安は追い風。前日比±0.3%以上で強"
+      },
+      {
+        "label": "政策金利の織り込み（前日比）",
+        "rule": "確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。±1.25bp以上で強（隣のレンジへ確率5ppの移動に相当）。確率の合計が100%前後でない表、次回会合の日付がない・読めない・収集日より前の表、レンジの上下や重なりが不正な表は使わない"
+      },
+      {
+        "label": "予測との差: コアCPI（前月比・9月）",
+        "rule": "Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。発表前の参考で、票は弱（0.5）。6日より古い予測は使わない"
+      },
+      {
+        "label": "予測との差: CPI（前月比・9月）",
+        "rule": "Cleveland連銀の予測が市場予想より低ければ下振れ寄りで金に追い風、高ければ逆風。±0.05pp未満は中立。発表前の参考で、票は弱（0.5）。6日より古い予測は使わない"
+      },
+      {
+        "label": "GLD保有量（5営業日）",
+        "rule": "保有量の増加（設定超過）は追い風、減少（解約超過）は逆風。5営業日で±2t以上で強。20営業日は参考"
+      },
+      {
+        "label": "投機筋の買い越し（COT Managed Money）",
+        "rule": "百分位90以上は買いの混み合い（反転注意）で下向き、10以下は上向き。どちらも弱（0.5票）で、反転の確認ではない。週次で数日遅れる"
+      },
+      {
+        "label": "個人のロング比率（MyFXBook）",
+        "rule": "多数派の逆。百分位90以上（ロング過多）は下向き、10以下は上向き。どちらも弱（0.5票）。その間は中立"
+      }
+    ],
+    "sources": [
+      {
+        "label": "FRED",
+        "url": "https://fred.stlouisfed.org/"
+      },
+      {
+        "label": "CNBC",
+        "url": "https://www.cnbc.com/quotes/US2Y"
+      },
+      {
+        "label": "Investing.com",
+        "url": "https://www.investing.com/"
+      },
+      {
+        "label": "Investing.com Fed Rate Monitor",
+        "url": "https://www.investing.com/central-banks/fed-rate-monitor"
+      },
+      {
+        "label": "Cleveland Fed",
+        "url": "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting"
+      },
+      {
+        "label": "SPDR",
+        "url": "https://www.spdrgoldshares.com/"
+      },
+      {
+        "label": "IMF IRFCL",
+        "url": "https://data.imf.org/"
+      },
+      {
+        "label": "CFTC",
+        "url": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm"
+      },
+      {
+        "label": "MyFXBook",
+        "url": "https://www.myfxbook.com/community/outlook/XAUUSD"
+      }
+    ]
+  },
+  {
+    "id": "liquidity",
+    "type": "liquidity_map",
+    "kicker": "意識する価格",
+    "title": "流動性の位置（Liquidity）",
+    "subtitle": "上ほど高い価格。状態は10/14 17:00〜18:00 JSTの確定1時間足まで。●はまだ抜けていない水準、帯は1日の想定変動",
+    "items": [
+      {
+        "kind": "level",
+        "label": "前月高値（9月）",
+        "price_text": "4,514.11",
+        "position": 4514.11,
+        "pool": "BSL",
+        "state": "resting",
+        "state_word": "未到達",
+        "icon": "●",
+        "touched": "",
+        "distance_text": "+370.85（+8.95%）",
+        "proximity": 2.0,
+        "source_quote": "流動性｜前月高値（9月）: 4,514.11｜BSL｜+370.85（+8.95%）｜未到達",
+        "offscale": true,
+        "value": 4514.11
+      },
+      {
+        "kind": "level",
+        "label": "前週高値（10/05週）",
+        "price_text": "4,206.98",
+        "position": 4206.98,
+        "pool": "BSL",
+        "state": "swept",
+        "state_word": "掃引済み",
+        "icon": "✓",
+        "touched": "最初に抜けた足 10/12 09:00 JST（アジア）",
+        "distance_text": "+63.72（+1.54%）",
+        "proximity": 1.0855195911413857,
+        "source_quote": "流動性｜前週高値（10/05週）: 4,206.98｜BSL｜+63.72（+1.54%）｜掃引済み｜最初に抜けた足 10/12 09:00 JST（アジア）",
+        "value": 4206.98
+      },
+      {
+        "kind": "level",
+        "label": "前日高値（10/13）",
+        "price_text": "4,200.45",
+        "position": 4200.45,
+        "pool": "BSL",
+        "state": "resting",
+        "state_word": "未到達",
+        "icon": "●",
+        "touched": "",
+        "distance_text": "+57.19（+1.38%）",
+        "proximity": 0.974275979557063,
+        "source_quote": "流動性｜前日高値（10/13）: 4,200.45｜BSL｜+57.19（+1.38%）｜未到達",
+        "value": 4200.45
+      },
+      {
+        "kind": "level",
+        "label": "アジア高値（当日）",
+        "price_text": "4,169.97",
+        "position": 4169.97,
+        "pool": "BSL",
+        "state": "resting",
+        "state_word": "未到達",
+        "icon": "●",
+        "touched": "",
+        "distance_text": "+26.71（+0.64%）",
+        "proximity": 0.45502555366269226,
+        "source_quote": "流動性｜アジア高値（当日）: 4,169.97｜BSL｜+26.71（+0.64%）｜未到達",
+        "value": 4169.97
+      },
+      {
+        "kind": "reference",
+        "label": "NY 0時の始値",
+        "price_text": "4,162.50",
+        "position": 4162.5,
+        "pool": "",
+        "state": "reference",
+        "state_word": "当日の始値（参考）",
+        "icon": "┄",
+        "touched": "",
+        "distance_text": "+19.24（+0.46%）",
+        "proximity": null,
+        "source_quote": "流動性｜NY 0時の始値: 4,162.50｜+19.24（+0.46%）｜当日の始値（参考）",
+        "value": 4162.5
+      },
+      {
+        "kind": "level",
+        "label": "London高値（当日・形成中）",
+        "price_text": "4,157.61",
+        "position": 4157.61,
+        "pool": "BSL",
+        "state": "forming",
+        "state_word": "形成中",
+        "icon": "◌",
+        "touched": "",
+        "distance_text": "+14.35（+0.35%）",
+        "proximity": 0.244463373083466,
+        "source_quote": "流動性｜London高値（当日・形成中）: 4,157.61｜BSL｜+14.35（+0.35%）｜形成中",
+        "value": 4157.61
+      },
+      {
+        "kind": "level",
+        "label": "前日安値（10/13）",
+        "price_text": "4,147.48",
+        "position": 4147.48,
+        "pool": "SSL",
+        "state": "beyond",
+        "state_word": "抜けて推移",
+        "icon": "↘",
+        "touched": "最初に抜けた足 10/14 10:00 JST（アジア）",
+        "distance_text": "+4.22（+0.10%）",
+        "proximity": 0.07189097103917112,
+        "source_quote": "流動性｜前日安値（10/13）: 4,147.48｜SSL｜+4.22（+0.10%）｜抜けて推移｜最初に抜けた足 10/14 10:00 JST（アジア）",
+        "value": 4147.48
+      },
+      {
+        "kind": "level",
+        "label": "アジア安値（当日）",
+        "price_text": "4,143.76",
+        "position": 4143.76,
+        "pool": "SSL",
+        "state": "beyond",
+        "state_word": "抜けて推移",
+        "icon": "↘",
+        "touched": "最初に抜けた足 10/14 17:00 JST（London）",
+        "distance_text": "+0.50（+0.01%）",
+        "proximity": 0.008517887563884156,
+        "source_quote": "流動性｜アジア安値（当日）: 4,143.76｜SSL｜+0.50（+0.01%）｜抜けて推移｜最初に抜けた足 10/14 17:00 JST（London）",
+        "value": 4143.76
+      },
+      {
+        "kind": "current",
+        "label": "現在値",
+        "price_text": "4,143.26",
+        "position": 4143.26,
+        "pool": "",
+        "state": "current",
+        "state_word": "市場 10/14 18:01 JST",
+        "icon": "▶",
+        "touched": "",
+        "distance_text": "",
+        "proximity": null,
+        "source_quote": "流動性｜現在値: 4,143.26｜市場 10/14 18:01 JST",
+        "value": 4143.26
+      },
+      {
+        "kind": "level",
+        "label": "London安値（当日・形成中）",
+        "price_text": "4,142.16",
+        "position": 4142.16,
+        "pool": "SSL",
+        "state": "forming",
+        "state_word": "形成中",
+        "icon": "◌",
+        "touched": "",
+        "distance_text": "-1.10（-0.03%）",
+        "proximity": 0.018739352640551342,
+        "source_quote": "流動性｜London安値（当日・形成中）: 4,142.16｜SSL｜-1.10（-0.03%）｜形成中",
+        "value": 4142.16
+      },
+      {
+        "kind": "level",
+        "label": "前月安値（9月）",
+        "price_text": "4,111.80",
+        "position": 4111.8,
+        "pool": "SSL",
+        "state": "swept",
+        "state_word": "掃引済み",
+        "icon": "✓",
+        "touched": "最初に抜けた足 10/06 11:00 JST（アジア）",
+        "distance_text": "-31.46（-0.76%）",
+        "proximity": 0.5359454855195918,
+        "source_quote": "流動性｜前月安値（9月）: 4,111.80｜SSL｜-31.46（-0.76%）｜掃引済み｜最初に抜けた足 10/06 11:00 JST（アジア）",
+        "value": 4111.8
+      },
+      {
+        "kind": "level",
+        "label": "前週安値（10/05週）",
+        "price_text": "4,061.73",
+        "position": 4061.73,
+        "pool": "SSL",
+        "state": "resting",
+        "state_word": "未到達",
+        "icon": "●",
+        "touched": "",
+        "distance_text": "-81.53（-1.97%）",
+        "proximity": 1.3889267461669539,
+        "source_quote": "流動性｜前週安値（10/05週）: 4,061.73｜SSL｜-81.53（-1.97%）｜未到達",
+        "value": 4061.73
+      }
+    ],
+    "aux": [
+      {
+        "kind": "retail",
+        "label": "個人ロングの平均建値",
+        "price_text": "4,393.67",
+        "position": 4393.67,
+        "pool": "",
+        "state": "retail",
+        "state_word": "MyFXBook・10/14 18:03 JST",
+        "icon": "◆",
+        "touched": "",
+        "distance_text": "+250.41（+6.04%）",
+        "proximity": null,
+        "source_quote": "流動性｜個人ロングの平均建値: 4,393.67｜+250.41（+6.04%）｜MyFXBook・10/14 18:03 JST",
+        "value": 4393.67
+      },
+      {
+        "kind": "retail",
+        "label": "個人ショートの平均建値",
+        "price_text": "3,996.87",
+        "position": 3996.87,
+        "pool": "",
+        "state": "retail",
+        "state_word": "MyFXBook・10/14 18:03 JST",
+        "icon": "◆",
+        "touched": "",
+        "distance_text": "-146.39（-3.53%）",
+        "proximity": null,
+        "source_quote": "流動性｜個人ショートの平均建値: 3,996.87｜-146.39（-3.53%）｜MyFXBook・10/14 18:03 JST",
+        "value": 3996.87
+      }
+    ],
+    "cautions": [],
+    "band": {
+      "lower": 4084.56,
+      "upper": 4201.96,
+      "label": "想定変動 ±1σ（1日・±58.7ドル）"
+    },
+    "legend": "名前付きの高値・安値を価格順に並べています。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、↗↘抜けて推移（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。時刻は最初に抜けた足です。形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、冒頭の直近候補から外します。判定は確定した1時間足（発表15分足の直後はその時間の残りを15分足）、日足の区切りはNY 17:00。セッションは各市場の現地時間で、アジア 東京9〜16時・London ロンドン8〜13時・NY ニューヨーク8〜13時（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。表示範囲は現在値±2.5%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）。距離の棒は現在値からの遠さで、中央の目盛りが想定変動1σ、右端が2σ以上です。計算に使った最終確定足は10/14 17:00〜18:00 JST（Twelve Data 1時間足）。発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、翌取引日の終わりまで表示します。NY 0時の始値は当日の参考値で、判定には使いません。◆個人の平均建値（参考）は個人口座の建玉の平均で、流動性の位置ではありません。平均建値は取得から24時間以内、帯のGVZは観測日が5日以内のときだけ出し、古い・欠けているときは理由を制約に書きます。Order Block・FVGはチャートで判断する領域のため載せていません。",
+    "sources": [
+      {
+        "label": "Twelve Data",
+        "url": "https://twelvedata.com/"
+      },
+      {
+        "label": "FRED GVZCLS",
+        "url": "https://fred.stlouisfed.org/series/GVZCLS"
+      },
+      {
+        "label": "MyFXBook",
+        "url": "https://www.myfxbook.com/community/outlook/XAUUSD"
+      }
+    ]
+  },
+  {
+    "id": "calendar",
+    "type": "event_table",
+    "kicker": "気をつける指標",
+    "title": "米国の重要指標（直近の結果とこの先の予定）",
+    "subtitle": "時刻はJST。予定はTier Aが7日先・Tier Bが2日先まで（Investing.comの重要度★3のみ）",
+    "items": [
+      {
+        "date": "10/14（水）",
+        "time": "21:30",
+        "tier": "A",
+        "label": "コアCPI（前月比・9月）",
+        "status": "予定",
+        "previous": "0.3%",
+        "forecast": "0.2%",
+        "actual": "—",
+        "diff": "nowcast 0.202%（予想との差 +0.002pp）",
+        "direction": "中立（予想並み）",
+        "symbol": "—",
+        "tone": "neutral",
+        "memo": "停止 21:00〜22:30・NY KZ",
+        "released": false,
+        "group_start": true,
+        "source_quote": "米指標｜10/14（水） 21:30 JST｜Tier A｜コアCPI（前月比・9月）｜予定｜前回 0.3%｜予想 0.2%｜結果 —｜nowcast 0.202%（予想との差 +0.002pp）｜向き: — 中立（予想並み）｜停止 21:00〜22:30・NY KZ"
+      },
+      {
+        "date": "10/14（水）",
+        "time": "21:30",
+        "tier": "A",
+        "label": "CPI（前月比・9月）",
+        "status": "予定",
+        "previous": "0.4%",
+        "forecast": "0.6%",
+        "actual": "—",
+        "diff": "nowcast 0.53%（予想との差 -0.07pp）",
+        "direction": "上向き（弱・予測）",
+        "symbol": "△",
+        "tone": "positive",
+        "memo": "",
+        "released": false,
+        "group_start": false,
+        "source_quote": "米指標｜10/14（水） 21:30 JST｜Tier A｜CPI（前月比・9月）｜予定｜前回 0.4%｜予想 0.6%｜結果 —｜nowcast 0.53%（予想との差 -0.07pp）｜向き: △ 上向き（弱・予測）"
+      },
+      {
+        "date": "10/14（水）",
+        "time": "21:30",
+        "tier": "A",
+        "label": "CPI（前年比・9月）",
+        "status": "予定",
+        "previous": "3.4%",
+        "forecast": "3.6%",
+        "actual": "—",
+        "diff": "発表前",
+        "direction": "発表待ち",
+        "symbol": "—",
+        "tone": "neutral",
+        "memo": "",
+        "released": false,
+        "group_start": false,
+        "source_quote": "米指標｜10/14（水） 21:30 JST｜Tier A｜CPI（前年比・9月）｜予定｜前回 3.4%｜予想 3.6%｜結果 —｜発表前｜向き: — 発表待ち"
+      },
+      {
+        "date": "10/15（木）",
+        "time": "21:30",
+        "tier": "B",
+        "label": "小売売上高（前月比・9月）",
+        "status": "予定",
+        "previous": "1.2%",
+        "forecast": "0.3%",
+        "actual": "—",
+        "diff": "発表前",
+        "direction": "発表待ち",
+        "symbol": "—",
+        "tone": "neutral",
+        "memo": "停止 21:00〜22:30・NY KZ",
+        "released": false,
+        "group_start": true,
+        "source_quote": "米指標｜10/15（木） 21:30 JST｜Tier B｜小売売上高（前月比・9月）｜予定｜前回 1.2%｜予想 0.3%｜結果 —｜発表前｜向き: — 発表待ち｜停止 21:00〜22:30・NY KZ"
+      },
+      {
+        "date": "10/15（木）",
+        "time": "21:30",
+        "tier": "B",
+        "label": "PPI（前月比・9月）",
+        "status": "予定",
+        "previous": "0.4%",
+        "forecast": "0.5%",
+        "actual": "—",
+        "diff": "発表前",
+        "direction": "発表待ち",
+        "symbol": "—",
+        "tone": "neutral",
+        "memo": "",
+        "released": false,
+        "group_start": false,
+        "source_quote": "米指標｜10/15（木） 21:30 JST｜Tier B｜PPI（前月比・9月）｜予定｜前回 0.4%｜予想 0.5%｜結果 —｜発表前｜向き: — 発表待ち"
+      },
+      {
+        "date": "10/15（木）",
+        "time": "21:30",
+        "tier": "B",
+        "label": "小売売上高 除自動車（前月比・9月）",
+        "status": "予定",
+        "previous": "1.4%",
+        "forecast": "0.5%",
+        "actual": "—",
+        "diff": "発表前",
+        "direction": "発表待ち",
+        "symbol": "—",
+        "tone": "neutral",
+        "memo": "",
+        "released": false,
+        "group_start": false,
+        "source_quote": "米指標｜10/15（木） 21:30 JST｜Tier B｜小売売上高 除自動車（前月比・9月）｜予定｜前回 1.4%｜予想 0.5%｜結果 —｜発表前｜向き: — 発表待ち"
+      }
+    ],
+    "cautions": [],
+    "legend": "米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。予定はInvesting.comの重要度★3の行だけから取るため、提供元が★2以下としたTier A/Bの発表は載りません。期間は10/13からの結果と、Tier Aは10/21・Tier Bは10/16までの予定（JSTの日付単位）、予定はTier Aが7日先・Tier Bが2日先まで。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます（カレンダーの取得に失敗したときも）。取得が失敗・不完全なとき、取得範囲を確認できないときは「該当なし」とせず、予定を確認できないと示します。発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。同時刻の系列をまとめた票はバイアス盤の「指標の結果」行（2系列以上がそろえば強）。予定の向きはCleveland連銀のnowcast（CPI・PCEの前月比）と市場予想の差で、発表前の参考（弱）です。nowcastが6日より古いときは付けません。予想と前回の差は織り込み済みのため向きに使いません。発表足の高値・安値は発表15分足（なければ発表時刻を含む1時間足）で、翌取引日の終わりまで流動性の一覧に残します。停止は発表30分前〜60分後（FOMC・議長は120分後）。同時刻の発表は窓を合わせて最初の行に1回だけ示し、発表後も窓が終わるまでは「停止中」と表示します。KZは各市場の現地時間で、London 英国8〜11時（JST 夏16〜19時・冬17〜20時）・NY 米東部8〜12時（JST 夏21〜翌1時・冬22〜翌2時）。",
+    "sources": [
+      {
+        "label": "Investing.com",
+        "url": "https://www.investing.com/economic-calendar/"
+      },
+      {
+        "label": "Cleveland Fed nowcast",
+        "url": "https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting"
+      }
+    ]
+  }
+]

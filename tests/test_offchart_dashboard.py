@@ -2,6 +2,7 @@
 import base64
 from copy import deepcopy
 import hashlib
+import json
 import re
 
 import pytest
@@ -36,8 +37,13 @@ def test_validate_accepts_a_bundled_edition_and_lists_each_verified_item():
     (lambda s, f: f[0]['items'][0].update(source_quote='どこにもない行'), r'source_quote is missing'),
     (lambda s, f: next(i for i in f[0]['items'] if i.get('viz', {}).get('type') == 'spark')['viz'].pop('path'),
      r'sparkline without its source series'),
+    # A schemaVersion 5 diagram is accepted only with the labels and numbers of its own line.
     (lambda s, f: f[0]['items'][4].update(viz={'type': 'bars', 'items': [{'label': '6月', 'value': 44.6}]}),
-     r'unknown diagram type bars'),
+     r'bias\[4\]\.viz: "6月" is not in its source line'),
+    (lambda s, f: f[0]['items'][4].update(viz={'type': 'delta', 'from': 1.5, 'to': 9876.5}),
+     r'bias\[4\]\.viz: values'),
+    (lambda s, f: next(i for i in f[1]['items'] if i['kind'] == 'retail').update(viz={'type': 'pie'}),
+     r'unknown diagram type pie'),
     (lambda s, f: f[0]['items'][0]['viz'].update(type='pie'), r'unknown diagram type pie'),
     (lambda s, f: f[1]['cautions'].append({'text': '足の欠落', 'source_quote': 'どこにもない行'}), r'cautions\[0\]: source_quote'),
     (lambda s, f: next(i for i in f[1]['items'] if i['kind'] == 'retail').update(state_word='56%・含み益 +5.3%'),
@@ -195,3 +201,53 @@ def test_value_parts_do_not_break_inside_and_keep_the_quoted_text():
     page, _ = dash.build(source, summary, result['figures'], title='t', source_name='s.md')
     cell = '<span class="nw">ロング 56.0%</span>・<span class="nw">ショート 44.0%</span>'
     assert cell in page and re.sub(r'<[^>]+>', '', cell) == 'ロング 56.0%・ショート 44.0%'
+
+
+# ------------------------------------------------------------------ review r10: series of one release time
+
+def series_edition():
+    """Three CPI series at one time: two above forecast (headwind) and one as forecast."""
+    data = sample()
+    cpi = lambda name, actual, forecast: {
+        'date': 'Tuesday, October 13, 2026', 'time_jst': '21:30', 'country': 'United States', 'indicator': name,
+        'actual': actual, 'previous': '0.3%', 'forecast': forecast, 'released_at_jst': '2026-10-13T21:30:00+09:00',
+        'forecast_provenance': '発表前記録（2026-10-12 09:10 取得・Investing.com）'}
+    data['macro_surprises'] = [cpi('Core CPI (MoM) (Sep)', '0.4%', '0.3%'), cpi('CPI (MoM) (Sep)', '0.3%', '0.3%'),
+                               cpi('CPI (YoY) (Sep)', '3.1%', '3.0%')]
+    result = bundle.observations(data, NOW, 'daily', SOURCE)
+    source = SOURCE + result['appendix']
+    summary = bundle.make_summary(source, 'daily', result['asOf'], result['lead'])
+    bundle.check_bindings(data, result, result['figures'])
+    return source, summary, json.loads(json.dumps(result['figures'], ensure_ascii=False))
+
+
+def test_each_series_of_a_release_is_its_own_line_and_as_forecast_is_neutral():
+    source, summary, figures = series_edition()
+    row = next(i for i in figures[0]['items'] if i['label'].startswith('指標の結果'))
+    assert row['change'] == 'コアCPI（前月比・9月） +0.1pp／CPI（前月比・9月） +0pp／CPI（前年比・9月） +0.1pp'
+    assert [(x['text'], x['tone']) for x in row['series']] == [
+        ('コアCPI（前月比・9月） +0.1pp', 'negative'), ('CPI（前月比・9月） +0pp', 'neutral'),
+        ('CPI（前年比・9月） +0.1pp', 'negative')]
+    assert row['tone'] == 'negative'
+    dash.validate(summary, figures, source)
+    page, _ = dash.build(source, summary, figures, title='t', source_name='s.md')
+    assert ('<span class="chg chg-series"><span class="ser s-negative">コアCPI（前月比・9月） +0.1pp</span>'
+            '<span class="vh">／</span><span class="ser s-neutral">CPI（前月比・9月） +0pp</span>'
+            '<span class="vh">／</span><span class="ser s-negative">CPI（前年比・9月） +0.1pp</span></span>') in page
+    css = dash.CSS
+    assert '.chg-series .ser{display:block}' in css and '.board .chg .s-neutral{color:var(--flat)}' in css
+    # The browser check still finds the whole change text (the separator is in the text, out of sight).
+    text = acceptance.compact(re.sub(r'<[^>]+>', '', page.replace('&amp;', '&')))
+    assert [t for t in acceptance.shown_texts(summary, figures) if acceptance.compact(t) not in text] == []
+
+
+@pytest.mark.parametrize('change', [
+    lambda r: r['series'][1].update(text='CPI（前月比・9月） +0.2pp'),
+    lambda r: r['series'][1].update(tone='positive-ish'),
+    lambda r: r['series'].pop(),
+    lambda r: r.update(series='CPI')])
+def test_series_parts_must_be_the_rows_change_text(change):
+    source, summary, figures = series_edition()
+    change(next(i for i in figures[0]['items'] if i['label'].startswith('指標の結果')))
+    with pytest.raises(dash.DashboardError, match=r'series: parts differ'):
+        dash.validate(summary, figures, source)

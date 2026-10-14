@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 5,
+  "kind": "daily",
+  "asOf": "2026-10-14T18:01:53.805286+09:00",
+  "reportDate": "2026-10-14",
+  "synthetic": false,
+  "dataPath": "/Users/laa/.codex/jobs/chart-intel/reports/daily/editions/parent-daily-20261014T180151-7a981047-r3/Daily_Bias_Report_2026-10-14.data.json",
+  "dataSha256": "9c49575e4860e70a1558d2032cf8bfc3d43c9bd690353799f357c52d5113c8e0",
+  "sourcePath": "/Users/laa/.codex/jobs/chart-intel/reports/daily/editions/parent-daily-20261014T180151-7a981047-r3/Daily_Bias_Report_2026-10-14.md",
+  "sourceSha256": "1ad10019d4112dda94ff627165c275515346ac3f84c8ce0a64655e556d72a160",
+  "summaryPath": "/Users/laa/.codex/jobs/chart-intel/reports/daily/editions/parent-daily-20261014T180151-7a981047-r3/Daily_Bias_Report_2026-10-14.summary.json",
+  "summarySha256": "9f247cebde03e3a9a949f7983f3d5dbffff8ab952fdad3d41ccf4c3def7693f2",
+  "figuresPath": "/Users/laa/.codex/jobs/chart-intel/reports/daily/editions/parent-daily-20261014T180151-7a981047-r3/Daily_Bias_Report_2026-10-14.figures.json",
+  "figuresSha256": "bafa8097de7d8a543a3d99372690b394d5828376814b37be3faf7a1824aa842d",
+  "missing": [],
+  "limitations": [
+    "判断から除外した材料: 未検証の注文分布・損益推定、未取得の構造情報、異時点金利差、事前予想のない差、本文未確認の見出し・X、閾値未定のCommercials急変。"
+  ],
+  "bindings": [
+    {
+      "figure": "bias",
+      "label": "実質金利（米10年TIPS）",
+      "index": 0,
+      "path": "fred.DFII10.change_20obs",
+      "value": 0.31,
+      "digits": 2,
+      "unit": "pp",
+      "observedAt": "10/09"
+    },
+    {
+      "figure": "bias",
+      "label": "ドル指数DXY（20営業日）",
+      "index": 1,
+      "path": "dxy.recent_closes.20.1",
+      "value": 102.23,
+      "digits": 3,
+      "unit": "index",
+      "observedAt": "10/14"
+    },
+    {
+      "figure": "bias",
+      "label": "中銀の金購入（IMF報告国・3ヶ月）",
+      "index": 3,
+      "path": "gold_cb.cumulative_3m_t",
+      "value": 154.2,
+      "digits": 1,
+      "unit": "t",
+      "observedAt": "2026年08月分"
+    },
+    {
+      "figure": "bias",
+      "label": "米2年債利回り（当日）",
+      "index": 4,
+      "path": "us_yields.US2Y.change",
+      "value": -0.012,
+      "digits": 3,
+      "unit": "pp",
+      "observedAt": "10/14 17:51 JST"
+    },
+    {
+      "figure": "bias",
+      "label": "ドル指数DXY（当日）",
+      "index": 5,
+      "path": "dxy.change_pct",
+      "value": 0.04,
+      "digits": 2,
+      "unit": "%",
+      "observedAt": "記録 10/14 18:03 JST"
+    },
+    {
+      "figure": "bias",
+      "label": "予測との差: コアCPI（前月比・9月）",
+      "index": 7,
+      "path": "inflation_nowcast.months.2026-9.core_cpi.value",
+      "value": 0.202,
+      "digits": 3,
+      "unit": "%",
+      "observedAt": "10/14 21:30 JST 発表・nowcast 10/13時点"
+    },
+    {
+      "figure": "bias",
+      "label": "予測との差: CPI（前月比・9月）",
+      "index": 8,
+      "path": "inflation_nowcast.months.2026-9.cpi.value",
+      "value": 0.53,
+      "digits": 2,
+      "unit": "%",
+      "observedAt": "10/14 21:30 JST 発表・nowcast 10/13時点"
+    },
+    {
+      "figure": "bias",
+      "label": "GLD保有量（5営業日）",
+      "index": 9,
+      "path": "gold_etf.change_5d_t",
+      "value": -5.77,
+      "digits": 2,
+      "unit": "t",
+      "observedAt": "10/13"
+    },
+    {
+      "figure": "bias",
+      "label": "投機筋の買い越し（COT Managed Money）",
+      "index": 10,
+      "path": "offchart_features.positioning.cot_gold_mm.percentile",
+      "value": 43.9,
+      "digits": 1,
+      "unit": "百分位",
+      "observedAt": "10/06"
+    },
+    {
+      "figure": "bias",
+      "label": "個人のロング比率（MyFXBook）",
+      "index": 11,
+      "path": "retail_sentiment.XAUUSD.long_pct",
+      "value": 61.0,
+      "digits": 1,
+      "unit": "%",
+      "observedAt": "記録 10/14 18:03 JST"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前月高値（9月）",
+      "path": "xau_levels.levels.0.price",
+      "value": 4514.11,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.0.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前週高値（10/05週）",
+      "path": "xau_levels.levels.1.price",
+      "value": 4206.98,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.1.state",
+      "state": "swept"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前日高値（10/13）",
+      "path": "xau_levels.levels.2.price",
+      "value": 4200.45,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.2.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "アジア高値（当日）",
+      "path": "xau_levels.levels.3.price",
+      "value": 4169.97,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.3.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "London高値（当日・形成中）",
+      "path": "xau_levels.levels.4.price",
+      "value": 4157.61,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.4.state",
+      "state": "forming"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前日安値（10/13）",
+      "path": "xau_levels.levels.5.price",
+      "value": 4147.48,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.5.state",
+      "state": "beyond"
+    },
+    {
+      "figure": "liquidity",
+      "label": "アジア安値（当日）",
+      "path": "xau_levels.levels.6.price",
+      "value": 4143.76,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.6.state",
+      "state": "beyond"
+    },
+    {
+      "figure": "liquidity",
+      "label": "London安値（当日・形成中）",
+      "path": "xau_levels.levels.7.price",
+      "value": 4142.16,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.7.state",
+      "state": "forming"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前月安値（9月）",
+      "path": "xau_levels.levels.8.price",
+      "value": 4111.8,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.8.state",
+      "state": "swept"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前週安値（10/05週）",
+      "path": "xau_levels.levels.9.price",
+      "value": 4061.73,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00",
+      "state_path": "xau_levels.levels.9.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "現在値",
+      "path": "report_quote.close",
+      "value": 4143.26,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14T18:01:00+09:00",
+      "fetchedAt": "2026-10-14T09:01:54.616117+00:00"
+    },
+    {
+      "figure": "liquidity",
+      "label": "NY 0時の始値",
+      "path": "xau_levels.midnight_open",
+      "value": 4162.5,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14 08:00"
+    },
+    {
+      "figure": "liquidity",
+      "label": "個人ロングの平均建値",
+      "path": "retail_sentiment.XAUUSD.avg_long_entry",
+      "value": 4393.67,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14T09:03:50Z"
+    },
+    {
+      "figure": "liquidity",
+      "label": "個人ショートの平均建値",
+      "path": "retail_sentiment.XAUUSD.avg_short_entry",
+      "value": 3996.87,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-10-14T09:03:50Z"
+    },
+    {
+      "figure": "calendar",
+      "label": "コアCPI（前月比・9月）",
+      "index": 0,
+      "path": "economic_calendar.events.2"
+    },
+    {
+      "figure": "calendar",
+      "label": "CPI（前月比・9月）",
+      "index": 1,
+      "path": "economic_calendar.events.3"
+    },
+    {
+      "figure": "calendar",
+      "label": "CPI（前年比・9月）",
+      "index": 2,
+      "path": "economic_calendar.events.4"
+    },
+    {
+      "figure": "calendar",
+      "label": "小売売上高（前月比・9月）",
+      "index": 3,
+      "path": "economic_calendar.events.6"
+    },
+    {
+      "figure": "calendar",
+      "label": "PPI（前月比・9月）",
+      "index": 4,
+      "path": "economic_calendar.events.7"
+    },
+    {
+      "figure": "calendar",
+      "label": "小売売上高 除自動車（前月比・9月）",
+      "index": 5,
+      "path": "economic_calendar.events.8"
+    }
+  ],
+  "requiredFigures": [
+    "bias",
+    "liquidity",
+    "calendar"
+  ],
+  "figureIds": [
+    "bias",
+    "liquidity",
+    "calendar"
+  ],
+  "numericCheck": "passed",
+  "semanticReview": "pending",
+  "publicationReady": false,
+  "historicalRevision": false,
+  "validationMode": "current",
+  "semanticAuditRequired": true,
+  "semanticAuditSha256": "0bd548e6bfe9e2ed1c8072b9cba3ee1255ba6d64a4b1c72454470fffa6014a2a"
+}

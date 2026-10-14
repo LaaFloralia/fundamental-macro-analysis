@@ -22,9 +22,23 @@ ITEM_TEXT = {
                     'symbol', 'memo'),
 }
 VERDICT_TEXT = ('label', 'symbol', 'direction', 'origin', 'detail', 'short')
-# The only mini diagram is a trend line of several observations (the row's text carries the two ends);
+# The only mini diagram drawn is a trend line of several observations (the row's text carries the two ends);
 # it names its source series and is rechecked against the collection (report_bundle.check_bindings).
 VIZ_TYPES = ('spark',)
+# Diagrams of schemaVersion 5 editions (before r10). They are still checked as then (every number they encode
+# must be in the row's quoted line) so a stored edition validates and renders again, but they are not drawn:
+# the row's text carries the same numbers. Current editions never carry them (check_regenerated rebuilds).
+LEGACY_VIZ_NUMBERS = {
+    'delta': lambda v: [v.get('from'), v.get('to')],
+    'track': lambda v: [v.get('value')],
+    'split': lambda v: [v.get('left'), v.get('right'), v.get('track')],
+    'gap': lambda v: [abs(v['value']) if isinstance(v.get('value'), (int, float)) else v.get('value')],
+    'votes': lambda v: [v.get('up'), v.get('down'), v.get('flat')],
+    'bars': lambda v: [b.get('value') for b in v.get('items') or []],
+    'probs': lambda v: [x.get('value') for x in v.get('segments') or []],
+}
+LEGACY_VIZ_LABELS = {'bars': 'items', 'probs': 'segments'}
+SERIES_TONES = ('positive', 'negative', 'neutral')
 
 
 class DashboardError(ValueError):
@@ -71,15 +85,40 @@ def _check_text(where, quote, values):
             raise DashboardError(f'{where}: numbers {sorted(extra)} are not in its source line')
 
 
-def _check_viz(where, viz):
-    """A trend line must name its source series (the values are rechecked against the collection)."""
+def _check_viz(where, quote, viz):
+    """A trend line must name its source series (the values are rechecked against the collection); a diagram of a
+    schemaVersion 5 edition must carry only labels and numbers of its quoted line."""
     if not isinstance(viz, dict) or not viz:
         return
     kind = viz.get('type')
-    if kind not in VIZ_TYPES:
+    if kind in VIZ_TYPES:
+        if not viz.get('path') or not isinstance(viz.get('count'), int) or len(viz.get('values') or []) != viz['count']:
+            raise DashboardError(f'{where}.viz: sparkline without its source series')
+        return
+    if kind not in LEGACY_VIZ_NUMBERS:
         raise DashboardError(f'{where}.viz: unknown diagram type {kind}')
-    if not viz.get('path') or not isinstance(viz.get('count'), int) or len(viz.get('values') or []) != viz['count']:
-        raise DashboardError(f'{where}.viz: sparkline without its source series')
+    if kind in LEGACY_VIZ_LABELS:
+        _check_text(where + '.viz', quote, [x.get('label') for x in viz.get(LEGACY_VIZ_LABELS[kind]) or []])
+    values = LEGACY_VIZ_NUMBERS[kind](viz)
+    if any(not isinstance(v, (int, float)) or isinstance(v, bool) for v in values if v is not None):
+        raise DashboardError(f'{where}.viz: diagram values must be numbers')
+    allowed = numbers(quote)
+    if kind == 'gap':  # drawn by size; the sign is the bar's side
+        allowed = {n.lstrip('-') for n in allowed}
+    extra = numbers(' '.join(str(v) for v in values if v is not None)) - allowed
+    if extra:
+        raise DashboardError(f'{where}.viz: values {sorted(extra)} are not in its source line')
+
+
+def _check_series(where, item):
+    """The per-series parts of a released-indicator row: each is a part of its change text, with a known tone."""
+    series = item.get('series')
+    if series is None:
+        return
+    if (not isinstance(series, list) or len(series) < 2 or any(not isinstance(x, dict) for x in series)
+            or '／'.join(str(x.get('text')) for x in series) != item.get('change')
+            or any(x.get('tone') not in SERIES_TONES for x in series)):
+        raise DashboardError(f'{where}.series: parts differ from its change text')
 
 
 def validate(summary: dict, figures: list, source: str) -> list:
@@ -119,10 +158,14 @@ def validate(summary: dict, figures: list, source: str) -> list:
             raise DashboardError(f'{figure.get("id")}: heading numbers are not in the Markdown')
         if figure.get('legend') and canonical(figure['legend']) not in canon_source:
             raise DashboardError(f'{figure.get("id")}: legend is not in the Markdown')
-        for index, item in enumerate(figure.get('items') or []):
-            where = f'{figure.get("id")}[{index}]'
-            _check_text(where, quoted(where, item), [item.get(k) for k in ITEM_TEXT[kind]])
-            _check_viz(where, item.get('viz'))
+        # `aux`: the retail average entries below the map in schemaVersion 5 editions (now rows of the map).
+        rows = [(f'{figure.get("id")}[{index}]', item) for index, item in enumerate(figure.get('items') or [])]
+        rows += [(f'{figure.get("id")}.aux[{index}]', item) for index, item in enumerate(figure.get('aux') or [])]
+        for where, item in rows:
+            quote = quoted(where, item)
+            _check_text(where, quote, [item.get(k) for k in ITEM_TEXT[kind]])
+            _check_viz(where, quote, item.get('viz'))
+            _check_series(where, item)
             checked.append(where)
         for index, tile in enumerate(figure.get('verdicts') or []):
             where = f'{figure.get("id")}.verdicts[{index}]'
@@ -233,6 +276,11 @@ def bias_section(figure):
                 middle = f'<td class="cell-text" colspan="2">{e(i["display"])}</td>'
             else:
                 change = f'<span class="chg">{e(i["change"])}</span>' if i.get('change') not in (None, '', '—') else ''
+                if i.get('series'):
+                    # One line per series in its own colour; the separator stays in the text, out of sight.
+                    sep = '<span class="vh">／</span>'
+                    change = '<span class="chg chg-series">' + sep.join(
+                        f'<span class="ser s-{e(x["tone"])}">{e(x["text"])}</span>' for x in i['series']) + '</span>'
                 middle = (f'<td class="cell-now"><span class="now-text">{keep_parts(i["display"])}</span>'
                           f'{viz_svg(i.get("viz"), i["tone"])}</td>'
                           f'<td class="cell-base"><span class="base-text">{e(i["baseline"])}</span>{change}</td>')
@@ -259,11 +307,33 @@ def _price(text):
     return '〜<wbr>'.join(e(part) for part in str(text).split('〜'))
 
 
-def _ladder_row(i, inside=False):
+def _ends(i):
+    """The row's lowest and highest price: both ends of a zone (from its shown price text), else its position."""
+    if i.get('kind') == 'zone':
+        try:
+            ends = [float(part.replace(',', '')) for part in str(i['price_text']).split('〜')]
+        except ValueError:
+            ends = []
+        if ends:
+            return min(ends), max(ends)
+    return i['position'], i['position']
+
+
+def _band_class(i, lower, upper):
+    """in-band when the whole row is inside the expected-move band, part-band when a zone crosses its edge."""
+    if lower is None or upper is None:
+        return ''
+    low, high = _ends(i)
+    if lower <= low and high <= upper:
+        return ' in-band'
+    return ' part-band' if low <= upper and high >= lower else ''
+
+
+def _ladder_row(i, band=''):
     pool = f'<span class="pool pool-{e(i["pool"].lower())}">{e(i["pool"])}</span>' if i.get('pool') else ''
     touched = f'<span class="touched">{e(i["touched"])}</span>' if i.get('touched') else ''
     target = f'<span class="target">{e(i["target"])}</span>' if i.get('target') else ''
-    return (f'<li class="lv kind-{e(i["kind"])} state-{e(i["state"])}{" in-band" if inside else ""}{" is-target" if target else ""}">'
+    return (f'<li class="lv kind-{e(i["kind"])} state-{e(i["state"])}{band}{" is-target" if target else ""}">'
             f'<span class="lv-price">{_price(i["price_text"])}</span>'
             f'<span class="lv-name"><span class="lv-label">{e(i["label"])}</span>{pool}{target}</span>'
             f'<span class="lv-dist">{e(i["distance_text"])}</span>'
@@ -284,7 +354,7 @@ def liquidity_section(figure):
         if lower is not None and not lower_done and i['position'] < lower:
             rows.append(edge('下限', lower))
             lower_done = True
-        rows.append(_ladder_row(i, lower is not None and upper is not None and lower <= i['position'] <= upper))
+        rows.append(_ladder_row(i, _band_class(i, lower, upper)))
     if lower is not None and not lower_done:
         rows.append(edge('下限', lower))
     off = [i for i in figure['items'] if i.get('offscale')]
@@ -292,7 +362,13 @@ def liquidity_section(figure):
                 + ''.join(_ladder_row(i) for i in off) + '</ul></div>') if off else ''
     missing = ''.join(f'<p class="liq-missing">欠測: {e(m["text"])}</p>' for m in figure.get('missing') or [])
     cautions = ''.join(f'<p class="caution" role="note">{e(c["text"])}</p>' for c in figure.get('cautions') or [])
-    howto = _details('水準の決め方と状態の意味（開いて確認）', f'<p>{e(figure.get("legend"))}</p>{_sources(figure)}')
+    # schemaVersion 5 editions: the retail average entries were a reference line in the folded legend.
+    aux = figure.get('aux') or []
+    aux_html = ('<p class="aux">参考（流動性の位置ではない）: ' + ' ／ '.join(
+        f'{e(i["icon"])} {e(i["label"])} {e(i["price_text"])}（{e(i["distance_text"])}・{e(i["state_word"])}）'
+        for i in aux) + '</p>') if aux else ''
+    howto = _details('水準の決め方と状態の意味' + ('・個人の平均建値' if aux else '') + '（開いて確認）',
+                     f'<p>{e(figure.get("legend"))}</p>{aux_html}{_sources(figure)}')
     return (f'<section class="data-figure fig-liq" id="liquidity" aria-labelledby="liq-title">'
             f'<div class="fig-head"><span class="kicker">{e(figure.get("kicker"))}</span>'
             f'<h2 id="liq-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>{cautions}'
@@ -367,7 +443,7 @@ grid-template-columns:auto 1fr;grid-template-areas:"label label" "sym word" "ori
 border-left:4px solid #c9a227;padding:6px 12px}
 .grp-tally{font-weight:400;color:var(--muted);margin-left:12px;font-size:.78rem}
 .caution{margin:0 0 8px;padding:6px 12px;background:#fbf0ef;border-left:4px solid var(--down);font-size:.82rem}
-.liq-missing{font-size:.8rem;color:var(--muted);margin:8px 0 0}.events tr.empty td{color:var(--muted);font-size:.86rem}
+.liq-missing{font-size:.8rem;color:var(--muted);margin:8px 0 0}.aux{font-size:.8rem;color:var(--muted);margin:8px 0 0}.events tr.empty td{color:var(--muted);font-size:.86rem}
 .board-wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%}.board{table-layout:fixed}
 .board .c-lbl{width:31%}.board .c-now{width:22%}.board .c-base{width:30%}.board .c-dir{width:17%}th,td{text-align:left;vertical-align:middle;padding:8px 10px;border-bottom:1px solid var(--line)}
@@ -380,13 +456,15 @@ tr.grp th,tr.day th{background:var(--wash);font-size:.82rem;font-weight:700;padd
 .cell-now{font-weight:700;overflow-wrap:anywhere}.nw{white-space:nowrap}.cell-text{font-size:.92rem;line-height:1.6}.cell-base{font-size:.85rem}.base-text{display:block;color:var(--muted)}
 .chg{font-weight:700}.cell-dir{white-space:nowrap}.dir-symbol{font-size:1.25rem;margin-right:6px;vertical-align:-2px}
 .tone-positive .dir-symbol,.tone-positive .chg{color:var(--up)}.tone-negative .dir-symbol,.tone-negative .chg{color:var(--down)}
-.tone-neutral .dir-symbol{color:var(--flat)}.dir-word{font-size:.88rem;font-weight:600}
+.tone-neutral .dir-symbol{color:var(--flat)}.chg-series .ser{display:block}.board .chg .s-positive{color:var(--up)}
+.board .chg .s-negative{color:var(--down)}.board .chg .s-neutral{color:var(--flat)}
+.vh{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.dir-word{font-size:.88rem;font-weight:600}
 .ladder-head{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;font-size:.72rem;color:var(--muted);
 padding:0 10px 4px;border-bottom:1px solid var(--ink)}
 .ladder{list-style:none;margin:0;padding:0}
 .lv{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;align-items:center;padding:7px 10px;
 border-bottom:1px solid var(--line);font-size:.9rem}
-.lv.in-band{background:var(--band)}.lv-price{font-weight:700}.lv-label{margin-right:6px}
+.lv.in-band{background:var(--band)}.lv.part-band{background:linear-gradient(90deg,var(--band) 0 6px,transparent 6px)}.lv-price{font-weight:700}.lv-label{margin-right:6px}
 .pool{display:inline-block;font-size:.68rem;font-weight:700;padding:0 6px;border-radius:3px;color:#fff;vertical-align:1px}
 .pool-bsl{background:var(--down)}.pool-ssl{background:var(--up)}
 .lv-dist{font-size:.82rem;color:var(--muted)}.lv>span{min-width:0;overflow-wrap:anywhere}

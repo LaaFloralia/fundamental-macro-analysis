@@ -745,13 +745,18 @@ def surprise_rows(data, stamp, mode):
         else:
             display = f'{len(members)}系列: 追い風 {up}・逆風 {down}・予想どおり {flat}'
             base = '予想（発表前記録）'
-            change = '／'.join(f'{display_name(ev.get("indicator"))} {s["diff"]:+g}{s["unit"]}' for ev, s, _, _ in members)
-        word = '予想どおり（中立）' if side == 'flat' and up == down == 0 else ('追い風と逆風が同数（中立）' if side == 'flat' else None)
+            # One part per series, each with its own direction: the page shows them one per line in their colour.
+            series = [{'text': f'{display_name(ev.get("indicator"))} {s["diff"]:+g}{s["unit"]}', 'tone': TONE[x]}
+                      for (ev, s, _, _), x in zip(members, sides)]
+            change = '／'.join(part['text'] for part in series)
+        word ='予想どおり（中立）' if side == 'flat' and up == down == 0 else ('追い風と逆風が同数（中立）' if side == 'flat' else None)
         item, _ = row(GROUPS['short'][mode], f'指標の結果: {names}', display, base, change, side, strength,
                       f'{released.strftime("%m/%d %H:%M")} JST',
                       '予想より強い米指標はドル・金利高で金の逆風、弱ければ追い風（一般則）。同時発表は1行にまとめ、'
                       '2系列以上がすべて同じ向きなら強、1系列だけの場合・予想どおりの系列を含む場合・多数決は弱',
                       word=word)
+        if len(members) > 1:
+            item['series'] = series
         # A text binding: check_bindings re-reads each record (actual, forecast, difference).
         out.append((item, {'members': [f'macro_surprises.{k}' for *_, k in members]}))
     return out
@@ -1108,33 +1113,51 @@ def _band_late(liq, stamp):
     return f'GVZ {late}' if late else None
 
 
-RETAIL_ZONE = '個人の建玉が集まる価格帯'
+RETAIL_ZONE = '個人の注文・建玉が集まる価格帯'  # the provider does not say whether these are orders or positions
 ZONE_SOURCE = 'MyFXBook・60分遅れ'  # the provider: verified real accounts, 60 minutes delayed
+ZONE_KIND = '種類不明'  # pending orders or open positions, stops or limits: not stated by the provider
 ZONE_ICON = '▭'
 ZONE_MAX_AGE_DAYS = 3  # clusters kept from an earlier collection are shown at most this many calendar days later
+# scrapers.myfxbook_open_orders._cluster_and_classify defaults (the legend states them; a test keeps them equal)
+ZONE_FILTER_PCT = 10  # prices farther than this from the price at fetch are dropped
+ZONE_GAP_PCT = 0.5  # a price joins the band below it when the gap is under this share of the price
+ZONE_TOP = 3  # bands kept above and below
 # retail_analytics.detect_sweeps verdicts (the collector's last 24 hours of Dukascopy 1-hour bars)
 SWEEP_VERDICT = {'no sweep': '直近24時間は価格帯に未到達', 'sweep→reversal': '価格帯に到達後に反転',
                  'sweep→continuation': '価格帯に到達後も戻りが小さい'}
+ZONE_UNKNOWN_STATE = '状態未確認（取得時刻なし）'
+ENTRY_SIDES = (('avg_long_entry', 'long', '個人ロングの平均建値'), ('avg_short_entry', 'short', '個人ショートの平均建値'))
 
 
 def _retail_entries(data, stamp, price, away, far):
     """The retail average entries (long and short) as map rows: share, unrealised P/L against the shown price,
-    source and fetch time. ([rows], [bindings], [missing lines])."""
+    source and fetch time. Each side is checked on its own: a failed fetch (取得失敗), no record (取得なし),
+    a stale fetch (its fetch time) or no value for the side (値なし) is a missing line, one per side, or one
+    for both when both have the same reason. ([rows], [bindings], [missing lines])."""
     from scrapers.retail_analytics import build_pl_structure
-    r = (data.get('retail_sentiment') or {}).get('XAUUSD') or {}
-    entries = [(key, side, label, num(r.get(key))) for key, side, label in
-               (('avg_long_entry', 'long', '個人ロングの平均建値'), ('avg_short_entry', 'short', '個人ショートの平均建値'))] \
-        if present(r) else []
-    entries = [x for x in entries if x[3] is not None]
-    if not entries:
-        return [], [], []
-    late = stale_time(r.get('timestamp'), stamp)  # the bias row's rule: 24 hours from its fetch
-    origin = r.get('source') or '提供元不明'
-    if late:
-        return [], [], [f'個人の平均建値（{origin}・{late}）']
-    pl = build_pl_structure(r, price)
+    r = (data.get('retail_sentiment') or {}).get('XAUUSD')
+    r = r if isinstance(r, dict) else {}
+    origin = r.get('source') or 'MyFXBook'
+    if r.get('error'):
+        common = f'取得失敗（{_clean(r["error"])[:60]}）'
+    elif not r:
+        common = '取得なし'
+    else:
+        common = None
+    values = {key: num(r.get(key)) for key, _, _ in ENTRY_SIDES}
+    late = None if common or all(v is None for v in values.values()) else stale_time(r.get('timestamp'), stamp)
+    reasons = {key: common or ('値なし' if values[key] is None else late) for key, _, _ in ENTRY_SIDES}
+    missing = [(label, reasons[key]) for key, _, label in ENTRY_SIDES if reasons[key]]
+    if len(missing) == 2 and missing[0][1] == missing[1][1]:
+        gaps = [f'個人ロング・ショートの平均建値（{origin}）: {missing[0][1]}']
+    else:
+        gaps = [f'{label}（{origin}）: {why}' for label, why in missing]
+    pl = build_pl_structure(r, price) if not common else {}
     rows, bindings = [], []
-    for key, side, label, v in entries:
+    for key, side, label in ENTRY_SIDES:
+        v = values[key]
+        if reasons[key]:
+            continue
         parts = []
         share = num(r.get(f'{side}_pct'))
         if share is not None:
@@ -1148,7 +1171,7 @@ def _retail_entries(data, stamp, price, away, far):
                          offscale=far(v), value=v))
         bindings.append({'figure': 'liquidity', 'label': label, 'path': f'retail_sentiment.XAUUSD.{key}', 'value': number(v),
                          'digits': 2, 'unit': 'USD/oz', 'observedAt': str(r.get('timestamp') or '')})
-    return rows, bindings, []
+    return rows, bindings, gaps
 
 
 def _zone_state(data, low, high, side, since):
@@ -1177,38 +1200,65 @@ def _zone_state(data, low, high, side, since):
     return f'価格帯に到達・抜けていない（最初の足 {stamp_of(at)}）' if reached != 'resting' else '取得後は価格帯に未到達'
 
 
+def _sweep_verdict(event):
+    """The collector's 24-hour verdict for one swept-baseline record, with the bar that first reached the zone."""
+    word = SWEEP_VERDICT.get(event.get('verdict'))
+    if not word:
+        return ZONE_UNKNOWN_STATE
+    at = _utc_label(event.get('swept_at_utc')) if event.get('swept_at_utc') else ''
+    return word + (f'（{at}）' if at else '')
+
+
+def _matching_verdict(ra, day, side, cluster):
+    """The verdict of the same cluster (same day, side and edges) in the collector's swept baseline, or None."""
+    if not day or ra.get('baseline_date') != day:
+        return None
+    low, high = num(cluster.get('low')), num(cluster.get('high'))
+    for event in ra.get('sweep_events') or []:
+        if (isinstance(event, dict) and str(event.get('side')).lower() == side and low is not None and high is not None
+                and num(event.get('low')) == low and num(event.get('high')) == high):
+            return _sweep_verdict(event)
+    return None
+
+
 def _retail_zones(data, stamp, price, away, far):
     """MyFXBook Order Book clusters as zone rows. This collection's clusters when it got them; otherwise the
     latest clusters the collector kept (retail_analytics.previous_pools, or for older collections the swept
     baseline of retail_analytics) when at most ZONE_MAX_AGE_DAYS calendar days old; otherwise a missing line.
-    ([rows], [], [missing lines]): the rows are rebuilt by check_regenerated, not bound one by one."""
+    Kept clusters say on their second line that this collection did not get them (the full reason goes to the
+    limitations). Their state comes from the stored bars after their fetch time; without a fetch time, from the
+    collector's verdict for the same cluster when there is one, else 状態未確認.
+    ([rows], [], [missing lines], [notes]): the rows are rebuilt by check_regenerated, not bound one by one."""
     oo = (data.get('myfxbook_open_orders') or {}).get('XAUUSD') or {}
+    oo = oo if isinstance(oo, dict) else {}
     ra = data.get('retail_analytics') or {}
     ra = ra if isinstance(ra, dict) else {}
-    zones, origin, why = [], '', ''
+    zones, origin, why, notes = [], '', '', []
     current = [(side, c) for side in ('bsl', 'ssl') for c in (oo.get(f'{side}_candidates') or [])] if present(oo) else []
     late = stale_time(oo.get('timestamp'), stamp) if current else None
     if current and not late:
-        origin = f'{ZONE_SOURCE}・取得 {_stamp(oo.get("timestamp"))}'
+        origin = f'{ZONE_SOURCE}・{ZONE_KIND}・取得 {_stamp(oo.get("timestamp"))}'
         zones = [(side, c, '') for side, c in current]
     else:
-        why = (f'今回の取得失敗（{_clean(oo.get("error"))[:60]}）' if isinstance(oo, dict) and oo.get('error')
-               else f'今回の取得が古い（{late}）' if late else '今回の取得なし' if not oo else '今回の取得でクラスタなし')
+        why, brief = (
+            (f'今回の取得失敗（{_clean(oo.get("error"))[:60]}）', '今回は取得失敗') if oo.get('error') else
+            (f'今回の取得が古い（{late}）', '今回の取得は古い') if late else
+            ('今回の取得なし', '今回は取得なし') if not oo else ('今回の取得でクラスタなし', '今回はクラスタなし'))
         prev = ra.get('previous_pools') if isinstance(ra.get('previous_pools'), dict) else None
         baseline = [e for e in ra.get('sweep_events') or [] if isinstance(e, dict) and e.get('side') in ('BSL', 'SSL')]
         day = (prev or {}).get('date') or (ra.get('baseline_date') if baseline else None)
         age = stale_day(day, stamp, ZONE_MAX_AGE_DAYS) if day else '記録なし'
         if age:
-            return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why}・前回分: {age}']
+            return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why}・前回分: {age}'], []
+        fetched = _parse_jst(prev.get('fetched_at')) if prev else None
+        origin = f'{ZONE_SOURCE}・{ZONE_KIND}・前回取得 {_stamp(prev["fetched_at"]) if fetched else _md(day)}（{brief}）'
         if prev:
-            fetched = _parse_jst(prev.get('fetched_at'))
-            origin = f'{ZONE_SOURCE}・前回取得 ' + (_stamp(prev['fetched_at']) if fetched else f'{_md(day)}（時刻の記録なし）')
-            zones = [(side, c, _zone_state(data, num(c.get('low')), num(c.get('high')), side, fetched) if fetched else '')
+            zones = [(side, c, _zone_state(data, num(c.get('low')), num(c.get('high')), side, fetched) if fetched
+                      else _matching_verdict(ra, day, side, c) or ZONE_UNKNOWN_STATE)
                      for side in ('bsl', 'ssl') for c in prev.get(side) or []]
         else:
-            origin = f'{ZONE_SOURCE}・前回取得 {_md(day)}（時刻の記録なし）'
-            zones = [(e['side'].lower(), e, SWEEP_VERDICT.get(e.get('verdict'), '') +
-                      (f'（{_utc_label(e["swept_at_utc"])}）' if e.get('swept_at_utc') else '')) for e in baseline]
+            zones = [(e['side'].lower(), e, _sweep_verdict(e)) for e in baseline]
+        notes.append(f'{RETAIL_ZONE}は{_md(day)}の前回取得分を表示（{why}）')
     rows = []
     for side, c, state in zones:
         low, high = num(c.get('low')), num(c.get('high'))
@@ -1230,8 +1280,8 @@ def _retail_zones(data, stamp, price, away, far):
                          distance_text=away(near) if near is not None else '現在値を含む',
                          offscale=near is not None and far(near)))
     if not rows:
-        return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why or "価格帯の値なし"}']
-    return rows, [], []
+        return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why or "価格帯の値なし"}'], []
+    return rows, [], [], notes
 
 
 def liquidity_figure(data, stamp, mode, source=None):
@@ -1287,10 +1337,11 @@ def liquidity_figure(data, stamp, mode, source=None):
                          'value': number(mo), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc')})
     # Where retail positions sit: the average entries and the Order Book clusters (in the map, or below it when far).
     for build in (_retail_entries, _retail_zones):
-        rows_in, binds, gaps = build(data, stamp, price, away, far)
+        rows_in, binds, gaps, *told = build(data, stamp, price, away, far)
         items.extend(rows_in)
         bindings.extend(binds)
         missing.extend(gaps)
+        notes.extend(f'流動性マップ: {text}' for text in (told[0] if told else []))
     draw = _draw(source)
     if draw:
         # The draw must be one of the listed levels (same name and price) on its side of the price;
@@ -1317,28 +1368,32 @@ def liquidity_figure(data, stamp, mode, source=None):
         rows.append(f'流動性｜{band["label"]}: {fmt(band["lower"])}〜{fmt(band["upper"])}'
                     f'（GVZ {liq.get("gvz")}・{liq.get("gvz_as_of")}）')
     last_bar = _bar_span(lv.get('last_bar_utc'))
-    legend = ('名前付きの高値・安値と個人の建玉の位置を価格順に並べています。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
+    legend = ('名前付きの高値・安値と個人の注文・建玉の位置を価格順に並べています。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
               '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
               '↗↘抜けて推移（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
               '時刻は最初に抜けた足です。形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、冒頭の直近候補から外します。'
               '判定は確定した1時間足（発表15分足の直後はその時間の残りを15分足）、日足の区切りはNY 17:00。'
               'セッションは各市場の現地時間で、アジア 東京9〜16時・London ロンドン8〜13時・NY ニューヨーク8〜13時'
               '（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。'
-              f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）。'
+              f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）で、'
+              '色の付いた行が帯の内側です（帯の境をまたぐ価格帯は左端だけ色を付けます）。'
               + (f'計算に使った最終確定足は{last_bar}（Twelve Data 1時間足）。' if last_bar else '') +
               ('発表足の高値・安値は直近7日のTier A指標の発表15分足（なければ発表時刻を含む1時間足）です。' if weekly else
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
                '翌取引日の終わりまで表示します。') +
               'NY 0時の始値は当日の参考値で、判定には使いません。'
               '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、割合はロング（ショート）の比率、含み損益は表示した現在値との差です。'
-              f'{ZONE_ICON}{RETAIL_ZONE}は、MyFXBookのOrder Book（認証済みの実口座だけ・60分遅れ）が上下それぞれ件数の多い'
-              '15価格を示したものを、売り・買いを合わせて近い価格どうしでまとめた帯です（こちらの集計・未検証）。'
+              f'{ZONE_ICON}{RETAIL_ZONE}は、MyFXBookのOrder Book（認証済みの実口座だけ・60分遅れ）がAsksとBidsそれぞれについて'
+              '件数の多い15価格を示したものを合わせ、こちらで帯にまとめたものです（未検証）。'
+              f'取得時の価格から±{ZONE_FILTER_PCT:g}%を超える価格は除き、取得時の価格より上と下に分け、価格順で直前の価格との差が'
+              f'{ZONE_GAP_PCT:g}%未満なら同じ帯にし、上と下それぞれ件数の多い{ZONE_TOP}帯までを載せます。'
               '件数はポジションの数でロットではありません。取得元は未約定の注文か保有中の建玉か、損切りか指値かを示していないため、'
-              '注文の種類は分かりません。件数は帯に含まれる価格の合計、距離は現在値に近い端まで、'
+              f'種類は分かりません（{ZONE_KIND}）。件数は帯に含まれる価格の合計、距離は現在値に近い端まで、'
               'BSL・SSLは現在値より上か下か（現在値を含む帯は付けない）。取得時刻は取得した時刻で、内容はその60分前の状態です。'
               '今回の取得に失敗したときは'
-              f'{ZONE_MAX_AGE_DAYS}日以内に取得できた分を取得日時と一緒に出し、取得後の確定足で価格帯に届いたか・抜けたかを示します'
-              '（取得時刻の記録がない分は、取得元の直近24時間の判定を示します。時刻は価格帯に最初に届いた足）。'
+              f'{ZONE_MAX_AGE_DAYS}日以内に取得できた分を前回の取得日時・今回の状況と一緒に出し、取得後の確定足で価格帯に届いたか・抜けたかを示します'
+              '（取得時刻の記録がない分は日付だけを示し、取得元が同じ価格帯を直近24時間の足で判定していればその判定、'
+              'なければ「状態未確認」とします。時刻は価格帯に最初に届いた足）。今回の取得に失敗した理由は制約に書きます。'
               f'平均建値は取得から{QUOTE_MAX_HOURS}時間以内、帯のGVZは観測日が{GVZ_MAX_AGE_DAYS}日以内のときだけ出し、'
               '古い・欠けているときは理由を図の下と制約に書きます。'
               'Order Block・FVGはチャートで判断する領域のため載せていません。')
