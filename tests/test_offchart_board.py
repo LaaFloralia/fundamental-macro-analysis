@@ -77,7 +77,8 @@ def sample():
                                         'timestamp': '2026-10-13T09:03:42Z', 'error': None, 'stale': False}},
         'cot_disaggregated': {'error': None, 'data': {'date': '2026-10-06', 'managed_money': {
             'net': 110987, 'net_change': -9331, 'long': 150000, 'short': 39013}}},
-        'offchart_features': {'positioning': {'retail': {'XAUUSD': {'percentile': 54.4, 'history_n': 57}},
+        'offchart_features': {'positioning': {'retail': {'XAUUSD': {'source': 'MyFXBook', 'long_pct': 56.0, 'percentile': 54.4,
+                                                                    'history_n': 57, 'window': ['2026-09-26', '2026-10-13']}},
                                               'cot_gold_mm': {'percentile': 43.9, 'history_n': 156,
                                                               'report_date': '2026-10-06'}}},
         'inflation_nowcast': {'error': None, 'timestamp': '2026-10-13T13:12:00+00:00', 'months': {'2026-9': {'cpi': {'value': 0.531, 'as_of': '10/09'},
@@ -152,7 +153,7 @@ def test_daily_rows_compare_each_input_with_its_baseline_and_map_it_to_gold():
     fed = rows['政策金利の織り込み（前日比）']
     assert (fed['symbol'], fed['direction'], fed['display'], fed['baseline'], fed['change'], fed['asof']) == \
         ('—', '中立', '期待 3.924%', '3.924%（提供表の前日列）', '+0.0bp', '次回FOMC 10/28')
-    assert fed['note'] == '確率 3.75-4.00 80.5%・4.00-4.25 19.5%'
+    assert fed['note'] == '確率 3.75-4.00 80.5%・4.00-4.25 19.5%。前日列の比較日時は提供元の表示になく未確認'
     assert [x['label'] for x in fed['viz']['segments']] == ['3.75-4.00', '4.00-4.25']  # low to high
     claims = rows['指標の結果: 新規失業保険申請']
     assert (claims['symbol'], claims['display'], claims['baseline'], claims['change']) == \
@@ -183,6 +184,20 @@ def test_daily_rows_compare_each_input_with_its_baseline_and_map_it_to_gold():
     assert board.bias_rows(sample(), NOW, 'daily', SOURCE)[2] == []  # nothing missing
 
 
+def test_the_two_ends_of_a_change_are_printed_at_the_changes_precision():
+    """4.8496 − 4.800 is +0.0496pp (weak): the ends and the drawn line must not read 4.850 − 4.800 (the strong line)."""
+    data = sample()
+    data['us_yields']['US2Y'].update(value=4.8496, prev_close=4.8, change=0.0496)
+    row = rows_of(data)['米2年債利回り（当日）']
+    assert (row['display'], row['baseline'], row['change'], row['symbol']) == \
+        ('4.8496%', '前日終値 4.8000%', '+0.0496pp', '▽')
+    item = next(i for i in board.bias_rows(data, NOW, 'daily', SOURCE)[0] if i['label'] == '米2年債利回り（当日）')
+    assert (float(item['viz']['from']), float(item['viz']['to'])) == (4.8, 4.8496)
+    data = sample()
+    data['us_yields']['US2Y'].update(value=4.837, prev_close=4.791, change=0.046)
+    assert rows_of(data)['米2年債利回り（当日）']['display'] == '4.837%'  # three decimals stay three
+
+
 def test_verdicts_use_unrounded_values_and_the_shown_value_agrees():
     assert board.shown(0.046, 2, 0.05) == (0.046, 3)      # 0.05 when rounded, but under the line
     assert board.shown(0.05 - 1e-12, 2, 0.05) == (0.05, 2)  # binary noise only: at the line
@@ -199,7 +214,7 @@ def test_verdicts_use_unrounded_values_and_the_shown_value_agrees():
     assert (us2y['symbol'], us2y['change']) == ('▽', '+0.046pp')
     data['offchart_features']['positioning']['retail']['XAUUSD']['percentile'] = 89.96
     retail = rows_of(data)['個人のロング比率（MyFXBook）']
-    assert (retail['symbol'], retail['baseline']) == ('—', '自前履歴57件の百分位 89.96')
+    assert (retail['symbol'], retail['baseline']) == ('—', '自前履歴57件（09/26〜10/13）の百分位 89.96')
 
 
 def test_missing_materials_are_listed_and_an_empty_group_is_not_neutral():
@@ -214,6 +229,31 @@ def test_missing_materials_are_listed_and_an_empty_group_is_not_neutral():
     empty = {'timestamp': NOW.isoformat(), 'fedwatch': sample()['fedwatch']}
     tiles = {t['label']: t for t in board.bias_figure(empty, NOW, 'daily', '# R\n')['figure']['verdicts']}
     assert (tiles['長期']['direction'], tiles['長期']['symbol'], tiles['長期']['show_detail']) == ('材料なし', '—', True)
+
+
+@pytest.mark.parametrize('summary', ['未評価（見出しのみで本文を開けない）',
+                                     '提供された新着見出し・X抜粋は本文未確認で、方向票に採用できる追加ニュースはない。',
+                                     '追加の政策・地政学ニュースは見出しと抜粋の範囲にとどまり、確認済みの方向材料を加えない。'])
+def test_an_unread_news_line_is_not_a_material(summary):
+    """A neutral news line the report could not read is 判定外: no vote, and the horizon is not covered by it."""
+    source = SOURCE.replace(NEWS_LINE, f'ニュース・地政学: 中立｜{summary}')
+    data = sample()
+    items, _, notes = board.bias_rows(data, NOW, 'daily', source)
+    assert 'ニュース・地政学' not in {i['material'] for i in items}
+    assert notes == ['判定外: ニュース・地政学（原稿の「ニュース・地政学:」行・原稿が本文未確認で中立とした）。'
+                     '長期（数週間〜）の集計に入れていない']
+    del data['fred']['DFII10']
+    tiles = {t['label']: t for t in board.bias_figure(data, NOW, 'daily', source)['figure']['verdicts']}
+    assert tiles['長期']['detail'].endswith('欠測: 実質金利。判定外: ニュース・地政学')
+    # Without any other long material the horizon has none (the unread line does not count).
+    for key in ('dxy', 'gold_cb'):
+        data.pop(key)
+    data['fred'].pop('DTWEXBGS', None)
+    tiles = {t['label']: t for t in board.bias_figure(data, NOW, 'daily', source)['figure']['verdicts']}
+    assert tiles['長期']['direction'] == '材料なし' or '材料なし' in tiles['長期']['detail']
+    # An evaluated quiet day stays a neutral material.
+    quiet = SOURCE.replace(NEWS_LINE, 'ニュース・地政学: 中立｜特記すべきニュースなし')
+    assert 'ニュース・地政学' in {i['material'] for i in board.bias_rows(sample(), NOW, 'daily', quiet)[0]}
 
 
 @pytest.mark.parametrize('change,why', [
@@ -232,11 +272,21 @@ def test_missing_materials_are_listed_and_an_empty_group_is_not_neutral():
     (lambda d: d['retail_sentiment']['XAUUSD'].update(timestamp='2026-10-11T09:00:00Z'),
      '個人の比率（MyFXBook・取得 10/11 18:00 JST・24時間より前）'),
     # The fallback source is named; a ratio without enough own history is not "no value".
+    # The ratio or position was obtained but has no percentile yet: 判定外, with the value, not 欠測.
     (lambda d: d['retail_sentiment']['XAUUSD'].update(source='FXSSI') or
-     d['offchart_features']['positioning']['retail']['XAUUSD'].update(percentile=None, history_n=12),
-     '個人の比率（FXSSI・同じ取得元の自前履歴12件で百分位なし（20件・5種以上で判定））'),
+     d['offchart_features']['positioning']['retail']['XAUUSD'].update(source='FXSSI', percentile=None, history_n=12),
+     '判定外: 個人の比率（FXSSI・ロング56.0%は取得・同じ取得元の自前履歴12件で百分位なし（20件・5種以上で判定））'),
     (lambda d: d['offchart_features']['positioning']['cot_gold_mm'].update(percentile=None, history_n=8),
-     '投機筋の建玉（CFTC COT・自前履歴8週で百分位なし（20週以上で判定））'),
+     '判定外: 投機筋の建玉（CFTC COT・買い越し110,987枚は取得・自前履歴8週で百分位なし（20週以上で判定））'),
+    # A percentile computed for another source or another reading is not this ratio's.
+    (lambda d: d['offchart_features']['positioning']['retail']['XAUUSD'].update(source='FXSSI'),
+     '欠測: 個人の比率（MyFXBook・百分位が現在の比率と別の観測）'),
+    (lambda d: d['offchart_features']['positioning']['retail']['XAUUSD'].update(long_pct=57.0),
+     '欠測: 個人の比率（MyFXBook・百分位が現在の比率と別の観測）'),
+    # A stale ratio is missing even when its percentile is also missing.
+    (lambda d: d['retail_sentiment']['XAUUSD'].update(timestamp='2026-10-11T09:00:00Z') or
+     d['offchart_features']['positioning']['retail']['XAUUSD'].update(percentile=None),
+     '欠測: 個人の比率（MyFXBook・取得 10/11 18:00 JST・24時間より前）'),
     (lambda d: d['cot_disaggregated']['data']['managed_money'].update(short=40000), '投機筋の建玉（CFTC COT・買い−売り＝差引が合わない）'),
     (lambda d: d['offchart_features']['positioning']['cot_gold_mm'].update(report_date='2026-09-29'),
      '投機筋の建玉（CFTC COT・百分位と建玉の報告日が違う）'),
@@ -535,7 +585,20 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     del data['report_quote']['fetched_at']
     data['xau_levels']['cautions'] = ['最終確定足が10/13 16:00 JSTで、その後の5時間分の足がない。以降の値動きは状態に入っていない']
     result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
-    assert next(i for i in result['figure']['items'] if i['kind'] == 'current')['state_word'] == '取得時刻の記録なし'
+    assert next(i for i in result['figure']['items'] if i['kind'] == 'current')['state_word'] == '取得時刻の記録なし・参考値'
+    # The heading says up to which closed hour the states were judged.
+    assert board.liquidity_figure(sample(), NOW, 'daily', SOURCE)['figure']['subtitle'].startswith(
+        f'上ほど高い価格。状態は{board._utc_label(sample()["xau_levels"]["last_bar_utc"])}開始の確定1時間足まで。')
+    for fetched, word in (('2026-10-13T12:00:00+00:00', '取得 10/13 21:00 JST・1時間より前・参考値'),
+                          ('2026-10-13T13:30:00+00:00', '取得 10/13 22:30 JST が収集時刻より後・参考値')):
+        data = sample()
+        data['report_quote']['fetched_at'] = fetched
+        current = next(i for i in board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']['items'] if i['kind'] == 'current')
+        assert current['state_word'] == word
+    data = sample()
+    del data['report_quote']['fetched_at']
+    data['xau_levels']['cautions'] = ['最終確定足が10/13 16:00 JSTで、その後の5時間分の足がない。以降の値動きは状態に入っていない']
+    result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
     assert result['figure']['cautions'][0]['source_quote'] == '流動性｜注意: ' + data['xau_levels']['cautions'][0]
     assert result['rows'][0] == result['figure']['cautions'][0]['source_quote']
 
@@ -635,7 +698,11 @@ def test_released_without_a_prerelease_record_is_labelled_and_missing_actual_wai
     assert claims['forecast'] == '230K' and claims['diff'] == '結果−予想 +1K・予想は発表後の取得'
     data['economic_calendar']['events'][1]['actual'] = 'N/A'
     claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
-    assert (claims['diff'], claims['direction']) == ('結果待ち', '結果待ち')
+    assert (claims['diff'], claims['direction']) == ('結果を未取得（発表時刻は経過）', '結果未取得')
+    # A release without any number (a statement or speech) is not "waiting for a result".
+    data['economic_calendar']['events'][1].update(previous='', forecast='')
+    claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
+    assert (claims['diff'], claims['direction']) == ('数値の結果なし（声明・発言など）', 'ニュース行で判断')
 
 
 def test_empty_window_yields_one_quoted_row():
@@ -725,13 +792,27 @@ def prepared(tmp_path, data, source=SOURCE, mode='daily'):
     return read('bundle_path'), read('visuals_path'), md.read_text(encoding='utf-8'), read('summary_path')
 
 
+@pytest.mark.parametrize('end,problem', [('not a time', '収集終了時刻を読めない'),
+                                         ('2026-10-13T22:00:00+09:00', '収集終了時刻が開始より前')])
+def test_an_unusable_collection_end_falls_back_to_the_start_and_says_so(end, problem):
+    data = sample()
+    data['collection_finished_at'] = end
+    assert bundle.cutoff_problem(data) == problem
+    assert bundle.analysis_cutoff(data) == bundle.timestamp(data['timestamp'])
+    limits = bundle.build_observations(data, 'daily', SOURCE)['limitations']
+    assert f'{problem}のため、判定の基準を収集開始時刻にした。開始から5分より後に取得した値は使っていない' in limits
+    data['collection_finished_at'] = '2026-10-13T22:20:00+09:00'
+    assert bundle.cutoff_problem(data) is None
+    assert not any('収集終了時刻' in note for note in bundle.build_observations(data, 'daily', SOURCE)['limitations'])
+
+
 def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_path):
     data = sample()
     data['collection_finished_at'] = '2026-10-13T22:20:00+09:00'
     # Levels without their stored bars cannot be rebuilt (test below); this one checks the other figures.
     del data['xau_levels']
     manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
-    assert manifest['schemaVersion'] == 4
+    assert manifest['schemaVersion'] == 5
     bundle.check_regenerated(data, manifest, figures, source, summary)
     assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
     assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source
@@ -925,6 +1006,21 @@ def test_a_calendar_record_with_an_error_adopts_no_nowcast():
     assert len(ue.adopted_nowcasts(events, sample()['inflation_nowcast'], NOW, 'daily')) == 2
 
 
+@pytest.mark.parametrize('broken', ['calendar', 'nowcast'])
+def test_an_error_record_adopts_no_nowcast_on_the_board_the_table_or_the_parent_input(broken):
+    """A calendar or nowcast record with an error (even with values left in it) is used nowhere."""
+    data = sample()
+    data['economic_calendar' if broken == 'calendar' else 'inflation_nowcast']['error'] = 'ページ取得失敗'
+    assert ue.adopted_nowcasts(data['economic_calendar'], data['inflation_nowcast'], NOW, 'daily') == []
+    assert not any(l.startswith('予測との差') for l in rows_of(data))
+    figure = board.event_figure(data, NOW, 'daily')
+    assert not any('nowcast' in str(i.get('diff', '')) for i in (figure or {}).get('figure', {}).get('items', []))
+    lines = ue.format_us_event_lines(data['economic_calendar'], data['inflation_nowcast'], NOW)
+    assert not any('Cleveland連銀nowcast' in line for line in lines)
+    if broken == 'nowcast':
+        assert '取得失敗' in board.nowcast_missing(data, NOW, 'daily')
+
+
 def test_a_non_finite_nowcast_value_gives_no_gap():
     data = sample()
     for value in (float('nan'), float('inf'), True, '0.5'):
@@ -1004,12 +1100,14 @@ def test_fedwatch_needs_a_dated_upcoming_meeting_and_valid_ranges():
     assert '政策金利の織り込み（前日比）' in rows_of(data)
     for rates, why in ((['4.25-4.00', '3.75-4.00'], 'レンジ'), (['4.00-4.00', '3.75-4.00'], 'レンジ'),
                        (['nan-4.25', '3.75-4.00'], 'レンジ'), (['3.75-4.00', '3.75-4.00'], 'レンジ'),
-                       (['3.75-inf', '3.75-4.00'], 'レンジ'), (['4.00-4.25-4.5', '3.75-4.00'], 'レンジ')):
+                       (['3.75-inf', '3.75-4.00'], 'レンジ'), (['4.00-4.25-4.5', '3.75-4.00'], 'レンジ'),
+                       (['3.90-4.25', '3.75-4.00'], 'レンジ')):            # overlapping ranges
         data = sample()
         for rate, label in zip(data['fedwatch']['target_rates'], rates):
             rate['range'] = label
         assert why in fed_note(data)[0], rates
         assert '政策金利の織り込み（前日比）' not in rows_of(data)
+    assert board._rate_ranges([{'range': '4.00-4.25'}, {'range': '3.75-4.00'}])  # adjacent ranges are fine
 
 
 def test_fedwatch_history_is_comparable_only_for_the_same_meeting_and_range_set():

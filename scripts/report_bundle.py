@@ -15,8 +15,9 @@ from zoneinfo import ZoneInfo
 
 JST = ZoneInfo('Asia/Tokyo')
 REQUIRED_FIGURES = ('bias', 'liquidity', 'calendar')
-MANIFEST_VERSION = 4  # 2: release rows carry text bindings; 3: figures are regenerated at validation;
-                      # 4: levels carry `confirmed` and the 5-minute publishing lag (v3 editions are not rebuilt)
+MANIFEST_VERSION = 5  # 2: release rows carry text bindings; 3: figures are regenerated at validation;
+                      # 4: levels carry `confirmed` and the 5-minute publishing lag (v3 editions are not rebuilt);
+                      # 5: 判定外 materials, endpoint digits, error-checked nowcasts (v4 editions are not rebuilt)
 APPENDIX = '\n\n## 図表に使用した観測値\n'
 CONCLUSION_MAX = 220  # the master prompts ask for one line of 220 characters
 
@@ -48,13 +49,30 @@ def require_fresh(data, now=None):
 def analysis_cutoff(data):
     """The board's "now": the end of collection when recorded, otherwise its start (older
     collections). Every adopted value was fetched before it; releases up to it count as released
-    and windows end there. A collection longer than an hour is named in the limits."""
+    and windows end there. A collection longer than an hour is named in the limits, and so is an
+    end time that cannot be used (cutoff_problem)."""
     start = timestamp(data.get('timestamp'))
+    return start if cutoff_problem(data) else (_collection_end(data) or start)
+
+
+def _collection_end(data):
     try:
-        end = timestamp(data['collection_finished_at']) if data.get('collection_finished_at') else None
+        return timestamp(data['collection_finished_at']) if data.get('collection_finished_at') else None
     except BundleError:
-        end = None
-    return end if end and end >= start else start
+        return None
+
+
+def cutoff_problem(data):
+    """Why the recorded collection end is not used as the cutoff (unreadable, or before the start),
+    else None. The start is used instead and the page says so."""
+    if not data.get('collection_finished_at'):
+        return None
+    end = _collection_end(data)
+    if end is None:
+        return '収集終了時刻を読めない'
+    if end < timestamp(data.get('timestamp')):
+        return '収集終了時刻が開始より前'
+    return None
 
 
 def number(value, digits=2):
@@ -143,6 +161,9 @@ def build_observations(data, mode='daily', source=None):
     lead.extend(GONE_CHIP[key] for key in REQUIRED_FIGURES if key not in drawn)
     if events and events.get('coverage') in CALENDAR_CHIP:
         lead.append(CALENDAR_CHIP[events['coverage']])
+    problem = cutoff_problem(data)
+    if problem:
+        limitations.append(f'{problem}のため、判定の基準を収集開始時刻にした。開始から5分より後に取得した値は使っていない')
     if (stamp - start).total_seconds() > COLLECTION_MAX_SECONDS:
         limitations.append(f'収集に{int((stamp - start).total_seconds() // 60)}分かかった。'
                            '判定は収集終了時刻を基準にし、それまでに取得した値を使う')
@@ -263,7 +284,7 @@ def check_regenerated(data, manifest, figures, source, summary=None):
     (without its appendix) and require the stored ones to be identical: a flipped sign, swapped
     endpoints, another baseline, an edited word or a removed cell is rejected. The liquidity
     levels are recomputed from the stored bars when the edition carries them. Editions before
-    schemaVersion 4 are not regenerated (the code that drew them has changed)."""
+    the current schemaVersion are not regenerated (the code that drew them has changed)."""
     if manifest.get('schemaVersion', 1) < MANIFEST_VERSION:
         return
     body = source.split(APPENDIX)[0].rstrip()

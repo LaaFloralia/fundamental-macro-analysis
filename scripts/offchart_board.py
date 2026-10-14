@@ -43,7 +43,11 @@ CAVEAT = ('金利・ドル・織り込みは同じ材料で同時に動きやす
 LADDER_RANGE_PCT = {'daily': 2.5, 'weekly': 5.0}
 STATE_ICON = {'resting': '●', 'swept': '✓', 'broken': '×', 'forming': '◌'}
 BEYOND_ICON = {'high': '↗', 'low': '↘'}  # 抜けて推移: the side the price left through
+QUOTE_FRESH_HOURS = 1  # the current price the liquidity distances are measured from
 FLOAT_NOISE = 1e-9  # binary floating-point error only; the inputs carry at most four decimals
+# A news line the report could not read beyond headlines: not a material (判定外), so it neither votes nor
+# makes a horizon look covered. The prompts ask for 「中立｜未評価（理由）」 in that case.
+NEWS_UNREAD = re.compile(r'^未評価|本文未確認|本文を確認でき|見出し(?:・X)?(?:と抜粋)?の範囲')
 # Oldest observation still used, in days before the stamp's date (publication lags included).
 MAX_AGE_DAYS = {'DFII10': 7, 'DGS2': 7, 'DXY': 7, 'DTWEXBGS': 14, 'GLD': 7, 'COT': 14}
 CB_MAX_MONTHS = 4                  # IMF IRFCL is one to two months behind
@@ -239,6 +243,16 @@ def _series_change(points, back):
     return pts[-1], pts[-1 - back]
 
 
+def _span(window):
+    """'（09/26〜10/14）' for a [first, last] date pair (years added when they differ), else ''."""
+    span = [str(x)[:10] for x in window or []]
+    if len(span) != 2:
+        return ''
+    if span[0][:4] != span[1][:4]:
+        return f'（{span[0].replace("-", "/")}〜{span[1].replace("-", "/")}）'
+    return f'（{_md(span[0])}〜{_md(span[1])}）'
+
+
 def _spark(points, invert, back, path=None):
     """The judged window only: the last back+1 observations."""
     vals = [num(v) for _, v in points or [] if num(v) is not None][-(back + 1):]
@@ -270,19 +284,21 @@ def _meeting_date(text):
 
 
 def _rate_ranges(target_rates):
-    """Rate rows with their bounds ('_low', '_mid'), sorted; None unless every range is 'low-high' with finite
-    low < high and no range appears twice."""
-    rates, seen = [], set()
+    """Rate rows with their bounds ('_low', '_high', '_mid'), sorted; None unless every range is 'low-high'
+    with finite low < high and no two ranges overlap (a range may start where the previous one ends)."""
+    rates = []
     for rate in target_rates or []:
         try:
             low, high = (float(x) for x in str(rate.get('range')).split('-'))
         except (AttributeError, TypeError, ValueError):
             return None
-        if not (math.isfinite(low) and math.isfinite(high) and low < high) or (low, high) in seen:
+        if not (math.isfinite(low) and math.isfinite(high) and low < high):
             return None
-        seen.add((low, high))
-        rates.append({**rate, '_low': low, '_mid': (low + high) / 2})
-    return sorted(rates, key=lambda r: r['_low'])
+        rates.append({**rate, '_low': low, '_high': high, '_mid': (low + high) / 2})
+    rates.sort(key=lambda r: (r['_low'], r['_high']))
+    if any(b['_low'] < a['_high'] for a, b in zip(rates, rates[1:])):
+        return None
+    return rates
 
 
 def _expected_rate(rates, key):
@@ -321,7 +337,7 @@ def _fedwatch(data, mode, stamp):
         return None, f'次回FOMCの日付 {_md(meeting_day.isoformat())} が収集日より前'
     rates = _rate_ranges(fw.get('target_rates'))
     if rates is None:
-        return None, '確率表を読めない（レンジの上下・重複）'
+        return None, '確率表を読めない（レンジの上下・重なり）'
     now = _expected_rate(rates, 'current')
     if now is None:
         return None, '確率の合計が100%前後でない'
@@ -358,8 +374,9 @@ def _fedwatch(data, mode, stamp):
                '確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。'
                f'±{threshold:g}bp以上で強（隣のレンジへ確率{4 * threshold:g}ppの移動に相当）。'
                '確率の合計が100%前後でない表、次回会合の日付がない・読めない・収集日より前の表、'
-               'レンジの上下や重複が不正な表は使わない',
-               note=f'確率 {distribution}', viz={'type': 'probs', 'segments': segments}), None
+               'レンジの上下や重なりが不正な表は使わない',
+               note=f'確率 {distribution}' + (f'。{window_name}列の比較日時は提供元の表示になく未確認' if origin.startswith('提供表') else ''),
+               viz={'type': 'probs', 'segments': segments}), None
 
 
 MATERIALS = {
@@ -372,7 +389,7 @@ MATERIALS = {
 def bias_rows(data, stamp, mode, source=None):
     """Rows for the board. Returns (items, bindings, notes); notes list the missing materials and why.
     Each row records its material and factor (FACTOR)."""
-    items, bindings, notes, why, origins = [], [], [], {}, {}
+    items, bindings, notes, why, origins, kinds = [], [], [], {}, {}, {}
     weekly = mode == 'weekly'
     long_g, short_g = GROUPS['long'], GROUPS['short'][mode]
     fred = data.get('fred') or {}
@@ -385,8 +402,10 @@ def bias_rows(data, stamp, mode, source=None):
             if binding:
                 bindings.append({'figure': 'bias', 'label': item['label'], 'index': len(items) - 1, **binding})
 
-    def skip(name, reason):
-        why.setdefault(name, reason)
+    def skip(name, reason, kind='欠測'):
+        # 欠測: no usable value. 判定外: the value was obtained but cannot be judged (no percentile, news unread).
+        if name not in why:
+            why[name], kinds[name] = reason, kind
 
     # --- long: real rates, dollar, news / geopolitics, central-bank buying
     s = fred.get('DFII10') or {}
@@ -433,7 +452,9 @@ def bias_rows(data, stamp, mode, source=None):
         else:
             skip('ドル（20営業日）', f'DXY {late}／広義ドル指数 {broad or "20営業日前の値なし"}')
     news = news_verdict(source)
-    if news:
+    if news and NEWS_UNREAD.search(news['summary']):
+        skip('ニュース・地政学', '原稿が本文未確認で中立とした', kind='判定外')
+    elif news:
         keep('ニュース・地政学', row(long_g, 'ニュース・地政学（原稿の判断）', news['summary'], '直近のニュース・要人発言・地政学', '—',
                                 news['side'], news['strength'], '本文', '原稿が見出し・本文の確認結果から付けた向き。'
                                 '金利・ドルの動きそのものは別の行で数えるため、それ以外の材料で判断する',
@@ -469,10 +490,11 @@ def bias_rows(data, stamp, mode, source=None):
             all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close')):
         change, places = shown(us2y['change'], 3, 0.05)
         side, strength = judge(us2y['change'], 0.05, -1)
-        keep('米2年債', row(short_g, '米2年債利回り（当日）', f'{us2y["value"]:.3f}%', f'前日終値 {us2y["prev_close"]:.3f}%',
+        ep = max(3, places)  # both ends at the difference's precision, so the printed ends give the printed change
+        keep('米2年債', row(short_g, '米2年債利回り（当日）', f'{us2y["value"]:.{ep}f}%', f'前日終値 {us2y["prev_close"]:.{ep}f}%',
                          f'{change:+.{places}f}pp', side, strength, f'{us2y["as_of_jst"][5:].replace("-", "/")} JST',
                          '上昇は金の逆風、低下は追い風。前日比±0.05pp以上で強（CNBCの当日値）',
-                         viz={'type': 'delta', 'from': number(us2y['prev_close'], 3), 'to': number(us2y['value'], 3),
+                         viz={'type': 'delta', 'from': number(us2y['prev_close'], ep), 'to': number(us2y['value'], ep),
                               'invert': True, 'scale': 0.05},
                          bind=('us_yields.US2Y.change', us2y['change']), digits=places, unit='pp'))
     else:
@@ -488,10 +510,11 @@ def bias_rows(data, stamp, mode, source=None):
             threshold = 0.10 if weekly else 0.05
             change, places = shown(v1 - v0, 2, threshold)
             side, strength = judge(v1 - v0, threshold, -1)
+            ep = max(2, places)
             viz = _spark(s.get('recent'), True, back, 'fred.DGS2.recent') if weekly else \
-                {'type': 'delta', 'from': number(v0, 2), 'to': number(v1, 2), 'invert': True, 'scale': threshold}
-            keep('米2年債', row(short_g, f'米2年債利回り（{"5営業日" if weekly else "前営業日比"}）', f'{fmt(v1)}%',
-                             f'{_md(d0)} {fmt(v0)}%', f'{change:+.{places}f}pp', side, strength, _md(d1),
+                {'type': 'delta', 'from': number(v0, ep), 'to': number(v1, ep), 'invert': True, 'scale': threshold}
+            keep('米2年債', row(short_g, f'米2年債利回り（{"5営業日" if weekly else "前営業日比"}）', f'{fmt(v1, ep)}%',
+                             f'{_md(d0)} {fmt(v0, ep)}%', f'{change:+.{places}f}pp', side, strength, _md(d1),
                              f'上昇は金の逆風、低下は追い風。±{threshold:.2f}pp以上で強（FRED DGS2）', viz=viz,
                              bind=(f'fred.DGS2.recent.{len(s["recent"]) - 1}.1', v1), unit='%'))
     if weekly:
@@ -562,23 +585,22 @@ def bias_rows(data, stamp, mode, source=None):
     cot_date = (cot.get('data') or {}).get('date')
     if not isinstance(mm, dict) or num(mm.get('net')) is None:
         skip('投機筋の建玉', '取得失敗' if not present(cot) else '買い越しの値なし')
-    elif num(p.get('percentile')) is None:
-        skip('投機筋の建玉', f'自前履歴{p.get("history_n") or 0}週で百分位なし（{MIN_SAMPLES}週以上で判定）')
-    elif not 0 <= p['percentile'] <= 100:
-        skip('投機筋の建玉', '百分位が0〜100の外')
     elif any(num(mm.get(k)) is None or mm[k] < 0 for k in ('long', 'short')) or abs(mm['long'] - mm['short'] - mm['net']) > 0.5:
         skip('投機筋の建玉', '買い−売り＝差引が合わない')
-    elif str(p.get('report_date')) != str(cot_date):
-        skip('投機筋の建玉', '百分位と建玉の報告日が違う')
     elif stale_day(cot_date, stamp, MAX_AGE_DAYS['COT']):
         skip('投機筋の建玉', stale_day(cot_date, stamp, MAX_AGE_DAYS['COT']))
+    elif num(p.get('percentile')) is None:
+        skip('投機筋の建玉', f'買い越し{mm["net"]:,.0f}枚は取得・自前履歴{p.get("history_n") or 0}週で百分位なし'
+                         f'（{MIN_SAMPLES}週以上で判定）', kind='判定外')
+    elif not 0 <= p['percentile'] <= 100:
+        skip('投機筋の建玉', '百分位が0〜100の外')
+    elif str(p.get('report_date')) != str(cot_date):
+        skip('投機筋の建玉', '百分位と建玉の報告日が違う')
     else:
         pct, places = shown(p['percentile'], 1, 90, below=(10,))
         side = 'down' if p['percentile'] >= 90 - FLOAT_NOISE else 'up' if p['percentile'] <= 10 + FLOAT_NOISE else 'flat'
         change = num(mm.get('net_change'))
-        span = [str(x)[:10] for x in p.get('window') or []]
-        span = (f'（{span[0].replace("-", "/")}〜{span[1].replace("-", "/")}）' if span[0][:4] != span[1][:4]
-                else f'（{_md(span[0])}〜{_md(span[1])}）') if len(span) == 2 else ''
+        span = _span(p.get('window'))
         share = num(p.get('mm_net_pct_oi'))
         keep('投機筋の建玉', row(short_g, '投機筋の買い越し（COT Managed Money）', f'{mm["net"]:,.0f}枚',
                               (f'建玉比 {share:.1f}%の' if share is not None else '') + f'{p.get("history_n")}週百分位 '
@@ -600,21 +622,24 @@ def bias_rows(data, stamp, mode, source=None):
         skip('個人の比率', '取得失敗')
     elif long_pct is None or short_pct is None:
         skip('個人の比率', 'ロング・ショート比率の値なし')
-    elif num(pr.get('percentile')) is None:
-        skip('個人の比率', f'同じ取得元の自前履歴{pr.get("history_n") or 0}件で百分位なし'
-                        f'（{MIN_SAMPLES}件・{MIN_DISTINCT}種以上で判定）')
     elif not (0 <= long_pct <= 100 and 0 <= short_pct <= 100) or abs(long_pct + short_pct - 100) > 0.5:
         skip('個人の比率', 'ロングとショートの合計が100%でない')
-    elif not 0 <= pr['percentile'] <= 100:
-        skip('個人の比率', '百分位が0〜100の外')
     elif stale_time(r.get('timestamp'), stamp):
         skip('個人の比率', stale_time(r.get('timestamp'), stamp))
+    elif pr and (pr.get('source') != r.get('source') or num(pr.get('long_pct')) is None
+                 or abs(pr['long_pct'] - long_pct) > FLOAT_NOISE):
+        skip('個人の比率', '百分位が現在の比率と別の観測')
+    elif num(pr.get('percentile')) is None:
+        skip('個人の比率', f'ロング{fmt(long_pct, 1)}%は取得・同じ取得元の自前履歴{pr.get("history_n") or 0}件で百分位なし'
+                        f'（{MIN_SAMPLES}件・{MIN_DISTINCT}種以上で判定）', kind='判定外')
+    elif not 0 <= pr['percentile'] <= 100:
+        skip('個人の比率', '百分位が0〜100の外')
     else:
         pct, places = shown(pr['percentile'], 1, 90, below=(10,))
         side = 'down' if pr['percentile'] >= 90 - FLOAT_NOISE else 'up' if pr['percentile'] <= 10 + FLOAT_NOISE else 'flat'
         keep('個人の比率', row(short_g, f'個人のロング比率（{r.get("source") or "提供元不明"}）',
                             f'ロング {fmt(long_pct, 1)}%・ショート {fmt(short_pct, 1)}%',
-                            f'自前履歴{pr.get("history_n")}件の百分位 {pct:.{places}f}', '—', side, 'weak',
+                            f'自前履歴{pr.get("history_n")}件{_span(pr.get("window"))}の百分位 {pct:.{places}f}', '—', side, 'weak',
                             f'記録 {_stamp(r.get("timestamp"))}',
                             '多数派の逆。百分位90以上（ロング過多）は下向き、10以下は上向き。どちらも弱（0.5票）。その間は中立',
                             word=None if side != 'flat' else '中立（偏りなし）',
@@ -626,12 +651,15 @@ def bias_rows(data, stamp, mode, source=None):
             if name not in got:
                 origin = origins.get(name, origin)
                 detail = f'{origin}・{why[name]}' if why.get(name) else origin
-                notes.append(f'欠測: {name}（{detail}）。{GROUPS["long"] if group == "long" else short_g}の集計に入れていない')
+                notes.append(f'{kinds.get(name, "欠測")}: {name}（{detail}）。'
+                             f'{GROUPS["long"] if group == "long" else short_g}の集計に入れていない')
     reason = nowcast_missing(data, stamp, mode)
     if reason:
         notes.append(f'欠測: 予測との差（Cleveland Fed・{reason}）。{short_g}の集計に入れていない')
     if source is not None and 'ニュース・地政学' not in got:
-        notes.append(f'欠測: ニュース・地政学（原稿の「ニュース・地政学:」行）。{long_g}の集計に入れていない')
+        detail = f'原稿の「ニュース・地政学:」行・{why["ニュース・地政学"]}' if why.get('ニュース・地政学') \
+            else '原稿の「ニュース・地政学:」行'
+        notes.append(f'{kinds.get("ニュース・地政学", "欠測")}: ニュース・地政学（{detail}）。{long_g}の集計に入れていない')
     return items, bindings, notes
 
 
@@ -708,7 +736,7 @@ def nowcast_missing(data, stamp, mode):
                adopted_nowcasts(calendar, data.get('inflation_nowcast'), stamp, mode)}
     wanted = list(scheduled.items())[:NOWCAST_MAX_PER_WINDOW]
     nowcast = data.get('inflation_nowcast')
-    problem = ('取得失敗' if not isinstance(nowcast, dict) else f'取得失敗（{nowcast["error"]}）' if nowcast.get('error')
+    problem = (f'取得失敗（{nowcast["error"]}）' if isinstance(nowcast, dict) and nowcast.get('error')
                else nowcast_fetch_problem(nowcast, stamp))
     reasons = {}
     for key, (when, ev) in wanted:
@@ -881,8 +909,15 @@ def bias_figure(data, stamp, mode, source=None):
     blend_text = rules['総合の注記']
     own = source_verdicts(source)
     reason = reason_line(source)
-    missing = {name: [n.split('（')[0].removeprefix('欠測: ') for n in notes if f'{group}の集計' in n]
-               for name, group in groups.items()}
+    # Per horizon: '欠測: A・B。判定外: C' (欠測 = no usable value, 判定外 = obtained but not judged).
+    missing = {}
+    for name, group in groups.items():
+        kinds = {}
+        for n in notes:
+            if f'{group}の集計' in n:
+                kind, _, rest = n.partition(': ')
+                kinds.setdefault(kind, []).append(rest.split('（')[0])
+        missing[name] = '。'.join(f'{kind}: {"・".join(names)}' for kind, names in kinds.items())
     verdicts, rows = [], []
     for name in ('長期', '短期', '総合'):
         side, strength = _rule_pair(rules, name)
@@ -903,7 +938,7 @@ def bias_figure(data, stamp, mode, source=None):
         if name in groups:
             factors = rules[name]['factors']
             sub = (f'規則の集計: {rule_word}' + (f'（{rules[name]["detail"]}）' if factors else '')
-                   + (f'。欠測: {"・".join(missing[name])}' if missing[name] else ''))
+                   + (f'。{missing[name]}' if missing[name] else ''))
             short = f'規則の集計 {rule_word}' + (f'・要因{len(factors)}' if factors else '')
         else:
             sub = f'長期×短期の規則: {rule_word}' + (f'。{blend_text}' if blend_text and rule_word != '材料なし' else '')
@@ -913,7 +948,7 @@ def bias_figure(data, stamp, mode, source=None):
         show = differs or (name in groups and (rule_word == '材料なし' or bool(missing[name]))) \
             or (name == '総合' and bool(blend_text))
         # A verdict that follows the tally only names what is missing (the tally is in the group header).
-        detail = (f'欠測: {"・".join(missing[name])}' if name in groups and missing[name] and not differs
+        detail = (missing[name] if name in groups and missing[name] and not differs
                   and rule_word != '材料なし' else sub)
         verdicts.append({'label': name, 'group': groups.get(name), 'symbol': main['symbol'], 'direction': main['word'],
                          'tone': main['tone'], 'origin': main['origin'], 'detail': detail, 'short': short,
@@ -1073,7 +1108,10 @@ def liquidity_figure(data, stamp, mode, source=None):
                          'value': number(value), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc'),
                          'state_path': f'xau_levels.levels.{index}.state', 'state': level.get('state')})
     fetched = _parse_jst(q.get('fetched_at'))
-    observed = f'取得 {fetched.strftime("%m/%d %H:%M")} JST' if fetched else '取得時刻の記録なし'
+    # The distances are measured from this price: one fetched more than an hour before the cutoff (or after
+    # it, or at an unknown time) is a reference only.
+    quote_late = stale_time(q.get('fetched_at'), stamp, QUOTE_FRESH_HOURS)
+    observed = f'{quote_late}・参考値' if quote_late else f'取得 {fetched.strftime("%m/%d %H:%M")} JST'
     items.append(_liq('current', '現在値', fmt(price), price, state='current', state_word=observed, icon='▶', value=price))
     bindings.append({'figure': 'liquidity', 'label': '現在値', 'path': 'report_quote.close', 'value': number(price),
                      'digits': 2, 'unit': 'USD/oz', 'observedAt': str(q.get('fetched_at') or q.get('datetime') or '')})
@@ -1140,7 +1178,8 @@ def liquidity_figure(data, stamp, mode, source=None):
     rows.append('流動性マップの読み方: ' + legend)
     figure = {'id': 'liquidity', 'type': 'liquidity_map', 'kicker': '意識する価格',
               'title': '流動性の位置（Liquidity）',
-              'subtitle': f'上ほど高い価格。●は確定足でまだ抜けていない水準、帯は{"1週" if weekly else "1日"}の想定変動',
+              'subtitle': (f'上ほど高い価格。状態は{last_bar}開始の確定1時間足まで。' if last_bar else '上ほど高い価格。')
+                          + f'●はまだ抜けていない水準、帯は{"1週" if weekly else "1日"}の想定変動',
               'items': items, 'aux': aux, 'cautions': cautions, 'band': band, 'legend': legend,
               'sources': [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
                           {'label': 'FRED GVZCLS', 'url': 'https://fred.stlouisfed.org/series/GVZCLS'},
@@ -1247,6 +1286,8 @@ def calendar_shortfall(calendar):
     # Records restored from the archive (from_history) say nothing about what the page listed.
     events = [ev for ev in calendar.get('events') or [] if not (isinstance(ev, dict) and ev.get('from_history'))]
     tabs = [str(t) for t in calendar.get('missing_tabs') or []]
+    # A week tab that was opened but gave no ★★★ row (all countries, a whole week) was not read.
+    tabs += [str(t) for t, n in (calendar.get('tab_counts') or {}).items() if n == 0 and str(t) not in tabs]
     why = None
     if calendar.get('error'):
         why = _clean(calendar['error'])[:80]
@@ -1255,7 +1296,7 @@ def calendar_shortfall(calendar):
     if why:
         return 'failed', f'カレンダー取得失敗のため予定を確認できない（Investing.com: {why}）'
     if tabs:
-        return 'incomplete', f'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ {"・".join(tabs)} が見つからない）'
+        return 'incomplete', f'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ {"・".join(tabs)} を読めない）'
     return None
 
 
@@ -1270,7 +1311,8 @@ def event_figure(data, stamp, mode):
     surprises = {(_clean(e.get('indicator')), str(e.get('released_at_jst', ''))): (k, e)
                  for k, e in enumerate(data.get('macro_surprises') or [])}
     levels = data.get('xau_levels')
-    nowcasts = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar.get('events') or [], data.get('inflation_nowcast'), stamp, mode)}
+    # The calendar record itself, so a calendar with an error adopts nothing here either (as on the board).
+    nowcasts = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar, data.get('inflation_nowcast'), stamp, mode)}
     groups = release_groups(data, stamp, mode)
     items, rows, bindings, notes, last_time = [], [], [], [], None
     period = event_period(stamp, mode)
@@ -1295,8 +1337,11 @@ def event_figure(data, stamp, mode):
                 path = f'macro_surprises.{k}'
             record = s or ev
             surprise = compute_surprise(record) if actual != '—' else None
-            if actual == '—':
-                diff, symbol, word, tone = '結果待ち', '—', '結果待ち', 'neutral'
+            if actual == '—' and previous == '—' and forecast == '—':
+                # A statement, a speech or minutes: no number to compare; the report's news line judges it.
+                diff, symbol, word, tone = '数値の結果なし（声明・発言など）', '—', 'ニュース行で判断', 'neutral'
+            elif actual == '—':
+                diff, symbol, word, tone = '結果を未取得（発表時刻は経過）', '—', '結果未取得', 'neutral'
             elif surprise:
                 sign = gold_sign(record)
                 provenance = '' if s and str(s.get('forecast_provenance', '')).startswith('発表前記録') else '・予想は発表後の取得'

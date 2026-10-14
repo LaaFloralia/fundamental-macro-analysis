@@ -40,7 +40,13 @@ def page_of(data, source=SOURCE):
     ({}, ('failed', FAILED.format('取得の記録なし'))),
     (None, ('failed', FAILED.format('取得の記録なし'))),
     ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')], 'missing_tabs': ['Next Week']},
-     ('incomplete', 'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ Next Week が見つからない）')),
+     ('incomplete', 'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ Next Week を読めない）')),
+    # A week tab that was opened but gave no row was not read either.
+    ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')],
+      'tab_counts': {'This Week': 1, 'Next Week': 0}},
+     ('incomplete', 'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ Next Week を読めない）')),
+    ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')],
+      'tab_counts': {'This Week': 1, 'Next Week': 7}}, None),
     # Releases restored from the archive say nothing about what the page listed.
     ({'error': None, 'events': [{**ev('Friday, October 9, 2026', '21:30', 'Nonfarm Payrolls (Sep)'), 'from_history': True}]},
      ('failed', FAILED.format('予定が0件')))])
@@ -235,6 +241,7 @@ def test_retail_split_widths_follow_the_given_values(left, right):
 def test_retail_split_for_a_ratio_within_tolerance_agrees_with_the_text():
     data = sample()
     data['retail_sentiment']['XAUUSD'].update(long_pct=50.3, short_pct=50.0)
+    data['offchart_features']['positioning']['retail']['XAUUSD']['long_pct'] = 50.3
     row = next(i for i in board.bias_rows(data, NOW, 'daily', SOURCE)[0] if i['label'].startswith('個人のロング比率'))
     assert row['display'] == 'ロング 50.3%・ショート 50.0%' and (row['viz']['left'], row['viz']['right']) == (50.3, 50.0)
     long_w, short_w = split_widths(row['viz']['left'], row['viz']['right'])

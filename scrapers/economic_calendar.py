@@ -207,7 +207,10 @@ async def scrape_economic_calendar() -> dict:
                 timezone_id="Asia/Tokyo",
                 ignore_https_errors=True,
             )
+            tab_counts = {}
+
             async def load_once():
+                tab_counts.clear()
                 page = await context.new_page()
                 try:
                     await page.goto(url, timeout=BROWSER_TIMEOUT, wait_until="domcontentloaded")
@@ -220,7 +223,9 @@ async def scrape_economic_calendar() -> dict:
                             continue
                         await button.click()
                         await page.wait_for_timeout(3000)
-                        events.extend(await _scrape_week(page, label))
+                        week = await _scrape_week(page, label)
+                        tab_counts[label] = len(week)  # a week tab with no ★★★ row is a failed read
+                        events.extend(week)
                     body = "" if events else (await page.inner_text("body"))[:5000]
                     return events, missing_tabs, body
                 finally:
@@ -229,6 +234,7 @@ async def scrape_economic_calendar() -> dict:
             events, missing_tabs, body, attempts = await _load_with_retry(load_once)
             result["events"] = events
             result["attempts"] = attempts
+            result["tab_counts"] = dict(tab_counts)
             if missing_tabs:
                 result["missing_tabs"] = missing_tabs
             if not events:

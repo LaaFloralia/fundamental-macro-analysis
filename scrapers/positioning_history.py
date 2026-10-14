@@ -65,14 +65,18 @@ def percentile_rank(history: Iterable[float], value: float) -> Optional[float]:
     return round(100 * (below + 0.5 * equal) / len(values), 1)
 
 
-def _retail_series(rows: list[dict], symbol: str, source: str, before: str) -> list[float]:
+def _retail_by_hour(rows: list[dict], symbol: str, source: str, before: str) -> dict:
     # 同じ取得元の値だけ、1時間に1件へまとめる（source_timestamp は取得時刻で観測時刻ではないため使わない）
     by_hour = {}
     for row in rows:
         r = (row.get("retail") or {}).get(symbol)
         if r and r.get("source") == source and row.get("recorded_at", "") < before:
             by_hour[row["recorded_at"][:13]] = r["long_pct"]
-    return list(by_hour.values())
+    return by_hour
+
+
+def _retail_series(rows: list[dict], symbol: str, source: str, before: str) -> list[float]:
+    return list(_retail_by_hour(rows, symbol, source, before).values())
 
 
 def _cot_series(rows: list[dict], before_report: str) -> list[float]:
@@ -161,9 +165,11 @@ def positioning_numbers(snapshot: dict, rows: list[dict]) -> dict:
     now = snapshot.get("recorded_at", "")
     out = {"retail": {}, "cot_gold_mm": None}
     for symbol, r in (snapshot.get("retail") or {}).items():
-        series = _retail_series(rows, symbol, r["source"], now)
+        hours = _retail_by_hour(rows, symbol, r["source"], now)
         out["retail"][symbol] = {"source": r["source"], "long_pct": r["long_pct"],
-                                 "percentile": percentile_rank(series, r["long_pct"]), "history_n": len(series)}
+                                 "percentile": percentile_rank(list(hours.values()), r["long_pct"]),
+                                 "window": [min(hours)[:10], max(hours)[:10]] if hours else None,
+                                 "history_n": len(hours)}
     cot = snapshot.get("cot_gold_mm")
     if cot:
         weeks = _cot_by_week(rows, cot["report_date"])

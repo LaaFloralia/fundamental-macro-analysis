@@ -177,9 +177,12 @@ def nowcast_age(as_of, stamp: datetime) -> Optional[int]:
 
 
 def nowcast_fetch_problem(nowcast, stamp: datetime) -> Optional[str]:
-    """Why the nowcast record cannot be used at the cutoff, or None: no fetch time, a fetch after the
-    cutoff (plus NOWCAST_CLOCK_SKEW), or a fetch older than NOWCAST_MAX_AGE_DAYS."""
-    raw = nowcast.get("timestamp") if isinstance(nowcast, dict) else None
+    """Why the nowcast record cannot be used at the cutoff, or None: a failed fetch (no record or an
+    error), no fetch time, a fetch after the cutoff (plus NOWCAST_CLOCK_SKEW), or a fetch older than
+    NOWCAST_MAX_AGE_DAYS."""
+    if not isinstance(nowcast, dict) or nowcast.get("error"):
+        return "取得失敗"
+    raw = nowcast.get("timestamp")
     fetched = stamp_of(raw) if raw else None
     if fetched is None:
         return "取得時刻の記録なし"
@@ -231,13 +234,16 @@ def stamp_of(value) -> Optional[datetime]:
 
 
 def format_us_event_lines(events, nowcast, now, mode: str = "daily") -> list[str]:
-    """Parent-model input: US Tier A/B releases, with the nowcast gap only where the board uses it."""
+    """Parent-model input: US Tier A/B releases, with the nowcast gap only where the board uses it.
+    `events` is the calendar record (preferred: its error is checked the same way as on the board) or
+    its event list."""
     from scrapers.macro_surprise import event_datetime_jst
     stamp = stamp_of(now)
+    calendar, events = events, (events.get("events") if isinstance(events, dict) else events)
     # With a time, the same releases and period as the HTML table (event_window).
     lines = [f"### 米国の重要指標（{window_label(stamp, mode)}。HTMLの表と同じ期間、Tier A=常時・Tier B=近接時、コード分類）"
              if stamp else "### 米国の重要指標（Tier A=常時・Tier B=近接時、コード分類）"]
-    adopted = {id(ev): gap for _, ev, gap in adopted_nowcasts(events, nowcast, stamp, mode)} if stamp else {}
+    adopted = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar, nowcast, stamp, mode)} if stamp else {}
     rows = []
     for ev in events or []:
         level, when = tier(ev), event_datetime_jst(ev)

@@ -1137,7 +1137,7 @@ def format_scraped_data(data: dict) -> str:
                 cutoff = analysis_cutoff(data)
             except Exception:
                 cutoff = None
-            lines.extend(format_us_event_lines(calendar["events"], data.get("inflation_nowcast"), cutoff,
+            lines.extend(format_us_event_lines(calendar, data.get("inflation_nowcast"), cutoff,
                                                data.get("mode") or "daily"))
     if data.get("news_headlines"):
         lines.append("")
