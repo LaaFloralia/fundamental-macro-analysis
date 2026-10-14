@@ -538,7 +538,7 @@ def bias_rows(data, stamp, mode, source=None):
         not stale_time(us2y.get('as_of_jst'), stamp) and \
         all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close'))
     # CNBC gives the change and both ends; ends that contradict the change are not drawn.
-    mismatch = today and abs((us2y['value'] - us2y['prev_close']) - us2y['change']) > 0.0015
+    mismatch = today and abs((num(us2y['value']) - num(us2y['prev_close'])) - num(us2y['change'])) > 0.0015
     if today and not mismatch:
         # Both ends at one precision with the change, so the printed ends give the printed change.
         change, places, ep = shown_ends(us2y['change'], us2y['value'], us2y['prev_close'], 3, 0.05)
