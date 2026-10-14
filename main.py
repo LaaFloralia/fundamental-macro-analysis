@@ -189,14 +189,16 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
         # The calendar failed or came back empty: the releases already recorded in the archive still count, so the
         # event table keeps its results (the page cannot confirm the schedule; that is stated separately).
         # The restored events are also kept (RESTORED_CALENDAR); statements without a number are included but
-        # have no surprise. When attach_levels already restored them, its set stays: the levels were made from it.
+        # have no surprise. When attach_levels already restored them, its set is used (not read again): the levels
+        # were made from it, and the archive may have changed since.
         try:
             history, actuals = load_forecast_history(), load_actual_history()
-            restored = restored_calendar(since, now, history, actuals, load_release_history())
-            results.setdefault(RESTORED_CALENDAR, restored)
+            if RESTORED_CALENDAR not in results:
+                results[RESTORED_CALENDAR] = restored_calendar(since, now, history, actuals, load_release_history())
+            # A stored set whose restore failed (events None) gives no surprises rather than another set.
             results["macro_surprises"] = released_surprises(
-                restored["events"], now, lookback_hours=(now - since).total_seconds() / 3600,
-                forecast_history=history, actual_history=actuals)
+                results[RESTORED_CALENDAR].get("events") or [], now,
+                lookback_hours=(now - since).total_seconds() / 3600, forecast_history=history, actual_history=actuals)
             print(f"  [OK]    calendar_history: カレンダー取得なし・発表済みの記録から {len(results['macro_surprises'])} 件を復元")
         except Exception as e:
             print(f"  [WARN]  calendar_history: {e}")

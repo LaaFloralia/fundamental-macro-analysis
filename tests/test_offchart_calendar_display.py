@@ -33,7 +33,8 @@ def page_of(data, source=SOURCE):
 # ------------------------------------------------------------------ F10: coverage
 
 @pytest.mark.parametrize('calendar,expected', [
-    ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')]}, None),
+    ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')],
+      'tab_counts': {'This Week': 1, 'Next Week': 3}}, None),
     ({'error': 'ページ取得失敗: timeout', 'events': []}, ('failed', FAILED.format('ページ取得失敗: timeout'))),
     ({'error': None, 'events': []}, ('failed', FAILED.format('予定が0件'))),
     ({'error': None, 'events': [], 'missing_tabs': ['Next Week']}, ('failed', FAILED.format('予定が0件・週タブ Next Week が見つからない'))),
@@ -47,6 +48,9 @@ def page_of(data, source=SOURCE):
      ('incomplete', 'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ Next Week を読めない）')),
     ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')],
       'tab_counts': {'This Week': 1, 'Next Week': 7}}, None),
+    # A collection that did not record the per-tab counts cannot show that every week tab was read.
+    ({'error': None, 'events': [ev('Monday, October 12, 2026', '21:30', 'Initial Jobless Claims')]},
+     ('unknown', 'カレンダーの取得範囲を確認できず、予定の抜けがないか分からない（Investing.com: 週タブごとの件数の記録なし）')),
     # Releases restored from the archive say nothing about what the page listed.
     ({'error': None, 'events': [{**ev('Friday, October 9, 2026', '21:30', 'Nonfarm Payrolls (Sep)'), 'from_history': True}]},
      ('failed', FAILED.format('予定が0件')))])

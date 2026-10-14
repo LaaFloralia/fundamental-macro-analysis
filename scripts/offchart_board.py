@@ -21,8 +21,8 @@ from zoneinfo import ZoneInfo
 from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_sign
 from scrapers.positioning_history import MIN_DISTINCT, MIN_SAMPLES
 from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, NOWCAST_MAX_PER_WINDOW, adopted_nowcasts,
-                                 display_name, event_window, gap_display, nowcast_age, nowcast_fetch_problem,
-                                 nowcast_gap, results_start, tier, tier_scope, window_label)
+                                 display_name, event_window, gap_display, is_statement, nowcast_age,
+                                 nowcast_fetch_problem, nowcast_gap, results_start, tier, tier_scope, window_label)
 from scripts.report_bundle import number
 
 JST = ZoneInfo('Asia/Tokyo')
@@ -112,6 +112,20 @@ def shown(raw, digits, *cuts, below=()):
         if classes(value) == want:
             return value, places
     return number(raw, 10), 10
+
+
+def shown_ends(raw, cur, base, places, *cuts, scale=1):
+    """(change, change digits, end digits): one precision for a change and its two ends. The change agrees
+    with the verdict (shown) and the ends rounded to the end digits differ by exactly the shown change
+    (×scale in the change's unit: 100 for % -> bp). More digits until both hold; the ends stop at six. A source
+    whose change is not the difference of its ends gets the shortest change that agrees with the verdict."""
+    shift = round(math.log10(scale))
+    for p in range(places, 7):
+        change, cp = shown(raw, p - shift, *cuts)
+        if cp == p - shift and abs(number((number(cur, p) - number(base, p)) * scale, cp) - change) < FLOAT_NOISE:
+            return change, cp, p
+    change, cp = shown(raw, places - shift, *cuts)
+    return change, cp, max(places, cp + shift)
 
 
 def _zero(x):
@@ -400,11 +414,11 @@ def _fedwatch(data, mode, stamp):
         label, origin = f'政策金利の織り込み（{day}比）', f'自前履歴 {day}'
     raw = (now - before) * 100  # basis points
     threshold = FEDWATCH_STRONG_BP[mode]
-    change, places = shown(raw, 1, threshold)
+    change, places, ep = shown_ends(raw, now, before, 3, threshold, scale=100)
     side, strength = judge(raw, threshold, -1)
     distribution = '・'.join(f'{r["range"]} {r["current"]:.1f}%' for r in rates)
     segments = [{'label': r['range'], 'value': number(r['current'], 1)} for r in rates]
-    return row(GROUPS['short'][mode], label, f'期待 {now:.3f}%', f'{before:.3f}%（{origin}）', f'{change:+.{places}f}bp',
+    return row(GROUPS['short'][mode], label, f'期待 {fmt(now, ep)}%', f'{fmt(before, ep)}%（{origin}）', f'{change:+.{places}f}bp',
                side, strength, f'次回FOMC {_meeting(meeting)}',
                '確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。'
                f'±{threshold:g}bp以上で強（隣のレンジへ確率{4 * threshold:g}ppの移動に相当）。'
@@ -448,10 +462,10 @@ def bias_rows(data, stamp, mode, source=None):
     if late:
         skip('実質金利', late)
     elif num(s.get('change_20obs')) is not None and num(s.get('value_20obs_ago')) is not None:
-        change, places = shown(s['change_20obs'], 2, 0.10)
+        change, places, ep = shown_ends(s['change_20obs'], s['value'], s['value_20obs_ago'], 2, 0.10)
         side, strength = judge(s['change_20obs'], 0.10, -1)
-        keep('実質金利', row(long_g, '実質金利（米10年TIPS）', f'{fmt(s["value"])}%',
-                          f'20営業日前 {fmt(s["value_20obs_ago"])}%（{_md(s.get("as_of_20obs_ago"))}）', f'{change:+.{places}f}pp',
+        keep('実質金利', row(long_g, '実質金利（米10年TIPS）', f'{fmt(s["value"], ep)}%',
+                          f'20営業日前 {fmt(s["value_20obs_ago"], ep)}%（{_md(s.get("as_of_20obs_ago"))}）', f'{change:+.{places}f}pp',
                           side, strength, _md(s.get('as_of_date')), '上昇は金の逆風、低下は追い風。20営業日で±0.10pp以上で強',
                           note=_correlation_note(data, 'DFII10'), viz=_spark(s.get('recent'), True, 20, 'fred.DFII10.recent'),
                           bind=('fred.DFII10.change_20obs', s['change_20obs']), digits=places, unit='pp'))
@@ -523,10 +537,10 @@ def bias_rows(data, stamp, mode, source=None):
     if not weekly and isinstance(us2y, dict) and us2y.get('stale') is False and \
             not stale_time(us2y.get('as_of_jst'), stamp) and \
             all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close')):
-        change, places = shown(us2y['change'], 3, 0.05)
+        # Both ends at one precision with the change, so the printed ends give the printed change.
+        change, places, ep = shown_ends(us2y['change'], us2y['value'], us2y['prev_close'], 3, 0.05)
         side, strength = judge(us2y['change'], 0.05, -1)
-        ep = max(3, places)  # both ends at the difference's precision, so the printed ends give the printed change
-        keep('米2年債', row(short_g, '米2年債利回り（当日）', f'{us2y["value"]:.{ep}f}%', f'前日終値 {us2y["prev_close"]:.{ep}f}%',
+        keep('米2年債', row(short_g, '米2年債利回り（当日）', f'{fmt(us2y["value"], ep)}%', f'前日終値 {fmt(us2y["prev_close"], ep)}%',
                          f'{change:+.{places}f}pp', side, strength, f'{us2y["as_of_jst"][5:].replace("-", "/")} JST',
                          '上昇は金の逆風、低下は追い風。前日比±0.05pp以上で強（CNBCの当日値）',
                          viz={'type': 'delta', 'from': number(us2y['prev_close'], ep), 'to': number(us2y['value'], ep),
@@ -543,9 +557,8 @@ def bias_rows(data, stamp, mode, source=None):
         else:
             (d1, v1), (d0, v0) = pair
             threshold = 0.10 if weekly else 0.05
-            change, places = shown(v1 - v0, 2, threshold)
+            change, places, ep = shown_ends(v1 - v0, v1, v0, 2, threshold)
             side, strength = judge(v1 - v0, threshold, -1)
-            ep = max(2, places)
             viz = _spark(s.get('recent'), True, back, 'fred.DGS2.recent') if weekly else \
                 {'type': 'delta', 'from': number(v0, ep), 'to': number(v1, ep), 'invert': True, 'scale': threshold}
             keep('米2年債', row(short_g, f'米2年債利回り（{"5営業日" if weekly else "前営業日比"}）', f'{fmt(v1, ep)}%',
@@ -598,14 +611,17 @@ def bias_rows(data, stamp, mode, source=None):
     if late:
         skip('GLD保有量', late)
     elif num(etf.get('change_5d_t')) is not None:
-        change, places = shown(etf['change_5d_t'], 2, 2.0)
+        tonnes = num(etf.get('tonnes'))
+        if tonnes is not None:
+            change, places, ep = shown_ends(etf['change_5d_t'], tonnes, tonnes - etf['change_5d_t'], 2, 2.0)
+        else:
+            (change, places), ep = shown(etf['change_5d_t'], 2, 2.0), 2
         side, strength = judge(etf['change_5d_t'], 2.0, +1)
         has_20 = num(etf.get('change_20d_t')) is not None
         bars = [{'label': '5営業日', 'value': change}] + ([{'label': '20営業日', 'value': number(etf['change_20d_t'], 2)}]
                                                         if has_20 else [])
-        tonnes = num(etf.get('tonnes'))
-        keep('GLD保有量', row(short_g, 'GLD保有量（5営業日）', f'{fmt(tonnes)} t' if tonnes is not None else '保有量',
-                            f'5営業日前 {fmt(tonnes - etf["change_5d_t"])} t' if tonnes is not None else '5営業日前',
+        keep('GLD保有量', row(short_g, 'GLD保有量（5営業日）', f'{fmt(tonnes, ep)} t' if tonnes is not None else '保有量',
+                            f'5営業日前 {fmt(tonnes - etf["change_5d_t"], ep)} t' if tonnes is not None else '5営業日前',
                             f'{change:+.{places}f} t', side, strength, _md(etf.get('as_of_date')),
                             '保有量の増加（設定超過）は追い風、減少（解約超過）は逆風。5営業日で±2t以上で強。20営業日は参考',
                             note=f'棒は左から5営業日・20営業日。20営業日 {fmt(etf["change_20d_t"], sign=True)} t' if has_20 else '',
@@ -674,7 +690,7 @@ def bias_rows(data, stamp, mode, source=None):
         side = 'down' if pr['percentile'] >= 90 - FLOAT_NOISE else 'up' if pr['percentile'] <= 10 + FLOAT_NOISE else 'flat'
         keep('個人の比率', row(short_g, f'個人のロング比率（{r.get("source") or "提供元不明"}）',
                             f'ロング {fmt(long_pct, 1)}%・ショート {fmt(short_pct, 1)}%',
-                            f'自前履歴{pr.get("history_n")}件{_span(pr.get("window"))}の百分位 {pct:.{places}f}', '—', side, 'weak',
+                            f'自前履歴{pr.get("history_n")}件{_span(pr.get("window")) or "（期間未確認）"}の百分位 {pct:.{places}f}', '—', side, 'weak',
                             f'記録 {_stamp(r.get("timestamp"))}',
                             '多数派の逆。百分位90以上（ロング過多）は下向き、10以下は上向き。どちらも弱（0.5票）。その間は中立',
                             word=None if side != 'flat' else '中立（偏りなし）',
@@ -1317,9 +1333,10 @@ def event_period(stamp, mode):
 
 
 def calendar_shortfall(calendar):
-    """None when the calendar fetch covered the whole window; else ('failed' | 'incomplete', line for the
-    reader). An error, an empty list or no record at all is a failed fetch (never "no event"); a week tab the
-    collector could not find leaves part of the window unchecked."""
+    """None when the calendar fetch covered the whole window; else ('failed' | 'incomplete' | 'unknown', line
+    for the reader). An error, an empty list or no record at all is a failed fetch (never "no event"); a week tab
+    the collector could not find leaves part of the window unchecked; events without the per-tab counts
+    (tab_counts, not recorded by older collectors) cannot show that every tab was read."""
     calendar = calendar if isinstance(calendar, dict) else {}
     # Records restored from the archive (from_history) say nothing about what the page listed.
     events = [ev for ev in calendar.get('events') or [] if not (isinstance(ev, dict) and ev.get('from_history'))]
@@ -1335,6 +1352,8 @@ def calendar_shortfall(calendar):
         return 'failed', f'カレンダー取得失敗のため予定を確認できない（Investing.com: {why}）'
     if tabs:
         return 'incomplete', f'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ {"・".join(tabs)} を読めない）'
+    if not calendar.get('tab_counts'):
+        return 'unknown', 'カレンダーの取得範囲を確認できず、予定の抜けがないか分からない（Investing.com: 週タブごとの件数の記録なし）'
     return None
 
 
@@ -1375,7 +1394,7 @@ def event_figure(data, stamp, mode):
                 path = f'macro_surprises.{k}'
             record = s or ev
             surprise = compute_surprise(record) if actual != '—' else None
-            if actual == '—' and previous == '—' and forecast == '—':
+            if actual == '—' and is_statement(ev):
                 # A statement, a speech or minutes: no number to compare; the report's news line judges it.
                 diff, symbol, word, tone = '数値の結果なし（声明・発言など）', '—', 'ニュース行で判断', 'neutral'
             elif actual == '—':
@@ -1425,12 +1444,12 @@ def event_figure(data, stamp, mode):
         text = shortfall[1]
         cautions.append({'text': text, 'source_quote': f'米指標｜注意: {text}'})
         rows.append(cautions[0]['source_quote'])
-        if shortfall[0] == 'failed':
+        if shortfall[0] != 'incomplete':
             notes.append(text)  # also among the limitations; the missing-tab note below covers a partial fetch
     if not items:
-        # Only a complete fetch can say 「該当なし」; a failed or partial one cannot confirm that nothing is scheduled.
-        label = ('予定を確認できない（' + ('取得失敗' if shortfall[0] == 'failed' else '取得が不完全') + '）') if shortfall \
-            else '該当なし（Tier A/Bの米指標なし）'
+        # Only a complete fetch can say 「該当なし」; any other cannot confirm that nothing is scheduled.
+        unread = {'failed': '取得失敗', 'incomplete': '取得が不完全', 'unknown': '取得範囲が未確認'}
+        label = f'予定を確認できない（{unread[shortfall[0]]}）' if shortfall else '該当なし（Tier A/Bの米指標なし）'
         quote = f'米指標｜{period}｜{label}'
         rows.append(quote)
         items.append({'date': period, 'time': '', 'tier': '', 'label': label, 'status': '',
@@ -1441,7 +1460,7 @@ def event_figure(data, stamp, mode):
     legend = ('米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
               'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
               f'期間は{period}（JSTの日付単位）、{tier_scope("weekly" if weekly else "daily")}。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
-              '（カレンダーの取得に失敗したときも）。取得が失敗・不完全なときは「該当なし」とせず、予定を確認できないと示します。'
+              '（カレンダーの取得に失敗したときも）。取得が失敗・不完全なとき、取得範囲を確認できないときは「該当なし」とせず、予定を確認できないと示します。'
               '発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。'
               '同時刻の系列をまとめた票はバイアス盤の「指標の結果」行（2系列以上がそろえば強）。'
               '予定の向きはCleveland連銀のnowcast（CPI・PCEの前月比）と市場予想の差で、発表前の参考（弱）です。'

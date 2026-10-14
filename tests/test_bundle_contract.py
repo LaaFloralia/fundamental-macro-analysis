@@ -56,5 +56,9 @@ def test_a_failed_or_incomplete_calendar_is_named_at_the_top():
     data['economic_calendar']['missing_tabs'] = ['nextWeek']
     chips = [x['text'] for x in bundle.observations(data, NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
     assert bundle.CALENDAR_CHIP['incomplete'] in chips and bundle.CALENDAR_CHIP['failed'] not in chips
+    data = sample()
+    del data['economic_calendar']['tab_counts']
+    chips = [x['text'] for x in bundle.observations(data, NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
+    assert bundle.CALENDAR_CHIP['unknown'] in chips and bundle.CALENDAR_CHIP['failed'] not in chips
     chips = [x['text'] for x in bundle.observations(sample(), NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
     assert not set(bundle.CALENDAR_CHIP.values()) & set(chips)

@@ -104,10 +104,11 @@ def quote_snapshot(data):
 
 GONE_CHIP = {'bias': 'バイアス盤なし（材料がすべて欠測）', 'liquidity': '流動性の位置なし（1時間足から作れない）',
              'calendar': '米指標の予定を確認できない（カレンダー取得失敗）'}
-# A calendar fetch that failed or missed a week tab still draws its table (with the recorded results);
-# the page says so at the top as well.
+# A calendar fetch that failed, missed a week tab or did not record its per-tab counts still draws its table
+# (with the recorded results); the page says so at the top as well.
 CALENDAR_CHIP = {'failed': '米指標の予定を確認できない（カレンダー取得失敗）',
-                 'incomplete': '米指標の予定が一部欠けている（カレンダー取得が不完全）'}
+                 'incomplete': '米指標の予定が一部欠けている（カレンダー取得が不完全）',
+                 'unknown': '米指標の取得範囲を確認できない（週タブごとの件数の記録なし）'}
 COLLECTION_MAX_SECONDS = 3600
 
 

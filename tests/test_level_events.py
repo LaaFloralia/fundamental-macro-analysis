@@ -133,7 +133,7 @@ def test_enrich_keeps_the_events_the_levels_used_and_the_same_surprises(tmp_path
     path = tmp_path / 'f.jsonl'
     archive(path)
     for name in ('load_forecast_history', 'load_actual_history', 'load_release_history'):
-        monkeypatch.setattr(main, name, lambda f=getattr(ms, name): f(path))
+        monkeypatch.setattr(main, name, lambda _=None, f=getattr(ms, name): f(path))
     monkeypatch.setattr(main, 'append_snapshot', lambda snap: False)
     monkeypatch.setattr(main, 'load_history', lambda: [])
     kwargs = dict(now=jst('2026-10-13T22:12'), gvz_fetch=lambda sid: {'value': 24.0, 'as_of_date': '2026-10-09'},
@@ -142,6 +142,7 @@ def test_enrich_keeps_the_events_the_levels_used_and_the_same_surprises(tmp_path
     results = {'timestamp': '2026-10-13T22:00:00'}
     collect(FAILED, path, results)
     used = deepcopy(results['economic_calendar_restored'])
+    assert [e['indicator'] for e in used['events']] == ['CPI (MoM) (Sep)', 'Fed Chair Powell Speaks']
     main.enrich_offchart_inputs(results, **kwargs)
     assert results['economic_calendar_restored'] == used                       # the levels' set is not replaced
     assert [(s['indicator'], s['surprise']['diff']) for s in results['macro_surprises']] == [('CPI (MoM) (Sep)', 0.1)]
@@ -153,3 +154,9 @@ def test_enrich_keeps_the_events_the_levels_used_and_the_same_surprises(tmp_path
         ['CPI (MoM) (Sep)', 'Fed Chair Powell Speaks']
     assert alone['economic_calendar_restored']['until'] == '2026-10-13T22:12:00+09:00'
     json.dumps(alone['economic_calendar_restored'])                            # JSON-ready without a default
+    # A restore that failed when the levels were made gives no surprises; the archive is not read a second time.
+    failed = {'timestamp': '2026-10-13T22:00:00', 'economic_calendar': deepcopy(FAILED),
+              'economic_calendar_restored': {'events': None, 'error': 'OSError'}}
+    main.enrich_offchart_inputs(failed, **kwargs)
+    assert failed['economic_calendar_restored'] == {'events': None, 'error': 'OSError'}
+    assert failed['macro_surprises'] == []

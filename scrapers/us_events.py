@@ -42,6 +42,12 @@ TIER_B = (
     r"^fomc meeting minutes\b", r"^michigan \d+-year inflation expectations\b",
     r"^initial jobless claims\b", r"^adp nonfarm employment change\b", r"^jolts job openings\b",
 )
+# Releases without a number (statements, press conferences, speeches, minutes, projections); the rate decision is
+# a number.
+STATEMENTS = (
+    r"\bfomc statement\b", r"\bfomc press conference\b", r"\bfomc economic projections\b", r"\bfed chair\b",
+    r"\bjackson hole\b", r"^fomc meeting minutes\b",
+)
 # Display names for the event table (Japanese, kept short).
 NAMES = (
     (r"fed interest rate decision", "FOMC 政策金利"), (r"fomc statement", "FOMC 声明"),
@@ -76,6 +82,12 @@ def tier(event: dict) -> Optional[str]:
     if any(re.search(p, text) for p in TIER_B):
         return "B"
     return None
+
+
+def is_statement(event: dict) -> bool:
+    """A US Tier A/B release judged by its text, not by a number (STATEMENTS)."""
+    text = _clean((event or {}).get("indicator")).lower()
+    return tier(event) is not None and any(re.search(p, text) for p in STATEMENTS)
 
 
 def display_name(indicator) -> str:

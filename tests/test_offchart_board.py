@@ -101,7 +101,8 @@ def sample():
             ev('Thursday, October 15, 2026', '21:30', 'Retail Sales (MoM) (Sep)', '0.6%', '0.4%'),
             ev('Friday, October 16, 2026', '21:30', 'Durable Goods Orders (MoM) (Sep)', '-0.2%', '0.5%'),
             ev('Tuesday, October 20, 2026', '21:30', 'Nonfarm Payrolls (Sep)', '143K', '150K'),
-            ev('Thursday, October 29, 2026', '03:00', 'Fed Interest Rate Decision', '4.00%', '3.75%')]},
+            ev('Thursday, October 29, 2026', '03:00', 'Fed Interest Rate Decision', '4.00%', '3.75%')],
+            'tab_counts': {'This Week': 9, 'Next Week': 2}},  # the collector's per-tab counts: the range is known
         'xau_levels': {'price': 4177.47, 'last_bar_utc': '2026-10-13 12:00', 'midnight_open': 4186.99, 'error': None,
                        'levels': [level('PMH', '前月高値（9月）', 'high', 4514.11),
                                   level('PDH', '前日高値（10/12）', 'high', 4216.21),
@@ -215,6 +216,23 @@ def test_verdicts_use_unrounded_values_and_the_shown_value_agrees():
     data['offchart_features']['positioning']['retail']['XAUUSD']['percentile'] = 89.96
     retail = rows_of(data)['個人のロング比率（MyFXBook）']
     assert (retail['symbol'], retail['baseline']) == ('—', '自前履歴57件（09/26〜10/13）の百分位 89.96')
+    del data['offchart_features']['positioning']['retail']['XAUUSD']['window']
+    assert rows_of(data)['個人のロング比率（MyFXBook）']['baseline'] == '自前履歴57件（期間未確認）の百分位 89.96'
+
+
+def test_a_change_and_its_two_ends_share_one_precision():
+    # The ends printed at the end digits differ by exactly the printed change.
+    assert board.shown_ends(0.12, 1.25, 1.13, 2, 0.10) == (0.12, 2, 2)
+    assert board.shown_ends(1.234 - 1.126, 1.234, 1.126, 2, 0.10) == (0.108, 3, 3)  # 1.23−1.13 would give 0.10
+    # % ends and a bp change (×100): the ends keep two more digits than the change.
+    assert board.shown_ends((3.6246 - 3.6012) * 100, 3.6246, 3.6012, 3, 2.5, scale=100) == (2.34, 2, 4)
+    # A source whose change is not the difference of its ends keeps the shortest change that agrees.
+    assert board.shown_ends(0.5, 1.0, 1.0, 2, 0.10) == (0.5, 2, 2)
+    data = sample()
+    data['fred']['DFII10'].update(value=1.234, value_20obs_ago=1.126, change_20obs=1.234 - 1.126)
+    real = rows_of(data)['実質金利（米10年TIPS）']
+    assert (real['display'], real['change']) == ('1.234%', '+0.108pp')
+    assert real['baseline'].startswith('20営業日前 1.126%')
 
 
 def test_missing_materials_are_listed_and_an_empty_group_is_not_neutral():
@@ -517,7 +535,9 @@ def test_weekly_rows_use_week_windows_and_thresholds():
     dxy5 = rows['ドル指数DXY（5営業日）']
     assert dxy5['symbol'] == '▽' and dxy5['change'] == '+0.49%'  # under the 0.7% line
     fed = rows['政策金利の織り込み（前週比）']
-    assert (fed['symbol'], fed['change'], fed['baseline']) == ('△', '-1.2bp', '3.935%（提供表の前週列）')  # under 2.5bp
+    # Under 2.5bp; the ends carry the digits that make their difference the shown change (3.924−3.935 is −1.1bp).
+    assert (fed['symbol'], fed['change'], fed['display'], fed['baseline']) == \
+        ('△', '-1.15bp', '期待 3.9238%', '3.9353%（提供表の前週列）')
     assert us2y['viz']['type'] == 'spark' and len(us2y['viz']['values']) == 6  # the judged five days only
     assert us2y['group'] == '短期（今後1週間）'
 
@@ -724,10 +744,14 @@ def test_released_without_a_prerelease_record_is_labelled_and_missing_actual_wai
     data['economic_calendar']['events'][1]['actual'] = 'N/A'
     claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
     assert (claims['diff'], claims['direction']) == ('結果を未取得（発表時刻は経過）', '結果未取得')
-    # A release without any number (a statement or speech) is not "waiting for a result".
+    # A numbered release recorded without any number still waits for its result; only a statement, a speech
+    # or minutes (judged by its name) has no number to compare.
     data['economic_calendar']['events'][1].update(previous='', forecast='')
     claims = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
-    assert (claims['diff'], claims['direction']) == ('数値の結果なし（声明・発言など）', 'ニュース行で判断')
+    assert (claims['diff'], claims['direction']) == ('結果を未取得（発表時刻は経過）', '結果未取得')
+    data['economic_calendar']['events'][1]['indicator'] = 'Fed Chair Powell Speaks'
+    speech = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
+    assert (speech['diff'], speech['direction']) == ('数値の結果なし（声明・発言など）', 'ニュース行で判断')
 
 
 def test_empty_window_yields_one_quoted_row():
