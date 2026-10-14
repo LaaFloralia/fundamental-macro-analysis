@@ -15,7 +15,7 @@
 -6. `summary.json` は既存形式の `conclusion`, `metrics`, `conditions`, `limitations` 等を使い、各項目に本文と完全一致する `source_quote` を付けます。上の2行はconditionsまたはlimitationsに各1件を置き、`source_quote`は行全体、`text`はコロン後の全文とします。`scripts.report_bundle.make_summary` は下書きに利用できますが、そのまま受入にしません。
 -7. 作業フォルダへ `package.json` を保存します。キーは `request_path`, `md_path`, `machine_path`, `summary_path`、照合済みなら `policy_path`。パスは同じジョブ内の実在する絶対パスです。要約の全text/source_quoteが公開市場資料だけであると確認できた場合は `summary_data_class: "public"` を指定します。非公開・個人・口座・戦略情報を含む場合は `local`（省略時もlocal）。`run.sh <kind> --parent-package <package.jsonの絶対パス>` で数値表、6図（バイアス盤・価格帯・経済指標表・比率・GLD・COT）、全文、PC/スマホ検査、`.semantic-audit.json` を生成します。要約の本文と引用が公開市場資料だけなら必ず `public` を指定します。publicの場合だけ既存1Password認証と共有USD 0.20/UTC日上限（ニュース選別・X選別と共通の台帳）でJevへ最大1回送信します。`LAA_JEV_DISABLED=1` は障害時の切り分け用で、通常は付けません。API失敗・未判定でも出力を残し、合格にはしません。出力先は `reports/<kind>/editions/<作業フォルダ名>/`。同じ版への上書きを避けるため、新しい修正は作業フォルダを分けます。
 -8. 親が原データ・全本文・machine・numeric・summaryを読み、生成画像を実際に確認します。少なくともPC/スマホのoverview、全figure、PC/スマホのsource画像を含めます。重要な表は横スクロール後の画像も確認します。機械のoverflow検査を目視と呼ばないでください。
-+4. 原稿は既存の全章、8項目スコア、出典・時点・条件を保持します。セクション0（Dailyは2行目、Weeklyは項目9）に `時間軸別の向き: 長期 <向き>｜短期 <向き>｜総合 <向き>`、ニュース章（Dailyはセクション5、Weeklyはセクション6）の1行目に `ニュース・地政学: <向き>｜<要旨1文>` を書きます（<向き>は上向き・強／上向き・弱／下向き・強／下向き・弱／中立。保留しない）。ニュース行の向きに米金利・ドルの動きそのものは入れません（別の行で数えます）。結論は `XAUUSD：` で始まる220字以内の1行で、主な理由（数値つき）・反対材料・次の重要指標と控える時間帯を書きます。長期・短期・総合の語は書きません（HTMLは結論の上のタイルに `時間軸別の向き` を出します。書くと拒否されます）。向きを書くなら総合の語だけを書き、読点か句点で区切ります（違う語・後の文の中立・否定・括弧書き・条件つき・装飾は拒否されます。中立金利は対象外）。信頼度は結論の横に表示されるので、結論に書きません。売買条件・棄却/再評価の基準は結論にも書かず、本文の反証・無効化条件に置きます。大局バイアスの表（Dailyはセクション7）のXAUUSD行は、長期の向きと同じ語を書きます。集計と違う判断なら `時間軸別の向き` を変えて `集計と違う理由:` を書きます。入力にある値（バイアス盤の材料、流動性の位置）を「確認できず」「取得不可」と書きません（盤にない当日値だけは、例: FREDの日付つき値を使った日の米2年債の当日値、欠けたと書けます）。米2年債はバイアス盤の行の値（CNBCの当日値、なければFREDの日付つき値）をその日付で書きます。`## その日の目的地` 章は書きません（Dailyはmachine.jsonの `draw` からコードが追加します）。Commercialsの急変は閾値・比較期間がなければ向きの材料にしません。セクション0に「反証・無効化条件：…」「判断から除外する材料：…」を各一行（各120字以内。細目はセクション8-2へ）で書きます。字数の目標は置かず質を優先し、master prompt の読む順を守ります。同じ欠測・除外の注記を章ごとに繰り返しません。イベント後の持続確認・逆行時の棄却、政策確率の保留、構造欠測を要約から落としません。行頭の `#6` は「採点項目6」に直します。
++4. 原稿は既存の全章、8項目スコア、出典・時点・条件を保持します。セクション0（Dailyは2行目、Weeklyは項目9）に `時間軸別の向き: 長期 <向き>｜短期 <向き>｜総合 <向き>`、ニュース章（Dailyはセクション5、Weeklyはセクション6）の1行目に `ニュース・地政学: <向き>｜<要旨1文>` を書きます（<向き>は上向き・強／上向き・弱／下向き・強／下向き・弱／中立。保留しない）。ニュース行の向きに米金利・ドルの動きそのものは入れません（別の行で数えます）。結論は `XAUUSD：` で始まる220字以内の1行で、主な理由（数値つき）・反対材料・次の重要指標と控える時間帯を書きます。長期・短期・総合の語は書きません（HTMLは結論の上のタイルに `時間軸別の向き` を出します。書くと拒否されます）。向きを書くなら総合の語だけを書き、読点か句点で区切ります（違う語、後の文で判断・現在・金などを主語にした別の向き、否定・括弧書き・打ち消し（「、ではありません」「であるとは言えない」）・条件つき・装飾は拒否されます。材料の状態を表す中立・強気などは対象外）。信頼度は結論の横に表示されるので、結論に書きません。売買条件・棄却/再評価の基準は結論にも書かず、本文の反証・無効化条件に置きます。大局バイアスの表（Dailyはセクション7）のXAUUSD行は、長期の向きと同じ語を書きます。集計と違う判断なら `時間軸別の向き` を変えて `集計と違う理由:` を書きます。入力にある値（バイアス盤の材料、流動性の位置）を「確認できず」「取得不可」と書きません（盤にない当日値だけは、例: FREDの日付つき値を使った日の米2年債の当日値、欠けたと書けます）。米2年債はバイアス盤の行の値（CNBCの当日値、なければFREDの日付つき値）をその日付で書きます。`## その日の目的地` 章は書きません（Dailyはmachine.jsonの `draw` からコードが追加します）。Commercialsの急変は閾値・比較期間がなければ向きの材料にしません。セクション0に「反証・無効化条件：…」「判断から除外する材料：…」を各一行（各120字以内。細目はセクション8-2へ）で書きます。字数の目標は置かず質を優先し、master prompt の読む順を守ります。同じ欠測・除外の注記を章ごとに繰り返しません。イベント後の持続確認・逆行時の棄却、政策確率の保留、構造欠測を要約から落としません。行頭の `#6` は「採点項目6」に直します。
 +5. `machine.json` の必須6項目は `bias`（-1〜1の数値。符号は総合の向き）, `no_trade`（真偽値）, `no_trade_reason`（文字列かnull。no_tradeが真なら必須）, `risk_events_next_24h`（文字列の配列。例 `"2026-10-14 21:30 JST United States / CPI (MoM) (Sep)"`）, `positioning_summary`（空でない文字列）, `confidence`（0〜1の数値）。本文と照合して親が作成します。confidenceは校正済み確率ではありません。直近24時間のカレンダーはレンダー時にコードで同じ原データから再計算します。未検証のfallbackを成功にしません。
 +6. `summary.json` は `conclusion`（原稿の `XAUUSD：` 行。`source_quote` は行全体）と `limitations`（判断から除外する材料など、HTMLで開いて確認する、人が読むデータの制約。欠測・鮮度・出典の違いを平易な言葉で書き、売買条件・取り消し/再評価の基準・内部名（snake_caseの名前、採点項目N、XAU-TF、machine.json等）、作業の進み具合（照合・レンダー・レビューを未実施など。政策確率の分類と差分はレンダー時にコードが照合して原稿へ追記します）は書きません。タイトル「今回の制約と直近の変化」はコードが付ける項目用で、使うと拒否されます。「判断から除外する材料：」行はコードが制約に載せるので、制約に重ねて書きません）を使い、各項目に本文と完全一致する `source_quote` を付けます。HTMLは期間ごとの向き・判断材料の表・流動性の位置・米重要指標を表示し、条件と取り消し基準は表示しません（原稿に残ります）。`scripts.report_bundle.make_summary` は下書きに利用できますが、そのまま受入にしません。
 +7. 作業フォルダへ `package.json` を保存します。キーは `request_path`, `md_path`, `machine_path`, `summary_path`、照合済みなら `policy_path`。パスは同じジョブ内の実在する絶対パスです。要約の全text/source_quoteが公開市場資料だけであると確認できた場合は `summary_data_class: "public"` を指定します。非公開・個人・口座・戦略情報を含む場合は `local`（省略時もlocal）。`run.sh <kind> --parent-package <package.jsonの絶対パス>` で数値表、1ページのHTML（期間ごとのバイアス・流動性の位置・米重要指標の3図、原稿のダウンロード）、PC/スマホ検査、`.semantic-audit.json` を生成します。要約の本文と引用が公開市場資料だけなら必ず `public` を指定します。publicの場合だけ既存1Password認証と共有USD 0.20/UTC日上限（ニュース選別・X選別と共通の台帳）でJevへ最大1回送信します。`LAA_JEV_DISABLED=1` は障害時の切り分け用で、通常は付けません。API失敗・未判定でも出力を残し、合格にはしません。出力先は `reports/<kind>/editions/<作業フォルダ名>/`。同じ版への上書きを避けるため、新しい修正は作業フォルダを分けます。
@@ -52,9 +52,9 @@
 +このバックアップへ戻す手順: 現在版を別途退避し、SHA256SUMSと照合して対象だけ戻す。`human-first-docs/` の4ファイルを `~/.agents/skills/human-first-docs/` の元の場所（`render_report.py`・`visual_blocks.py` は `scripts/`、`report.css` は `assets/`、`figures.md` は `references/`）へ置く。repoで `scripts/offchart_dashboard.py` を追加したコミットをrevertし、ロック付きのsnapshot更新を行う。ジョブ側だけを戻すと、戻した表示処理が共有レンダラーにない図の型を呼んで失敗する。差分はrepoの `docs/runtime-patches/20261013-dashboard-job.patch`。cron時刻・モデル・公開設定は変えていない。
 +
 +## 判断ボードの修正（2026-10-14）
-+2回目の適用前のジョブ直下ファイル（`parent_workflow.py`・`numeric_validation.py`・`runner.py`・`PARENT-WORKFLOW.md`・`RESTORE.md`・テスト3本）を `backups/r3-20261014/` に保存し、SHA256SUMSに記録した。
++2回目の適用前のジョブ直下ファイル（`parent_workflow.py`・`numeric_validation.py`・`runner.py`・`PARENT-WORKFLOW.md`・`RESTORE.md`・テスト3本）を `backups/r3-20261014/` に保存し、SHA256SUMSに記録した。同日14:13と14:30の適用版は、それぞれ再適用の前に `backups/r8-20261014/`・`backups/r9-20261014/` へ保存した。
 +
-+親の原稿の検査を強めた。時間軸別の向きは結論の上のタイルが示すため、結論に長期・短期・総合の語があれば通さない（長期金利・短期筋などの複合語は対象外）。結論に向きを書く場合は総合の語だけとし、違う語・後の文の中立・否定・括弧書き・条件つきは通さない（中立金利は対象外）。大局バイアス表のXAUUSD欄も長期の判定語と一致させ、ニュース行の位置（Dailyはセクション5、Weeklyはセクション6）も確かめる。「確認できず」の検査は当日・5営業日・日付つきの値を分けて判定し、「COT公表日時は未確認」「米2年債と金の同期反応については未確認」のような日時・時刻・期間・反応・相関の記述は欠測の主張と扱わない。目的地（draw）に使えるのは、コードが計算した名前付き水準のうち、欠けがなく最新の足まで未到達の水準だけ。
++親の原稿の検査を強めた。時間軸別の向きは結論の上のタイルが示すため、結論に長期・短期・総合の語があれば通さない（長期金利・短期筋などの複合語は対象外）。結論に向きを書く場合は総合の語だけとし、違う語、後の文で判断・現在・金などを主語にした別の向き、否定・括弧書き・打ち消し・条件つきは通さない（材料の状態を表す中立・強気などは対象外）。大局バイアス表のXAUUSD欄も長期の判定語と一致させ、ニュース行の位置（Dailyはセクション5、Weeklyはセクション6）も確かめる。「確認できず」の検査は当日・5営業日・日付つきの値を分けて判定し、「COT公表日時は未確認」「米2年債と金の同期反応については未確認」のような日時・時刻・期間・反応・相関の記述は欠測の主張と扱わない。目的地（draw）に使えるのは、コードが計算した名前付き水準のうち、欠けがなく最新の足まで未到達の水準だけ。
 +
 +summaryの「制約」は欠測・鮮度・出典の違いだけを書く欄とし、売買条件や内部名（snake_case、採点項目N、XAU-TF、*.json）を含む項目を拒否する。結論も売買条件・棄却/再評価の基準を含めば拒否する。損切りの位置・分布や基準価格・基準日はデータの記述として扱い、拒否しない。作業の進み具合は書かないよう手順書で指示した。タイトル「今回の制約と直近の変化」はコードが付ける項目用で、親が使うと拒否する。表示用summaryには原稿の信頼度の語も引き継ぐ。machine.jsonが6項目契約に違反したときは違反した項目名を拒否理由に含め、手順書に各項目の型を書いた。検証で拒否した理由は `package.json` と同じフォルダの `parent_render-error.json`・`parent_review-error.json`（0600）に残し、latest記録と通知には例外の型名だけを残す。
 +
@@ -114,7 +114,7 @@
  def draw_markdown(draw):
 --- a/parent_workflow.py
 +++ b/parent_workflow.py
-@@ -85,20 +85,299 @@
+@@ -85,20 +85,314 @@
  
  
  def validate_summary(summary, source):
@@ -157,8 +157,8 @@
 +        if internal:
 +            raise ValueError(f'Summary limitation uses the internal name {internal.group(0)}: limitations are data '
 +                             'constraints for a human; write them in plain words')
- 
- 
++
++
 +# The page never shows trade conditions or cancel criteria; they stay in the Markdown.
 +CODE_LIMITATION_TITLE = '今回の制約と直近の変化'
 +# Where stops sit (損切りの位置・分布・注文) and a reference price or date (基準価格・基準日) are data, not criteria.
@@ -288,14 +288,27 @@
 +# A direction word right after 「XAUUSD：」 (the five verdict words first, then other wordings).
 +OPENING = re.compile(r'XAUUSD：\s*(上向き・強|上向き・弱|下向き・強|下向き・弱|中立|上向き|下向き|強気|弱気|強含み|弱含み|'
 +                     r'ブル(?!ー)|ベア|買い優勢|売り優勢)')
-+# Elsewhere in the conclusion a verdict word (中立 too, but not 中立金利・中立水準) also reads as XAUUSD's
-+# overall direction, so 「下向き・弱。現在の判断は中立。」 contradicts itself.
-+DIRECTIONAL = re.compile(r'上向き・強|上向き・弱|下向き・強|下向き・弱|中立(?!金利|水準)')
++# Elsewhere in the conclusion a directional verdict word also reads as XAUUSD's overall direction.
++DIRECTIONAL = re.compile(r'上向き・強|上向き・弱|下向き・強|下向き・弱')
++# So does any direction word, within the clause, after the judgement, "now" or gold as the subject
++# (「現在の判断は中立」「現在は強気」「金の見通しは強気」); a material's own state is not a verdict
++# (「コアCPIの予測差は中立」「投機筋は強気」「ドルの方向感は弱気」), nor is a word after another subject in the
++# clause (「今回はコアCPIの予測差が中立」: a noun with が・は・も between them).
++_GOLD = r'(?:XAUUSD|ゴールド|(?<![\u4e00-\u9fff])金(?:価格|相場)?)'
++_NOW = r'(?:現在|足元|当面|今日|本日|今週|今回)'
++JUDGED = re.compile(r'(?:(?:' + _NOW + '|' + _GOLD + r')の(?:判断|判定|バイアス|方向感?|見通し|向き)'
++                    r'|(?<![\u4e00-\u9fffの])(?:判断|判定|バイアス|方向感?|全体)|' + _NOW + '|' + _GOLD + ')'
++                    r'(?:では|には|として|的には|は|が|も)'
++                    r'(?:(?![\u4e00-\u9fff\u30a0-\u30ffA-Za-z0-9%％](?:が|は|も))[^。、，,\n]){0,16}?'
++                    r'(上向き・強|上向き・弱|下向き・強|下向き・弱|中立(?!金利|水準)|上向き|下向き|強気|弱気|強含み|弱含み|'
++                    r'ブル(?!ー)|ベア|買い優勢|売り優勢)')
 +# The word stands alone: then a comma, a full stop, a closing bracket or an affirmative で (not ではない・でなく).
 +# An opening bracket could take it back (「下向き・弱（ではなく中立）」).
 +WORD_END = re.compile(r'(?:[、。，,）)]|で(?!は|な)|$)')
-+
-+
++# Nor taken back (「下向き・弱、ではありません」「下向き・弱であるとは言えない」「…とは限らない」; 「とはいえ」 is not).
++TAKEN_BACK = re.compile(r'^[、，,]?\s*(?:では|でな|じゃ|(?:で(?:ある|あり)?)?と(?:は)?(?:言|い)えな|(?:で(?:ある)?)?とは限らな)')
+ 
+ 
 +def long_term_table_cells(source):
 +    """The XAUUSD row's 大局バイアス cells of the tables under a heading containing 大局バイアス."""
 +    cells, level = [], None
@@ -364,14 +377,16 @@
 +        raise ValueError(f'Conclusion names {"・".join(named)}: the page shows 時間軸別の向き in the tiles above it; '
 +                         'write the main drivers with numbers, the opposing material and the release or hours to watch '
 +                         f'(結論に{"・".join(named)}を書かない)')
-+    # Read as the overall direction under the 総合 tile: an opening direction, or a directional verdict word
-+    # anywhere, is the 総合 word standing alone (not negated, conditional or followed by another direction).
++    # Read as the overall direction under the 総合 tile: an opening direction, a directional verdict word
++    # anywhere, or a direction whose subject is the judgement, now or gold, is the 総合 word standing alone
++    # (not negated, conditional, taken back or followed by another direction).
 +    overall = verdicts['総合'][2]
 +    opening = OPENING.match(conclusion)
 +    found = ([(opening.group(1), opening.end())] if opening else []) + \
-+        [(m.group(0), m.end()) for m in DIRECTIONAL.finditer(conclusion)]
++        [(m.group(0), m.end()) for m in DIRECTIONAL.finditer(conclusion)] + \
++        [(m.group(1), m.end()) for m in JUDGED.finditer(conclusion)]
 +    for word, end in found:
-+        if word != overall or not WORD_END.match(conclusion[end:]):
++        if word != overall or not WORD_END.match(conclusion[end:]) or TAKEN_BACK.match(conclusion[end:]):
 +            problem = (f'{word} but 時間軸別の向き says 総合 {overall}' if word != overall
 +                       else f'{word} followed by 「{conclusion[end:end + 6]}」')
 +            raise ValueError(f'Conclusion gives {problem}: a direction in the conclusion is the 総合 word alone, '
@@ -420,7 +435,7 @@
      from scripts.report_acceptance import browser_check
      package_path = local(package_path, runner.ROOT)
      package = read(package_path)
-@@ -138,13 +417,17 @@
+@@ -138,13 +432,17 @@
          raise ValueError('Numbered score prose must not become a heading')
      source, quality = runner.validate_report(source, mode)
      validate_summary(summary, source)
@@ -440,7 +455,7 @@
      if re.search('NO-TRADE[:：] ?あり|高確度のセットアップなし', source) and machine['no_trade'] is not True:
          raise ValueError('Machine JSON contradicts report no-trade state')
      # Preserve Daily extensions after the legacy six-field normalizer.
-@@ -156,7 +439,18 @@
+@@ -156,7 +454,18 @@
          cross = tv_facts.get('cross_market')
          if cross and iso_time(cross['retrieved_at_utc']) > now:
              raise ValueError('cross_market_future_retrieval')
@@ -460,7 +475,7 @@
          # A deterministic section keeps MD, HTML and JSON identical.
          extension_text = draw_markdown(draw)
          if cross:
-@@ -175,10 +469,10 @@
+@@ -175,10 +484,10 @@
      target_dir = runner.REPORTS / mode / 'editions' / package_path.parent.name
      target_dir.mkdir(parents=True, exist_ok=False)
      md_path = target_dir / f'{mode.capitalize()}_Bias_Report_{as_of.date().isoformat()}.md'
@@ -472,7 +487,7 @@
      else:
          source = runner.stamp_generation_completed(source, now.isoformat())
      source = source.split('\n\n## 政策確率の照合\n')[0] + facts_markdown(facts) + extension_text
-@@ -186,7 +480,16 @@
+@@ -186,7 +495,16 @@
      copied = md_path.with_suffix('.data.json'); copied.write_bytes(data_path.read_bytes())
      sidecars = bundle_prepare(md_path, copied, mode, now=validation_time)
      generated = read(sidecars['summary_path'])
@@ -740,7 +755,7 @@
              return publish_existing(args.mode)
 --- a/test_parent_workflow.py
 +++ b/test_parent_workflow.py
-@@ -105,15 +105,211 @@
+@@ -105,15 +105,222 @@
      assert '| 3.75-4.00 | 確率欠測 | 取得不可 | 取得不可 | 取得不可 |' in report
  
  
@@ -762,8 +777,8 @@
 +# Only the news row is long-horizon here: half a vote leaves 長期 neutral, so 長期 and 総合 differ.
 +REASON='集計と違う理由: 長期・総合は利上げ観測の見出しを重く見た。'
 +REASONED=ANSWERED.replace(CONCLUSION,CONCLUSION+'\n'+REASON)
-+
-+
+ 
+ 
 +def test_summary_needs_a_conclusion_and_the_report_keeps_its_conditions():
 +    good={'conclusion':{'text':CONCLUSION,'source_quote':CONCLUSION}}
 +    workflow.validate_summary(good,ANSWERED)
@@ -809,18 +824,29 @@
 +def test_a_direction_in_the_conclusion_is_the_overall_verdict_alone():
 +    # The fixture's 総合 is 下向き・弱; a direction in the conclusion reads as the overall one under the tiles.
 +    for text in ('XAUUSD：下向き・弱。実質金利の上昇が逆風。','XAUUSD：下向き・弱、確度低。','XAUUSD：下向き・弱で、CPIが分岐。',
-+                 'XAUUSD：実質金利の上昇とドル高で下向き・弱。','XAUUSD：下向き・弱。FRBの中立金利の議論は材料外。'):
++                 'XAUUSD：実質金利の上昇とドル高で下向き・弱。','XAUUSD：下向き・弱。FRBの中立金利の議論は材料外。',
++                 # A material's own state is not a verdict; 「とはいえ」 does not take the direction back.
++                 'XAUUSD：下向き・弱。コアCPIの予測差+0.002ppは中立。','XAUUSD：下向き・弱。投機筋は強気、ドルの方向感は弱気。',
++                 'XAUUSD：下向き・弱、とはいえ中銀買いが支え。','XAUUSD：下向き・弱。今週は米CPIとFOMC議事要旨が焦点。',
++                 'XAUUSD：下向き・弱。現在の判断は下向き・弱で、CPIが分岐。',
++                 'XAUUSD：下向き・弱。今回はコアCPIの予測差が中立。','XAUUSD：下向き・弱。今回はコアCPIの予測差も中立。'):
 +        workflow.validate_answers({'conclusion':{'text':text}},ANSWERED,HELD)
 +    for text,word in [('XAUUSD：中立。CPI待ち。','中立'),('XAUUSD：下向き・強。','下向き・強'),('XAUUSD： 弱気。','弱気'),
 +                      ('XAUUSD：下向き。','下向き'),('XAUUSD：**上向き・強**。','上向き・強'),
 +                      ('XAUUSD：CPI次第で上向き・強に転じる。','上向き・強'),
-+                      # A later judgement contradicts the opening one.
-+                      ('XAUUSD：下向き・弱。現在の判断は中立。','中立')]:
++                      # A later judgement (subject: the judgement, now or gold) contradicts the opening one.
++                      ('XAUUSD：下向き・弱。現在の判断は中立。','中立'),('XAUUSD：下向き・弱。現在は強気です。','強気'),
++                      ('XAUUSD：下向き・弱。金は売り優勢。','売り優勢'),('XAUUSD：実質金利の上昇で、足元は引き続き中立。','中立'),
++                      ('XAUUSD：下向き・弱。本日は21:30の米CPIまで中立。','中立'),('XAUUSD：下向き・弱。今回は中立。','中立'),
++                      ('XAUUSD：下向き・弱。現在は実質金利の上昇を考慮しても強気。','強気'),
++                      ('XAUUSD：下向き・弱。金の見通しは強気。','強気')]:
 +        with pytest.raises(ValueError,match=f'Conclusion gives {word} but 時間軸別の向き says 総合 下向き・弱'):
 +            workflow.validate_answers({'conclusion':{'text':text}},ANSWERED,HELD)
 +    # Negated, taken back in brackets or followed by more than a comma or a full stop.
 +    for text in ('XAUUSD：下向き・弱ではなく、上向き・強。','XAUUSD：下向き・弱が続くなら売り。',
-+                 'XAUUSD：下向き・弱（ではなく中立）。'):
++                 'XAUUSD：下向き・弱（ではなく中立）。','XAUUSD：下向き・弱、ではありません。',
++                 'XAUUSD：下向き・弱、とは言えない。','XAUUSD：下向き・弱であるとは言えない。',
++                 'XAUUSD：下向き・弱とは限らない。'):
 +        with pytest.raises(ValueError,match='Conclusion gives 下向き・弱 followed by'):
 +            workflow.validate_answers({'conclusion':{'text':text}},ANSWERED,HELD)
 +
@@ -917,8 +943,8 @@
 +    assert workflow.destination_levels({**lv,'coverage':{'stale_hours':1}})=={}
 +    assert workflow.destination_levels({**lv,'error':'timeout'})=={}
 +    assert workflow.destination_levels(None)=={}
- 
- 
++
++
 +def test_a_verdict_off_the_rule_tally_needs_a_reason_line():
 +    summary={'conclusion':{'text':CONCLUSION},'limitations':[]}
 +    with pytest.raises(ValueError,match='集計と違う理由'):
@@ -959,7 +985,7 @@
  def test_local_path_rejects_escape_before_reading(tmp_path):
      with pytest.raises(ValueError):workflow.local('/outside/job/secret',tmp_path)
      (tmp_path/'link').symlink_to('/outside/job')
-@@ -245,3 +441,123 @@
+@@ -245,3 +452,123 @@
      report=facts_markdown(facts)
      assert '|' not in report
      assert '取得不可' in report and '政策方向の判断は保留' in report
