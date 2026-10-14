@@ -1172,7 +1172,7 @@ def liquidity_figure(data, stamp, mode, source=None):
     items.append(_liq('current', '現在値', fmt(price), price, state='current', state_word=observed, icon='▶', value=price))
     bindings.append({'figure': 'liquidity', 'label': '現在値', 'path': 'report_quote.close', 'value': number(price),
                      'digits': 2, 'unit': 'USD/oz', 'observedAt': market.isoformat() if market else '',  # unknown: not the fetch
-                     'fetchedAt': str(q.get('fetched_at') or q.get('datetime') or '')})
+                     'fetchedAt': str(q.get('fetched_at') or '')})  # a fetch record only, not the quote's date
     mo = num(lv.get('midnight_open'))
     if mo is not None and not far(mo):
         items.append(_liq('reference', 'NY 0時の始値', fmt(mo), mo, state='reference', state_word='当日の始値（参考）',

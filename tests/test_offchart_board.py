@@ -685,7 +685,7 @@ def test_current_price_binding_is_observed_at_the_market_time_when_kept():
     data['report_quote']['last_quote_at'] = None
     assert times(data) == ('', '2026-10-13T13:14:30+00:00')
     del data['report_quote']['fetched_at']
-    assert times(data) == ('', '2026-10-13')  # the quote's date only
+    assert times(data) == ('', '')  # without a fetch record the quote's date is not a fetch time
 
 
 def test_weekly_map_widens_the_range_and_scales_the_band():
