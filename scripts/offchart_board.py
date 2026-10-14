@@ -162,6 +162,41 @@ def _stamp(value):
     return t.strftime('%m/%d %H:%M') + ' JST' if t else '時点不明'
 
 
+def _bar_span(value):
+    """'2026-10-13 23:00' (UTC, the bar's start) -> '10/14 08:00〜09:00 JST' (one hour); '' when unparsable."""
+    try:
+        t = datetime.strptime(str(value), '%Y-%m-%d %H:%M').replace(tzinfo=ZoneInfo('UTC')).astimezone(JST)
+    except ValueError:
+        return ''
+    return f'{t.strftime("%m/%d %H:%M")}〜{(t + timedelta(hours=1)).strftime("%H:%M")} JST'
+
+
+def quote_state(q, stamp):
+    """(word, reference) for the price the liquidity distances are measured from. With the market time
+    (Twelve Data last_quote_at): the last price of a closed market, the market time, or a reference price when
+    it is over an hour old, after the cutoff or unknown. Collections that did not keep the market time are
+    judged on the fetch time as before."""
+    if 'last_quote_at' not in q:
+        late = stale_time(q.get('fetched_at'), stamp, QUOTE_FRESH_HOURS)
+        fetched = _parse_jst(q.get('fetched_at'))
+        return (f'{late}・参考値', True) if late else (f'取得 {fetched.strftime("%m/%d %H:%M")} JST', False)
+    epoch = q.get('last_quote_at')
+    try:
+        market = None if isinstance(epoch, bool) else datetime.fromtimestamp(float(epoch), JST)
+    except (TypeError, ValueError, OverflowError, OSError):
+        market = None
+    if market is None:
+        return '市場時刻不明・参考価格', True
+    shown = f'{market.strftime("%m/%d %H:%M")} JST'
+    if market > stamp + CLOCK_SKEW:
+        return f'市場 {shown} が収集時刻より後・参考価格', True
+    if q.get('is_market_open') is False:
+        return f'休場中の最終値（市場 {shown}）', False
+    if market < stamp - timedelta(hours=QUOTE_FRESH_HOURS):
+        return f'市場 {shown}・{QUOTE_FRESH_HOURS}時間より前・参考価格', True
+    return f'市場 {shown}', False
+
+
 def _utc_label(value):
     """'2026-10-13 12:00' (UTC) -> '10/13 21:00 JST'; '' when unparsable."""
     try:
@@ -1109,11 +1144,8 @@ def liquidity_figure(data, stamp, mode, source=None):
         bindings.append({'figure': 'liquidity', 'label': level['name'], 'path': f'xau_levels.levels.{index}.price',
                          'value': number(value), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc'),
                          'state_path': f'xau_levels.levels.{index}.state', 'state': level.get('state')})
-    fetched = _parse_jst(q.get('fetched_at'))
-    # The distances are measured from this price: one fetched more than an hour before the cutoff (or after
-    # it, or at an unknown time) is a reference only.
-    quote_late = stale_time(q.get('fetched_at'), stamp, QUOTE_FRESH_HOURS)
-    observed = f'{quote_late}・参考値' if quote_late else f'取得 {fetched.strftime("%m/%d %H:%M")} JST'
+    # The distances are measured from this price; quote_state says when it is a reference only.
+    observed, reference = quote_state(q, stamp)
     items.append(_liq('current', '現在値', fmt(price), price, state='current', state_word=observed, icon='▶', value=price))
     bindings.append({'figure': 'liquidity', 'label': '現在値', 'path': 'report_quote.close', 'value': number(price),
                      'digits': 2, 'unit': 'USD/oz', 'observedAt': str(q.get('fetched_at') or q.get('datetime') or '')})
@@ -1159,7 +1191,7 @@ def liquidity_figure(data, stamp, mode, source=None):
                 'label': f'想定変動 ±1σ（{"1週" if weekly else "1日"}・±{move:,.1f}ドル）'}
         rows.append(f'流動性｜{band["label"]}: {fmt(band["lower"])}〜{fmt(band["upper"])}'
                     f'（GVZ {liq.get("gvz")}・{liq.get("gvz_as_of")}）')
-    last_bar = _utc_label(lv.get('last_bar_utc'))
+    last_bar = _bar_span(lv.get('last_bar_utc'))
     legend = ('名前付きの高値・安値を価格順に並べています。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
               '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
               '↗↘抜けて推移（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
@@ -1169,7 +1201,7 @@ def liquidity_figure(data, stamp, mode, source=None):
               '（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。'
               f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）。'
               '距離の棒は現在値からの遠さで、中央の目盛りが想定変動1σ、右端が2σ以上です。'
-              + (f'計算に使った最終確定足は{last_bar}開始（Twelve Data 1時間足）。' if last_bar else '') +
+              + (f'計算に使った最終確定足は{last_bar}（Twelve Data 1時間足）。' if last_bar else '') +
               ('発表足の高値・安値は直近7日のTier A指標の発表15分足（なければ発表時刻を含む1時間足）です。' if weekly else
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
                '翌取引日の終わりまで表示します。') +
@@ -1181,8 +1213,9 @@ def liquidity_figure(data, stamp, mode, source=None):
     rows.append('流動性マップの読み方: ' + legend)
     figure = {'id': 'liquidity', 'type': 'liquidity_map', 'kicker': '意識する価格',
               'title': '流動性の位置（Liquidity）',
-              'subtitle': (f'上ほど高い価格。状態は{last_bar}開始の確定1時間足まで。' if last_bar else '上ほど高い価格。')
-                          + f'●はまだ抜けていない水準、帯は{"1週" if weekly else "1日"}の想定変動',
+              'subtitle': (f'上ほど高い価格。状態は{last_bar}の確定1時間足まで。' if last_bar else '上ほど高い価格。')
+                          + f'●はまだ抜けていない水準、帯は{"1週" if weekly else "1日"}の想定変動'
+                          + ('。距離は参考価格（現在値の行）から' if reference else ''),
               'items': items, 'aux': aux, 'cautions': cautions, 'band': band, 'legend': legend,
               'sources': [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
                           {'label': 'FRED GVZCLS', 'url': 'https://fred.stlouisfed.org/series/GVZCLS'},
@@ -1190,8 +1223,9 @@ def liquidity_figure(data, stamp, mode, source=None):
     return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes}
 
 
-def nearest_chip(data):
-    """「直近の未到達: 上 … ／下 …」 from the levels and the quote; None without levels."""
+def nearest_chip(data, stamp=None):
+    """「直近の未到達: 上 … ／下 …」 from the levels and the quote; None without levels. The distances say
+    when they are measured from a reference price (quote_state)."""
     from scrapers.xau_levels import nearest_resting
     lv = data.get('xau_levels') or {}
     q = data.get('report_quote') or data.get('_raw_quote_XAUUSD') or {}
@@ -1201,7 +1235,8 @@ def nearest_chip(data):
         return None
     parts = [f'{"上" if side == "high" else "下"} {near[side]["name"]} {fmt(near[side]["price"])}'
              f'（{number(near[side]["price"] - price, 2):+,.2f}）' for side in ('high', 'low') if side in near]
-    return '直近の未到達: ' + '／'.join(parts)
+    reference = stamp is not None and q.get('close') is not None and quote_state(q, stamp)[1]
+    return '直近の未到達: ' + '／'.join(parts) + ('・距離は参考価格から' if reference else '')
 
 
 # ------------------------------------------------------------------ US event table

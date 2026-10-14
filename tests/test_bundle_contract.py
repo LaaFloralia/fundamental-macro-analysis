@@ -34,8 +34,8 @@ def test_a_figure_that_cannot_be_drawn_is_named_at_the_top(tmp_path):
 def test_the_cutoff_is_the_end_of_collection_even_after_an_hour():
     data = {'timestamp': '2026-10-13T22:14:00+09:00', 'collection_finished_at': '2026-10-13T23:40:00+09:00'}
     assert bundle.analysis_cutoff(data).isoformat() == '2026-10-13T23:40:00+09:00'
-    assert bundle.analysis_cutoff({**data, 'collection_finished_at': '2026-10-13T22:00:00+09:00'}).isoformat() == \
-        '2026-10-13T22:14:00+09:00'                       # an end before the start is not used
+    with pytest.raises(bundle.BundleError, match='収集終了時刻が開始より前'):  # an end before the start stops the edition
+        bundle.analysis_cutoff({**data, 'collection_finished_at': '2026-10-13T22:00:00+09:00'})
     assert bundle.analysis_cutoff({'timestamp': data['timestamp']}).isoformat() == '2026-10-13T22:14:00+09:00'
 
 

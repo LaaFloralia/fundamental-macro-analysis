@@ -122,8 +122,9 @@ def validate(summary: dict, figures: list, source: str) -> list:
             raise DashboardError('conclusion: numbers are not in its source line')
     confidence = summary.get('confidence')
     if confidence:
-        # 「信頼度 Low」 from 「信頼度: Low ｜ スコア 0 …」: the word must be the line's.
-        word = str(confidence.get('text') or '').removeprefix('信頼度 ')
+        # 「信頼度 低」 from 「信頼度: Low ｜ スコア 0 …」: the word must be the line's (report_bundle.CONFIDENCE_JA).
+        from scripts.report_bundle import CONFIDENCE_JA
+        word = {ja: en for en, ja in CONFIDENCE_JA.items()}.get(str(confidence.get('text') or '').removeprefix('信頼度 '))
         if not word or not re.match(rf'\s*信頼度[:：]\s*\**{re.escape(word)}\b', quoted('confidence', confidence)):
             raise DashboardError('confidence: the word is not in its source line')
     for index, chip in enumerate(summary.get('chips') or []):

@@ -49,10 +49,12 @@ def require_fresh(data, now=None):
 def analysis_cutoff(data):
     """The board's "now": the end of collection when recorded, otherwise its start (older
     collections). Every adopted value was fetched before it; releases up to it count as released
-    and windows end there. A collection longer than an hour is named in the limits, and so is an
-    end time that cannot be used (cutoff_problem)."""
-    start = timestamp(data.get('timestamp'))
-    return start if cutoff_problem(data) else (_collection_end(data) or start)
+    and windows end there. A collection longer than an hour is named in the limits; a recorded end
+    that cannot be used (cutoff_problem) stops the edition."""
+    problem = cutoff_problem(data)
+    if problem:
+        raise BundleError(f'Collection end cannot be the analysis cutoff: {problem}')
+    return _collection_end(data) or timestamp(data.get('timestamp'))
 
 
 def _collection_end(data):
@@ -63,8 +65,7 @@ def _collection_end(data):
 
 
 def cutoff_problem(data):
-    """Why the recorded collection end is not used as the cutoff (unreadable, or before the start),
-    else None. The start is used instead and the page says so."""
+    """Why the recorded collection end cannot be the cutoff (unreadable, or before the start), else None."""
     if not data.get('collection_finished_at'):
         return None
     end = _collection_end(data)
@@ -96,8 +97,9 @@ def quote_snapshot(data):
     quote = data.get('_raw_quote_XAUUSD')
     if not isinstance(quote, dict) or number(quote.get('close')) <= 0:
         raise BundleError('Required XAUUSD quote is missing')
+    # last_quote_at (epoch seconds) is the market time of the price; `timestamp` is its daily bar's open.
     return {key: quote.get(key) for key in ('symbol', 'close', 'datetime', 'timestamp', 'fetched_at', 'previous_close',
-                                            'high', 'low')}
+                                            'high', 'low', 'last_quote_at', 'is_market_open')}
 
 
 GONE_CHIP = {'bias': 'バイアス盤なし（材料がすべて欠測）', 'liquidity': '流動性の位置なし（1時間足から作れない）',
@@ -153,7 +155,7 @@ def build_observations(data, mode='daily', source=None):
         bindings.extend(events.get('bindings') or [])
         limitations.extend(events.get('notes') or [])
     lead = offchart_board.lead_chips(data, stamp, mode)
-    nearest = offchart_board.nearest_chip(data)
+    nearest = offchart_board.nearest_chip(data, stamp)
     if nearest:
         lead.append(nearest)
     # A figure that could not be drawn is said at the top as well, not only in the folded limits.
@@ -161,9 +163,6 @@ def build_observations(data, mode='daily', source=None):
     lead.extend(GONE_CHIP[key] for key in REQUIRED_FIGURES if key not in drawn)
     if events and events.get('coverage') in CALENDAR_CHIP:
         lead.append(CALENDAR_CHIP[events['coverage']])
-    problem = cutoff_problem(data)
-    if problem:
-        limitations.append(f'{problem}のため、判定の基準を収集開始時刻にした。開始から5分より後に取得した値は使っていない')
     if (stamp - start).total_seconds() > COLLECTION_MAX_SECONDS:
         limitations.append(f'収集に{int((stamp - start).total_seconds() // 60)}分かかった。'
                            '判定は収集終了時刻を基準にし、それまでに取得した値を使う')
@@ -343,6 +342,7 @@ def plain_text(text):
 
 
 CONFIDENCE_LINE = re.compile(r'^\s*信頼度[:：]\s*\**(High|Med-cautious|Med|Low)\b.*$', re.M)
+CONFIDENCE_JA = {'High': '高', 'Med': '中', 'Med-cautious': '中（慎重）', 'Low': '低'}
 
 
 def confidence_badge(source):
@@ -352,7 +352,7 @@ def confidence_badge(source):
     found = CONFIDENCE_LINE.search(intro)
     if not found:
         return None
-    return {'text': f'信頼度 {found.group(1)}', 'source_quote': found.group(0).strip()}
+    return {'text': f'信頼度 {CONFIDENCE_JA[found.group(1)]}', 'source_quote': found.group(0).strip()}
 
 
 def make_summary(source, mode, as_of, lead=(), cutoff=None):

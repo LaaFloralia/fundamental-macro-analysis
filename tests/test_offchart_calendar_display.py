@@ -219,10 +219,11 @@ def test_gvz_age_rule_is_the_fred_series_rule_and_the_weekly_band_follows_it():
     assert liquidity(data, 'weekly')['figure']['band'] is None
 
 
-def test_last_bar_is_labelled_as_the_bar_start_without_iso_text():
-    legend = liquidity(sample())['figure']['legend']
-    assert '計算に使った最終確定足は10/13 21:00 JST開始（Twelve Data 1時間足）' in legend
-    assert not re.search(r'\d{4}-\d{2}-\d{2}T', legend)
+def test_last_bar_is_labelled_with_its_start_and_end_without_iso_text():
+    figure = liquidity(sample())['figure']
+    assert '計算に使った最終確定足は10/13 21:00〜22:00 JST（Twelve Data 1時間足）' in figure['legend']
+    assert '状態は10/13 21:00〜22:00 JSTの確定1時間足まで。' in figure['subtitle']
+    assert not re.search(r'\d{4}-\d{2}-\d{2}T', figure['legend'])
 
 
 # ------------------------------------------------------------------ F15: the retail split is drawn as given

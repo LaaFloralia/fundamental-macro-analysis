@@ -587,8 +587,27 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
     assert next(i for i in result['figure']['items'] if i['kind'] == 'current')['state_word'] == '取得時刻の記録なし・参考値'
     # The heading says up to which closed hour the states were judged.
+    span = board._bar_span(sample()["xau_levels"]["last_bar_utc"])
+    assert span.endswith(' JST') and '〜' in span
     assert board.liquidity_figure(sample(), NOW, 'daily', SOURCE)['figure']['subtitle'].startswith(
-        f'上ほど高い価格。状態は{board._utc_label(sample()["xau_levels"]["last_bar_utc"])}開始の確定1時間足まで。')
+        f'上ほど高い価格。状態は{span}の確定1時間足まで。')
+    # With the market time (Twelve Data last_quote_at) the market time decides, and a closed market shows its
+    # last price; a reference price is said in the heading and the nearest-level chip as well.
+    epoch = lambda iso: datetime.fromisoformat(iso).timestamp()
+    for extra, word, reference in (
+            ({'last_quote_at': epoch('2026-10-13T22:10:00+09:00'), 'is_market_open': True}, '市場 10/13 22:10 JST', False),
+            ({'last_quote_at': epoch('2026-10-13T20:00:00+09:00'), 'is_market_open': True},
+             '市場 10/13 20:00 JST・1時間より前・参考価格', True),
+            ({'last_quote_at': epoch('2026-10-10T05:59:00+09:00'), 'is_market_open': False}, '休場中の最終値（市場 10/10 05:59 JST）', False),
+            ({'last_quote_at': epoch('2026-10-13T22:30:00+09:00'), 'is_market_open': True},
+             '市場 10/13 22:30 JST が収集時刻より後・参考価格', True),
+            ({'last_quote_at': None}, '市場時刻不明・参考価格', True)):
+        data = sample()
+        data['report_quote'].update(extra)
+        figure = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']
+        assert next(i for i in figure['items'] if i['kind'] == 'current')['state_word'] == word
+        assert figure['subtitle'].endswith('。距離は参考価格（現在値の行）から') is reference
+        assert board.nearest_chip(data, NOW).endswith('・距離は参考価格から') is reference
     for fetched, word in (('2026-10-13T12:00:00+00:00', '取得 10/13 21:00 JST・1時間より前・参考値'),
                           ('2026-10-13T13:30:00+00:00', '取得 10/13 22:30 JST が収集時刻より後・参考値')):
         data = sample()
@@ -800,13 +819,13 @@ def prepared(tmp_path, data, source=SOURCE, mode='daily'):
 
 @pytest.mark.parametrize('end,problem', [('not a time', '収集終了時刻を読めない'),
                                          ('2026-10-13T22:00:00+09:00', '収集終了時刻が開始より前')])
-def test_an_unusable_collection_end_falls_back_to_the_start_and_says_so(end, problem):
+def test_an_unusable_collection_end_stops_the_edition(end, problem):
     data = sample()
     data['collection_finished_at'] = end
     assert bundle.cutoff_problem(data) == problem
-    assert bundle.analysis_cutoff(data) == bundle.timestamp(data['timestamp'])
-    limits = bundle.build_observations(data, 'daily', SOURCE)['limitations']
-    assert f'{problem}のため、判定の基準を収集開始時刻にした。開始から5分より後に取得した値は使っていない' in limits
+    for call in (lambda: bundle.analysis_cutoff(data), lambda: bundle.build_observations(data, 'daily', SOURCE)):
+        with pytest.raises(bundle.BundleError, match=problem):
+            call()
     data['collection_finished_at'] = '2026-10-13T22:20:00+09:00'
     assert bundle.cutoff_problem(data) is None
     assert not any('収集終了時刻' in note for note in bundle.build_observations(data, 'daily', SOURCE)['limitations'])
@@ -833,7 +852,7 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
         ('Limitations differ', lambda m, f, s, c: c['limitations'].pop()),
         ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(text=c['conclusion']['text'] + '（買い優勢）')),
         ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(source_quote='XAUUSD：別の行')),
-        ('Confidence differs', lambda m, f, s, c: c['confidence'].update(text='信頼度 High')),
+        ('Confidence differs', lambda m, f, s, c: c['confidence'].update(text='信頼度 高')),
         ('Confidence differs', lambda m, f, s, c: c.pop('confidence'))]
     for message, change in tampered:
         m, f, c = deepcopy(manifest), deepcopy(figures), deepcopy(summary)
