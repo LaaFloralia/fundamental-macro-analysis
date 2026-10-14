@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import sys
 import time
@@ -79,7 +80,12 @@ MAX_ATTEMPTS = 3
 TOTAL_BUDGET_S = 88.0
 # 残り時間がこれ未満なら次の試行を始めない（起動 + 表示 + XHR 待ちに必要な最小時間）。
 MIN_ATTEMPT_S = 15.0
-
+# 終了処理の上限（秒）。全体の上限から先に差し引いて確保する。
+# 各試行はブラウザ終了に CLOSE_TIMEOUT_S、最後に Playwright の停止に STOP_TIMEOUT_S を残して打ち切る。
+CLOSE_TIMEOUT_S = 3.0
+STOP_TIMEOUT_S = 3.0
+# Playwright（driver）起動の上限（秒）。
+START_TIMEOUT_S = 15.0
 
 
 def _now() -> float:
@@ -91,6 +97,14 @@ CHALLENGE_TITLES = ("Just a moment", "Attention Required", "Performing security 
 
 ERR_NO_PAIRS = "Order Book ペアを抽出できず (DOM 変更の可能性)"
 ERR_CHALLENGE = "Cloudflare のボット確認で遮断され Order Book を取得できず"
+
+# 拒否応答の本文（先頭）に出る Cloudflare 確認・遮断ページの目印。
+CF_BLOCK_MARKERS = ("Just a moment", "Attention Required", "Performing security verification",
+                    "Verify you are human", "cf-chl", "challenge-platform", "cf_chl_opt")
+
+SIDE_LABELS = {"asks": "Asks", "bids": "Bids"}
+SIDE_STATUS_TEXT = {"missing": "系列なし", "wrong_type": "系列の型が不正", "all_invalid": "全行が不正",
+                    "empty": "空配列"}
 
 _JS_ORDER_BOOK_SERIES = """(containerId) => {
   if (typeof Highcharts === 'undefined' || !Highcharts.charts) return null;
@@ -119,7 +133,8 @@ _JS_IN_PAGE_FETCH = """async ([path, symbol, maxChars, timeoutMs]) => {
     const r = await fetch(url, {credentials: 'same-origin', signal: ctl.signal,
                                 headers: {'X-Requested-With': 'XMLHttpRequest'}});
     const text = await r.text();
-    return {status: r.status, text: maxChars > 0 ? text.slice(0, maxChars) : text};
+    const keep = r.status === 200 ? (maxChars > 0 ? text.slice(0, maxChars) : text) : text.slice(0, 5000);
+    return {status: r.status, text: keep, cf: r.headers.get('cf-mitigated')};
   } catch (e) {
     return {status: null, error: String(e && e.name || e)};
   } finally {
@@ -128,26 +143,77 @@ _JS_IN_PAGE_FETCH = """async ([path, symbol, maxChars, timeoutMs]) => {
 }"""
 
 
-def _pairs_to_dicts(rows: Any) -> List[dict]:
-    """[[price, count], ...] を {"volume": int, "price": float} のリストにする。不正行は捨てる。"""
+def _rows_checked(rows: list) -> tuple[List[dict], int]:
+    """[[price, count], ...] を {"volume": int, "price": float} にする。戻り値は (有効行, 不正行数)。
+
+    価格・件数が数値でない、NaN / Infinity、価格 0 以下、件数が負の行は不正として捨てる。
+    """
     out: List[dict] = []
-    if not isinstance(rows, list):
-        return out
+    invalid = 0
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) < 2:
+            invalid += 1
             continue
         price, count = row[0], row[1]
         if isinstance(price, bool) or isinstance(count, bool):
+            invalid += 1
             continue
         try:
             price_f = float(price)
             count_f = float(count)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            invalid += 1
             continue
-        if price_f <= 0 or count_f < 0:
+        if not (math.isfinite(price_f) and math.isfinite(count_f)) or price_f <= 0 or count_f < 0:
+            invalid += 1
             continue
         out.append({"volume": int(round(count_f)), "price": price_f})
-    return out
+    return out, invalid
+
+
+def _pairs_to_dicts(rows: Any) -> List[dict]:
+    """[[price, count], ...] を {"volume": int, "price": float} のリストにする。不正行は捨てる。"""
+    if not isinstance(rows, list):
+        return []
+    return _rows_checked(rows)[0]
+
+
+def _side_detail(rows: Any) -> dict:
+    """系列 1 本の検査結果 {"rows", "status", "invalid"}。
+
+    status: "ok"（有効行あり）/ "empty"（正しい空配列）/ "missing"（キーなし・null）/
+            "wrong_type"（配列でない）/ "all_invalid"（行はあるが全部不正）
+    """
+    if rows is None:
+        return {"rows": [], "status": "missing", "invalid": 0}
+    if not isinstance(rows, list):
+        return {"rows": [], "status": "wrong_type", "invalid": 0}
+    good, invalid = _rows_checked(rows)
+    if good:
+        status = "ok"
+    elif rows:
+        status = "all_invalid"
+    else:
+        status = "empty"
+    return {"rows": good, "status": status, "invalid": invalid}
+
+
+def _parse_orderbook_json_detail(payload: Any) -> Optional[dict]:
+    """order-book-data.json の応答を系列ごとに検査する。読めない・error 応答は None。
+
+    戻り値: {"bids": _side_detail, "asks": _side_detail}
+    """
+    if isinstance(payload, (str, bytes)):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(payload, dict) or payload.get("error"):
+        return None
+    content = payload.get("content")
+    if not isinstance(content, dict):
+        return None
+    return {"bids": _side_detail(content.get("bids")), "asks": _side_detail(content.get("asks"))}
 
 
 def _parse_orderbook_json(payload: Any) -> tuple[List[dict], List[dict]]:
@@ -156,17 +222,30 @@ def _parse_orderbook_json(payload: Any) -> tuple[List[dict], List[dict]]:
     想定形: {"error": false, "content": {"asks": [[price, count], ...], "bids": [...]}}
     価格は 4.19E+3 のような指数表記や整数でも来る。
     """
-    if isinstance(payload, (str, bytes)):
-        try:
-            payload = json.loads(payload)
-        except (ValueError, TypeError):
-            return [], []
-    if not isinstance(payload, dict) or payload.get("error"):
+    d = _parse_orderbook_json_detail(payload)
+    if d is None:
         return [], []
-    content = payload.get("content")
-    if not isinstance(content, dict):
-        return [], []
-    return _pairs_to_dicts(content.get("bids")), _pairs_to_dicts(content.get("asks"))
+    return d["bids"]["rows"], d["asks"]["rows"]
+
+
+def _parse_highcharts_detail(series: Any) -> Optional[dict]:
+    """Highcharts 系列を名前で Bids / Asks に分けて検査する。系列リストでなければ None。"""
+    if not isinstance(series, list):
+        return None
+    raw: dict = {"bids": None, "asks": None}
+    for s in series:
+        if not isinstance(s, dict):
+            continue
+        name = str(s.get("name") or "").strip().lower()
+        key = "bids" if name in ("bids", "bid") else "asks" if name in ("asks", "ask") else None
+        if key is None:
+            continue
+        points = s.get("points")
+        if not isinstance(points, list):
+            raw[key] = raw[key] if raw[key] is not None else points
+            continue
+        raw[key] = (raw[key] if isinstance(raw[key], list) else []) + points
+    return {k: _side_detail(v) for k, v in raw.items()}
 
 
 def _parse_highcharts_series(series: Any) -> tuple[List[dict], List[dict]]:
@@ -174,20 +253,10 @@ def _parse_highcharts_series(series: Any) -> tuple[List[dict], List[dict]]:
 
     系列名で Bid / Ask を決める。名前が想定外の系列は無視する。
     """
-    bids: List[dict] = []
-    asks: List[dict] = []
-    if not isinstance(series, list):
-        return bids, asks
-    for s in series:
-        if not isinstance(s, dict):
-            continue
-        name = str(s.get("name") or "").strip().lower()
-        rows = _pairs_to_dicts(s.get("points"))
-        if name in ("bids", "bid"):
-            bids.extend(rows)
-        elif name in ("asks", "ask"):
-            asks.extend(rows)
-    return bids, asks
+    d = _parse_highcharts_detail(series)
+    if d is None:
+        return [], []
+    return d["bids"]["rows"], d["asks"]["rows"]
 
 
 def _parse_market_depth_actual(text_head: Optional[str]) -> Optional[float]:
@@ -214,9 +283,36 @@ def _is_challenge(title: Optional[str] = None, body_text: Optional[str] = None,
         return True
     if title and any(t.lower() in title.lower() for t in CHALLENGE_TITLES):
         return True
-    if body_text and "Performing security verification" in body_text and "Cloudflare" in body_text:
+    if body_text and "Cloudflare" in body_text and (
+            "Performing security verification" in body_text or "Verify you are human" in body_text):
         return True
     return False
+
+
+def _refusal_kind(status: Any, cf_mitigated: Optional[str] = None, text: Optional[str] = None) -> Optional[str]:
+    """拒否応答の種類。200 と状態不明は None、Cloudflare の確認・遮断は "cloudflare"、それ以外は "http"。"""
+    if status is None or status == 200:
+        return None
+    if cf_mitigated and "challenge" in str(cf_mitigated).lower():
+        return "cloudflare"
+    if text:
+        head = text[:5000]
+        if any(m in head for m in CF_BLOCK_MARKERS):
+            return "cloudflare"
+    return "http"
+
+
+def _cloudflare_refused(payload: dict) -> bool:
+    """ページ・ページ自身の XHR・ページ内要求のどれかが Cloudflare に止められたか。"""
+    return bool(payload.get("challenge") or payload.get("xhr_refusal") == "cloudflare"
+                or payload.get("fetch_refusal") == "cloudflare")
+
+
+def _header(resp: Any, name: str) -> Optional[str]:
+    try:
+        return (resp.headers or {}).get(name)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _user_agent_for(browser_version: Optional[str]) -> str:
@@ -405,17 +501,57 @@ async def _in_page_fetch(page, path: str, symbol: str, max_chars: int) -> dict:
     return res if isinstance(res, dict) else {"status": None, "error": "invalid"}
 
 
+_JS_BODY_HEAD = "() => document.body ? document.body.innerText.slice(0, 3000) : ''"
+
+
+async def _body_head(page) -> str:
+    try:
+        text = await page.evaluate(_JS_BODY_HEAD)
+    except Exception:  # noqa: BLE001 — 遷移中
+        return ""
+    return text if isinstance(text, str) else ""
+
+
+async def _challenge_now(page, main: dict) -> bool:
+    """いま表示中の本ページが Cloudflare の確認画面かどうか（最初の応答ヘッダでは決めない）。
+
+    1. タイトルが確認画面なら確認中。
+    2. 最新の main frame の文書応答が cf-mitigated: challenge、またはタイトルが空のときは本文先頭も見る。
+       本文が確認画面なら確認中。ヘッダが challenge でもタイトルと本文が読めて確認画面でなければ通過済み
+       （通過時の遷移応答がまだ届いていない場合を含む）。ヘッダが challenge でタイトルも本文も空なら確認中。
+    """
+    try:
+        title = await page.title()
+    except Exception:  # noqa: BLE001 — 遷移中
+        title = ""
+    title = title or ""
+    if _is_challenge(title=title):
+        return True
+    header_challenge = bool(main.get("cf") and "challenge" in str(main["cf"]).lower())
+    if not header_challenge and title.strip():
+        return False
+    body = await _body_head(page)
+    if _is_challenge(body_text=body):
+        return True
+    return header_challenge and not title.strip() and not body.strip()
+
+
 async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
-                             deadline: Optional[float] = None) -> dict:
+                             deadline: Optional[float] = None,
+                             teardown_log: Optional[List[str]] = None) -> dict:
     """outlook ページを 1 回開き、Order Book の材料を集める。
 
-    deadline: _now()（time.monotonic）基準の締切。待ちはこれを超えない。
+    deadline: _now()（time.monotonic）基準の締切。待ちはこれを超えない。ブラウザ終了は締切後に
+      最大 CLOSE_TIMEOUT_S 秒かかる（呼び出し側がその分を残しておく）。
+    teardown_log: ブラウザ終了を打ち切った場合に記録を足すリスト（取消された試行でも残る）。
 
     Returns: {"order_book_json", "order_book_fetch", "market_depth_head", "market_depth_source",
-              "highcharts", "body_text", "challenge", "xhr_status", "fetch_status",
-              "launch", "elapsed_s"}
+              "highcharts", "body_text", "challenge", "challenge_cleared", "xhr_status", "xhr_refusal",
+              "fetch_status", "fetch_refusal", "launch", "elapsed_s"}
       xhr_status: ページ自身の order-book XHR の HTTP 状態（見えなければ None）
+      xhr_refusal / fetch_refusal: 拒否の種類（"cloudflare" / "http"、拒否でなければ None）
       fetch_status: ページ内要求の HTTP 状態（行わなければ None、失敗は "error"）
+      challenge_cleared: 確認画面が出たが自動で本ページへ進んだ
     """
     out: dict = {
         "order_book_json": None,
@@ -425,8 +561,11 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
         "highcharts": None,
         "body_text": "",
         "challenge": False,
+        "challenge_cleared": False,
         "xhr_status": None,
+        "xhr_refusal": None,
         "fetch_status": None,
+        "fetch_refusal": None,
         "launch": None,
         "elapsed_s": None,
     }
@@ -434,6 +573,8 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
     if deadline is None:
         deadline = t0 + TOTAL_BUDGET_S
     own_fetch = {"active": False}
+    seen = {"order_book": False}
+    main: dict = {"cf": None, "status": None}  # 最新の main frame 文書応答
     browser = None
     try:
         if use_new_headless:
@@ -454,15 +595,38 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
         )
         page = await context.new_page()
 
+        def _is_main_document(resp) -> bool:
+            try:
+                if resp.request.resource_type != "document":
+                    return False
+                frame = getattr(resp, "frame", None)
+                main_frame = getattr(page, "main_frame", None)
+                return frame is None or main_frame is None or frame == main_frame
+            except Exception:  # noqa: BLE001
+                return False
+
         async def _on_response(resp) -> None:
             try:
+                if _is_main_document(resp):
+                    main["cf"] = _header(resp, "cf-mitigated")
+                    main["status"] = resp.status
+                    return
                 if own_fetch["active"] and resp.request.resource_type == "fetch":
                     return  # 自前のページ内要求は戻り値で受け取る
                 url = resp.url
-                if ORDER_BOOK_XHR in url and out["xhr_status"] is None:
-                    out["xhr_status"] = resp.status
-                    if resp.status == 200:
-                        out["order_book_json"] = await resp.text()
+                if ORDER_BOOK_XHR in url and not seen["order_book"]:
+                    seen["order_book"] = True
+                    status = resp.status
+                    text = None
+                    try:
+                        text = await resp.text()
+                    except Exception:  # noqa: BLE001 — 本文が取れなくても状態は残す
+                        text = None
+                    if status == 200:
+                        out["order_book_json"] = text
+                    else:
+                        out["xhr_refusal"] = _refusal_kind(status, _header(resp, "cf-mitigated"), text)
+                    out["xhr_status"] = status  # 種類を決めてから状態を出す（待ちループが見る）
                 elif MARKET_DEPTH_XHR in url and out["market_depth_head"] is None and resp.status == 200:
                     body = await resp.body()
                     out["market_depth_head"] = body[:2000].decode("utf-8", "replace")
@@ -475,29 +639,30 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
         goto_ms = max(1000, int(min(BROWSER_TIMEOUT / 1000, deadline - _now() - 3) * 1000))
         resp = await page.goto(OUTLOOK_URL.format(symbol=symbol), timeout=goto_ms,
                                wait_until="domcontentloaded")
-        cf_mitigated = resp.headers.get("cf-mitigated") if resp else None
+        if resp is not None:
+            main["cf"] = _header(resp, "cf-mitigated")
+            main["status"] = resp.status
 
         data_deadline = min(_now() + DATA_WAIT_S, deadline - 3)
         challenge_deadline = _now() + CHALLENGE_WAIT_S
         shown_at: Optional[float] = None
         scrolled = False
+        seen_challenge = False
         while _now() < data_deadline:
             if out["order_book_json"] is not None or out["order_book_fetch"] is not None:
                 break
             if out["xhr_status"] is not None and out["xhr_status"] != 200:
                 break  # ページ自身の要求が拒否された。待っても届かない
-            try:
-                title = await page.title()
-            except Exception:  # noqa: BLE001 — 遷移中
-                title = ""
-            if _is_challenge(title=title, cf_mitigated=cf_mitigated):
+            if await _challenge_now(page, main):
+                seen_challenge = True
                 if _now() > challenge_deadline:
                     out["challenge"] = True
                     break
                 # 非対話チャレンジは通過すると自動で本ページへ遷移する
                 await page.wait_for_timeout(500)
                 continue
-            cf_mitigated = None  # 本ページへ遷移済み。初回応答のヘッダは以後見ない
+            if seen_challenge:
+                out["challenge_cleared"] = True
             if shown_at is None:
                 shown_at = _now()
             if not scrolled:
@@ -518,6 +683,8 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
                         if md.get("status") == 200 and md.get("text"):
                             out["market_depth_head"] = md["text"]
                             out["market_depth_source"] = "in_page_fetch"
+                else:
+                    out["fetch_refusal"] = _refusal_kind(res.get("status"), res.get("cf"), res.get("text"))
                 break  # 拒否された場合も同じ要求は繰り返さず、次の試行に回す
             await page.wait_for_timeout(500)
 
@@ -536,47 +703,103 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
             out["body_text"] = await page.inner_text("body", timeout=3000)
         except Exception:  # noqa: BLE001
             out["body_text"] = ""
-        if not out["challenge"] and _is_challenge(body_text=out["body_text"]):
+        if (not out["challenge"] and out["order_book_json"] is None and out["order_book_fetch"] is None
+                and _is_challenge(body_text=out["body_text"])):
             out["challenge"] = True
     finally:
         if browser is not None:
+            # 取消された試行でもここは走る。終了待ちは CLOSE_TIMEOUT_S で打ち切り、全体の上限を守る。
             try:
-                await asyncio.wait_for(browser.close(), timeout=5)
-            except Exception:  # noqa: BLE001
-                pass
+                await asyncio.wait_for(browser.close(), timeout=CLOSE_TIMEOUT_S)
+            except Exception as exc:  # noqa: BLE001
+                if teardown_log is not None:
+                    teardown_log.append(f"ブラウザ終了 打切り ({type(exc).__name__})")
         out["elapsed_s"] = round(_now() - t0, 1)
     return out
 
 
-def _extract_from_payload(payload: dict) -> tuple[List[dict], List[dict], Optional[str]]:
-    """収集物から (bids, asks, method) を決める。
+def _source_detail(payload: dict, method: str) -> Optional[dict]:
+    if method == "order_book_json":
+        return _parse_orderbook_json_detail(payload.get("order_book_json"))
+    if method == "in_page_fetch":
+        return _parse_orderbook_json_detail(payload.get("order_book_fetch"))
+    if method == "highcharts":
+        return _parse_highcharts_detail(payload.get("highcharts"))
+    bids, asks = _parse_orderbook_pairs(payload.get("body_text") or "")
+    if not bids and not asks:
+        return None
+    return {k: {"rows": rows, "status": "ok" if rows else "missing", "invalid": 0}
+            for k, rows in (("bids", bids), ("asks", asks))}
+
+
+def _side_issues(detail: dict) -> List[str]:
+    issues: List[str] = []
+    for key in ("asks", "bids"):
+        side = detail[key]
+        if side["status"] != "ok":
+            issues.append(f"{SIDE_LABELS[key]} {SIDE_STATUS_TEXT[side['status']]}")
+        if side["invalid"]:
+            issues.append(f"{SIDE_LABELS[key]} 不正行 {side['invalid']} 件を除外")
+    return issues
+
+
+def _extract_detail(payload: dict) -> dict:
+    """収集物から Order Book を決める。
 
     優先順: ページ自身の XHR → ページ内要求 → Highcharts → body テキスト。
+    両側（Asks / Bids）が正しい系列（空配列を含む）の経路を先に採る。どの経路も片側だけなら、
+    最初に取れた片側の経路を complete=False で返す。
+
+    Returns: {"bids", "asks", "method", "complete", "issues"}
     """
-    bids, asks = _parse_orderbook_json(payload.get("order_book_json"))
-    if bids or asks:
-        return bids, asks, "order_book_json"
-    bids, asks = _parse_orderbook_json(payload.get("order_book_fetch"))
-    if bids or asks:
-        return bids, asks, "in_page_fetch"
-    bids, asks = _parse_highcharts_series(payload.get("highcharts"))
-    if bids or asks:
-        return bids, asks, "highcharts"
-    bids, asks = _parse_orderbook_pairs(payload.get("body_text") or "")
-    if bids or asks:
-        return bids, asks, "body_text"
-    return [], [], None
+    partial: Optional[dict] = None
+    for method in ("order_book_json", "in_page_fetch", "highcharts", "body_text"):
+        d = _source_detail(payload, method)
+        if d is None:
+            continue
+        bids, asks = d["bids"]["rows"], d["asks"]["rows"]
+        if not bids and not asks:
+            continue
+        complete = all(d[k]["status"] in ("ok", "empty") for k in ("bids", "asks"))
+        item = {"bids": bids, "asks": asks, "method": method, "complete": complete,
+                "issues": _side_issues(d)}
+        if complete:
+            return item
+        if partial is None:
+            partial = item
+    if partial is not None:
+        return partial
+    return {"bids": [], "asks": [], "method": None, "complete": False, "issues": []}
 
 
-def _attempt_state(payload: dict, method: Optional[str]) -> str:
+def _extract_from_payload(payload: dict) -> tuple[List[dict], List[dict], Optional[str]]:
+    """収集物から (bids, asks, method) を決める（_extract_detail の要約）。"""
+    d = _extract_detail(payload)
+    return d["bids"], d["asks"], d["method"]
+
+
+def _status_text(status: Any, refusal: Optional[str]) -> str:
+    return f"{status} Cloudflare" if refusal == "cloudflare" else str(status)
+
+
+def _attempt_state(payload: dict, method: Optional[str], complete: bool = True) -> str:
     """note に残す 1 試行分の要約。例: "データなし (chromium-new-headless, 12.0s, XHR 403)"。"""
-    state = "challenge" if payload.get("challenge") else (method or "データなし")
+    if method:
+        state = method if complete else f"{method}（片側）"
+    elif payload.get("challenge"):
+        state = "challenge"
+    elif _cloudflare_refused(payload):
+        state = "Cloudflare遮断"
+    else:
+        state = "データなし"
     parts = [str(payload.get("launch")), f"{payload.get('elapsed_s')}s"]
+    if payload.get("challenge_cleared"):
+        parts.append("確認画面を自動通過")
     if not payload.get("challenge") and method != "order_book_json":
         xs = payload.get("xhr_status")
-        parts.append(f"XHR {xs if xs is not None else '未着'}")
+        parts.append(f"XHR {_status_text(xs, payload.get('xhr_refusal')) if xs is not None else '未着'}")
         if payload.get("fetch_status") is not None:
-            parts.append(f"ページ内要求 {payload['fetch_status']}")
+            parts.append(f"ページ内要求 {_status_text(payload['fetch_status'], payload.get('fetch_refusal'))}")
     return f"{state} ({', '.join(parts)})"
 
 
@@ -588,6 +811,10 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
         current_price_hint: TwelveData 等で取得済みの現在価格。
             ページ由来の現在価格と 2% 以上乖離する場合は hint を優先する
             （ページ側パースの異常検知用クロスチェック）。
+
+    Playwright の起動・最大 MAX_ATTEMPTS 回の試行・ブラウザ終了・Playwright 停止の全体を
+    TOTAL_BUDGET_S 秒以内に収める（終了処理の時間を先に確保し、終わらなければ打ち切って note に残す）。
+    Asks / Bids の片側しか取れない試行は成功とみなさず再試行し、最後まで片側なら note に明記して返す。
 
     Returns:
         {
@@ -624,58 +851,90 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
         "error": None,
     }
 
-    payload: Optional[dict] = None
-    bids: List[dict] = []
-    asks: List[dict] = []
-    method: Optional[str] = None
+    payload: Optional[dict] = None          # 最後に取れた試行の収集物
+    best: Optional[tuple] = None             # (detail, payload) 最良の取得結果
     attempts: List[str] = []
+    teardown: List[str] = []
     last_exc: Optional[Exception] = None
 
     deadline = _now() + TOTAL_BUDGET_S
+    work_deadline = deadline - STOP_TIMEOUT_S        # Playwright 停止の分を残す
+    attempt_deadline = work_deadline - CLOSE_TIMEOUT_S  # 各試行はブラウザ終了の分を残して打ち切る
+    pw_cm = async_playwright()
+    p = None
     try:
-        async with async_playwright() as p:
-            for attempt in range(1, MAX_ATTEMPTS + 1):
-                if attempt > 1:
-                    if deadline - _now() < RETRY_DELAY_S + MIN_ATTEMPT_S:
-                        attempts.append(f"{attempt}:時間上限で打切り")
-                        break
-                    await asyncio.sleep(RETRY_DELAY_S)
-                remaining = deadline - _now()
-                try:
-                    payload_i = await asyncio.wait_for(
-                        _load_outlook_once(p, symbol, use_new_headless=True, deadline=deadline),
-                        timeout=max(remaining, 1.0))
-                except Exception as exc:  # noqa: BLE001 — 次の試行へ
-                    last_exc = exc
-                    attempts.append(f"{attempt}:例外 {type(exc).__name__}")
-                    continue
-                payload = payload_i
-                bids, asks, method = _extract_from_payload(payload)
-                attempts.append(f"{attempt}:{_attempt_state(payload, method)}")
-                if method:
+        start_timeout = min(START_TIMEOUT_S, attempt_deadline - _now())
+        if start_timeout <= 0:
+            raise TimeoutError("budget exhausted before start")
+        p = await asyncio.wait_for(pw_cm.__aenter__(), timeout=start_timeout)
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                if attempt_deadline - _now() < RETRY_DELAY_S + MIN_ATTEMPT_S:
+                    attempts.append(f"{attempt}:時間上限で打切り")
                     break
+                await asyncio.sleep(RETRY_DELAY_S)
+            remaining = attempt_deadline - _now()
+            if remaining <= 0:
+                attempts.append(f"{attempt}:時間上限で打切り")
+                break
+            try:
+                payload_i = await asyncio.wait_for(
+                    _load_outlook_once(p, symbol, use_new_headless=True, deadline=attempt_deadline,
+                                       teardown_log=teardown),
+                    timeout=remaining)
+            except Exception as exc:  # noqa: BLE001 — 次の試行へ
+                last_exc = exc
+                attempts.append(f"{attempt}:例外 {type(exc).__name__}")
+                continue
+            payload = payload_i
+            detail = _extract_detail(payload_i)
+            attempts.append(f"{attempt}:{_attempt_state(payload_i, detail['method'], detail['complete'])}")
+            if detail["method"] and (best is None or (detail["complete"] and not best[0]["complete"])):
+                best = (detail, payload_i)
+            if detail["complete"]:
+                break
     except Exception as exc:  # noqa: BLE001
         last_exc = exc
+    finally:
+        if p is not None:
+            stop_timeout = max(0.05, min(STOP_TIMEOUT_S, deadline - _now()))
+            try:
+                await asyncio.wait_for(pw_cm.__aexit__(None, None, None), timeout=stop_timeout)
+            except Exception as exc:  # noqa: BLE001
+                teardown.append(f"Playwright 停止 打切り ({type(exc).__name__})")
 
     notes: List[str] = []
     if attempts:
         notes.append("試行 " + " / ".join(attempts))
+    if teardown:
+        notes.append("終了処理: " + " / ".join(teardown))
 
     if payload is None:
-        result["error"] = f"ページ取得失敗: {last_exc}"
+        reason = (str(last_exc) or type(last_exc).__name__) if last_exc is not None else "不明"
+        result["error"] = f"ページ取得失敗: {reason}"
         result["note"] = "; ".join(notes) or None
         return result
+
+    if best is not None:
+        detail, payload = best
+    else:
+        detail = {"bids": [], "asks": [], "method": None, "complete": False, "issues": []}
+    bids, asks, method = detail["bids"], detail["asks"], detail["method"]
 
     result["bid_count"] = len(bids)
     result["ask_count"] = len(asks)
     result["summary"] = {"bid": len(bids), "ask": len(asks)}
 
     if not bids and not asks:
-        result["error"] = ERR_CHALLENGE if payload.get("challenge") else ERR_NO_PAIRS
+        result["error"] = ERR_CHALLENGE if _cloudflare_refused(payload) else ERR_NO_PAIRS
         result["note"] = "; ".join(notes) or None
         return result
 
     notes.insert(0, f"取得方法: {method}")
+    if not detail["complete"]:
+        notes.insert(1, f"片側のみ取得（{'、'.join(detail['issues'])}。{len(attempts)} 回の試行で両側そろわず）")
+    elif detail["issues"]:
+        notes.insert(1, f"入力の注意: {'、'.join(detail['issues'])}")
 
     current_price = _parse_market_depth_actual(payload.get("market_depth_head"))
     if current_price is not None:

@@ -151,7 +151,7 @@ def stub_browser(monkeypatch):
     calls = []
 
     def install(payloads):
-        async def fake_once(p, symbol, use_new_headless, deadline=None):
+        async def fake_once(p, symbol, use_new_headless, deadline=None, teardown_log=None):
             calls.append(symbol)
             item = payloads[len(calls) - 1]
             if isinstance(item, Exception):
@@ -268,9 +268,9 @@ def test_scrape_stops_retrying_when_budget_is_exhausted(stub_browser, monkeypatc
 # ---- _load_outlook_once のページ内要求（ブラウザを模擬） ----
 
 class _FakeResponse:
-    def __init__(self, url, status, text="", resource_type="xhr"):
+    def __init__(self, url, status, text="", resource_type="xhr", headers=None):
         self.url, self.status, self._text = url, status, text
-        self.headers = {}
+        self.headers = headers or {}
         self.request = type("Req", (), {"resource_type": resource_type})()
 
     async def text(self):
@@ -419,3 +419,312 @@ def test_page_xhr_captured_without_in_page_fetch(fast_waits):
     assert payload["xhr_status"] == 200 and page.fetch_calls == []
     assert payload["market_depth_source"] == "xhr"
     assert oo._extract_from_payload(payload)[2] == "order_book_json"
+
+
+# ---- Cloudflare: 現在のページ状態で判定し、XHR / ページ内要求の遮断を区別する ----
+
+XHR_URL = "https://www.myfxbook.com" + oo.ORDER_BOOK_XHR + "?symbolName=XAUUSD"
+CF_HEADERS = {"cf-mitigated": "challenge"}
+CF_XHR_BODY = "<!DOCTYPE html><html><head><title>Just a moment...</title></head></html>"
+
+
+class _ScriptedPage(_FakePage):
+    """時計を進めながら、確認画面 → 本ページ → 遅れて XHR、の流れを再現する。
+
+    challenge_polls: 最初の何回の title() で確認画面を返すか
+    late_xhr: (wait_for_timeout の呼び出し回数, 応答) — その回の待ちの後にページ自身の XHR が届く
+    """
+
+    def __init__(self, clock, challenge_polls=0, goto_headers=None, late_xhr=(), body="Forex Sentiment", **kw):
+        super().__init__(**kw)
+        self.clock = clock
+        self.body = body
+        self.challenge_polls = challenge_polls
+        self.goto_headers = goto_headers or {}
+        self.late_xhr = list(late_xhr)
+        self.title_calls = 0
+        self.waits = 0
+
+    async def goto(self, url, timeout=None, wait_until=None):
+        self.title_calls = 0
+        self.waits = 0
+        for resp in self.page_xhr:
+            await self.handler(resp)
+        status = 403 if self.goto_headers else 200
+        return _FakeResponse(url, status, resource_type="document", headers=self.goto_headers)
+
+    async def title(self):
+        self.title_calls += 1
+        return "Just a moment..." if self._showing_challenge() else "Forex Sentiment XAUUSD | Myfxbook"
+
+    async def wait_for_timeout(self, ms):
+        self.clock["t"] += ms / 1000
+        self.waits += 1
+        for n, resp in self.late_xhr:
+            if n == self.waits:
+                await self.handler(resp)
+        await asyncio.sleep(0)
+
+    async def evaluate(self, js, arg=None):
+        if js == oo._JS_BODY_HEAD:
+            return CHALLENGE.read_text() if self._showing_challenge() else self.body[:3000]
+        return await super().evaluate(js, arg)
+
+    async def inner_text(self, sel, timeout=None):
+        return CHALLENGE.read_text() if self._showing_challenge() else self.body
+
+    def _showing_challenge(self):
+        return self.challenge_polls > 0 and self.title_calls <= self.challenge_polls
+
+
+class _FakePlaywrightWith:
+    def __init__(self, p):
+        self.p = p
+
+    async def __aenter__(self):
+        return self.p
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(oo, "_now", lambda: clock["t"])
+    monkeypatch.setattr(oo, "RETRY_DELAY_S", 0)
+    return clock
+
+
+def _scrape_with_page(monkeypatch, page, hint=None):
+    monkeypatch.setattr(oo, "async_playwright", lambda: _FakePlaywrightWith(_fake_p(page)))
+    return asyncio.run(oo.scrape_myfxbook_open_orders("XAUUSD", current_price_hint=hint))
+
+
+def test_challenge_auto_clears_then_late_xhr_is_captured(fake_clock, monkeypatch):
+    """初回応答の cf-mitigated: challenge が残っていても、本ページへ進んだら確認画面と扱わない。
+
+    確認画面 3 回（1.5 秒）→ 本ページ → 開始 9 秒後（CHALLENGE_WAIT_S の 8 秒より後、ページ内要求を出す
+    表示後 8 秒より前）にページ自身の XHR が届く。通過時の遷移応答は届かない（古いヘッダだけが残る）
+    最悪の場合を再現する。初回ヘッダで判定すると 8 秒で challenge と誤判定して XHR を取り逃す。
+    """
+    page = _direct_handler(_ScriptedPage(
+        fake_clock, challenge_polls=3, goto_headers=CF_HEADERS, body=BODY.read_text(),
+        late_xhr=[(18, _FakeResponse(XHR_URL, 200, OB_JSON.read_text())),
+                  (18, _FakeResponse("https://www.myfxbook.com" + oo.MARKET_DEPTH_XHR, 200, MD_HEAD.read_text()))]))
+    payload = asyncio.run(oo._load_outlook_once(_fake_p(page), "XAUUSD", use_new_headless=True,
+                                                deadline=fake_clock["t"] + 60))
+    assert payload["challenge"] is False and payload["challenge_cleared"] is True
+    assert payload["xhr_status"] == 200 and payload["xhr_refusal"] is None
+    assert page.fetch_calls == []  # 表示から XHR_WAIT_S（8 秒）以内に届いたのでページ内要求はしない
+    assert 1008.5 < fake_clock["t"] < 1010.0
+    assert oo._extract_from_payload(payload)[2] == "order_book_json"
+
+    r = _scrape_with_page(monkeypatch, page, hint=4140.0)
+    assert r["error"] is None and r["bid_count"] == 15 and r["ask_count"] == 15
+    assert "1:order_book_json (chromium-new-headless" in r["note"] and "確認画面を自動通過" in r["note"]
+
+
+def test_challenge_that_never_clears_still_reported(fake_clock, monkeypatch):
+    page = _direct_handler(_ScriptedPage(fake_clock, challenge_polls=10**6, goto_headers=CF_HEADERS))
+    r = _scrape_with_page(monkeypatch, page)
+    assert r["error"] == oo.ERR_CHALLENGE
+    assert r["note"].count(":challenge (") == oo.MAX_ATTEMPTS
+
+
+def test_stale_challenge_header_with_blank_page_counts_as_challenge():
+    """ヘッダが challenge でタイトルも本文も空（確認画面の読み込み中）なら通過扱いにしない。"""
+    class Blank:
+        async def title(self):
+            return ""
+
+        async def evaluate(self, js, arg=None):
+            return ""
+    assert asyncio.run(oo._challenge_now(Blank(), {"cf": "challenge"})) is True
+    assert asyncio.run(oo._challenge_now(Blank(), {"cf": None})) is False
+
+
+def test_only_xhr_is_challenged_reports_cloudflare_block(fake_clock, monkeypatch):
+    """本ページは表示されたが、ページ自身の XHR だけが Cloudflare に 403 で止められた。"""
+    page = _direct_handler(_ScriptedPage(fake_clock, page_xhr=[
+        _FakeResponse(XHR_URL, 403, CF_XHR_BODY, headers=CF_HEADERS)]))
+    payload = asyncio.run(oo._load_outlook_once(_fake_p(page), "XAUUSD", use_new_headless=True,
+                                                deadline=fake_clock["t"] + 60))
+    assert payload["challenge"] is False
+    assert payload["xhr_status"] == 403 and payload["xhr_refusal"] == "cloudflare"
+    assert page.fetch_calls == []
+
+    r = _scrape_with_page(monkeypatch, page)
+    assert r["error"] == oo.ERR_CHALLENGE == "Cloudflare のボット確認で遮断され Order Book を取得できず"
+    assert "1:Cloudflare遮断 (" in r["note"] and "XHR 403 Cloudflare" in r["note"]
+    assert r["note"].count("Cloudflare遮断") == oo.MAX_ATTEMPTS
+
+
+def test_xhr_challenge_detected_from_body_without_header():
+    assert oo._refusal_kind(403, None, CF_XHR_BODY) == "cloudflare"
+    assert oo._refusal_kind(403, "challenge", "") == "cloudflare"
+    assert oo._refusal_kind(403, None, "blocked") == "http"
+    assert oo._refusal_kind(500, None, None) == "http"
+    assert oo._refusal_kind(200, "challenge", CF_XHR_BODY) is None
+    assert oo._refusal_kind(None, None, CF_XHR_BODY) is None
+
+
+def test_non_cloudflare_xhr_refusal_keeps_no_pairs_error(fake_clock, monkeypatch):
+    page = _direct_handler(_ScriptedPage(fake_clock, page_xhr=[_FakeResponse(XHR_URL, 403, "blocked")]))
+    r = _scrape_with_page(monkeypatch, page)
+    assert r["error"] == oo.ERR_NO_PAIRS
+    assert "1:データなし (chromium-new-headless" in r["note"] and "XHR 403)" in r["note"]
+    assert "Cloudflare" not in r["note"]
+
+
+def test_in_page_fetch_cloudflare_block_is_distinguished(fast_waits):
+    page = _direct_handler(_FakePage(fetch_results={
+        oo.ORDER_BOOK_XHR: {"status": 403, "text": "<title>Attention Required! | Cloudflare</title>"}}))
+    payload = _run_once(page)
+    assert payload["fetch_status"] == 403 and payload["fetch_refusal"] == "cloudflare"
+    assert oo._attempt_state(payload, None) .startswith("Cloudflare遮断 (")
+    assert "ページ内要求 403 Cloudflare" in oo._attempt_state(payload, None)
+
+    page = _direct_handler(_FakePage(fetch_results={oo.ORDER_BOOK_XHR: {"status": 429, "text": "slow down"}}))
+    payload = _run_once(page)
+    assert payload["fetch_refusal"] == "http"
+    assert oo._attempt_state(payload, None).endswith("ページ内要求 429)")
+
+
+# ---- 全体の時間上限（起動・試行・終了処理を含む） ----
+
+class _HangingPage(_FakePage):
+    async def goto(self, url, timeout=None, wait_until=None):
+        await asyncio.sleep(3600)
+
+
+class _HangingCloseBrowser(_FakeBrowser):
+    async def close(self):
+        await asyncio.sleep(3600)
+
+
+class _HangingStopPlaywright:
+    def __init__(self, p, hang_start=False):
+        self.p, self.hang_start = p, hang_start
+
+    async def __aenter__(self):
+        if self.hang_start:
+            await asyncio.sleep(3600)
+        return self.p
+
+    async def __aexit__(self, *exc):
+        await asyncio.sleep(3600)
+
+
+@pytest.fixture
+def tiny_budget(monkeypatch):
+    """実時計のまま上限を 0.6 秒に縮める（テストを遅くしない）。"""
+    monkeypatch.setattr(oo, "TOTAL_BUDGET_S", 0.6)
+    monkeypatch.setattr(oo, "CLOSE_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(oo, "STOP_TIMEOUT_S", 0.1)
+    monkeypatch.setattr(oo, "START_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(oo, "MIN_ATTEMPT_S", 0.05)
+    monkeypatch.setattr(oo, "RETRY_DELAY_S", 0)
+    return 0.6
+
+
+def _timed_scrape(monkeypatch, pw):
+    import time as _time
+    monkeypatch.setattr(oo, "async_playwright", lambda: pw)
+    t0 = _time.monotonic()
+    r = asyncio.run(oo.scrape_myfxbook_open_orders("XAUUSD"))
+    return r, _time.monotonic() - t0
+
+
+def test_budget_includes_cancelled_attempt_slow_close_and_slow_stop(tiny_budget, monkeypatch):
+    page = _HangingPage()
+
+    class Chromium:
+        async def launch(self, **kw):
+            return _HangingCloseBrowser(page)
+    p = type("P", (), {"chromium": Chromium()})()
+    r, elapsed = _timed_scrape(monkeypatch, _HangingStopPlaywright(p))
+    assert elapsed < tiny_budget + 0.15, elapsed
+    assert r["error"] == "ページ取得失敗: TimeoutError"
+    assert "1:例外 TimeoutError" in r["note"] and "2:時間上限で打切り" in r["note"]
+    assert "ブラウザ終了 打切り (TimeoutError)" in r["note"]
+    assert "Playwright 停止 打切り (TimeoutError)" in r["note"]
+
+
+def test_budget_includes_playwright_start(tiny_budget, monkeypatch):
+    r, elapsed = _timed_scrape(monkeypatch, _HangingStopPlaywright(_fake_p(_FakePage()), hang_start=True))
+    assert elapsed < 0.2 + 0.15, elapsed  # START_TIMEOUT_S で打切り、未起動なので停止は待たない
+    assert r["error"] == "ページ取得失敗: TimeoutError"
+
+
+# ---- 入力検査: NaN / Infinity / 片側欠落 ----
+
+def test_nan_and_infinity_rows_are_rejected():
+    raw = '{"error": false, "content": {"asks": [[NaN, 3], [4100, Infinity], [4101, 2], [-Infinity, 1]], "bids": [[4000, NaN]]}}'
+    d = oo._parse_orderbook_json_detail(raw)
+    assert _key(d["asks"]["rows"]) == [(4101.0, 2)] and d["asks"]["invalid"] == 3
+    assert d["bids"] == {"rows": [], "status": "all_invalid", "invalid": 1}
+    bids, asks = oo._parse_orderbook_json(
+        {"content": {"asks": [[float("nan"), 1], ["inf", 2], [4100, "nan"], [4100, 1e400], [4102, 4]],
+                     "bids": [[4000, 1]]}})
+    assert _key(asks) == [(4102.0, 4)] and _key(bids) == [(4000.0, 1)]
+    hc = [{"name": "Asks", "points": [[float("inf"), 3], [4200.0, 7]]}, {"name": "Bids", "points": [[None, 1]]}]
+    hd = oo._parse_highcharts_detail(hc)
+    assert hd["asks"]["invalid"] == 1 and hd["bids"]["status"] == "all_invalid"
+
+
+def test_missing_wrong_type_and_empty_series_are_distinguished():
+    d = oo._parse_orderbook_json_detail({"content": {"asks": [[4100, 3]]}})
+    assert d["bids"]["status"] == "missing"
+    d = oo._parse_orderbook_json_detail({"content": {"asks": [[4100, 3]], "bids": "x"}})
+    assert d["bids"]["status"] == "wrong_type"
+    d = oo._parse_orderbook_json_detail({"content": {"asks": [[4100, 3]], "bids": []}})
+    assert d["bids"]["status"] == "empty"
+    assert oo._parse_highcharts_detail([{"name": "Asks", "points": [[4200.0, 7]]}])["bids"]["status"] == "missing"
+
+    one_sided = {"order_book_json": json.dumps({"content": {"asks": [[4100, 3]]}})}
+    det = oo._extract_detail(one_sided)
+    assert det["method"] == "order_book_json" and det["complete"] is False
+    assert det["issues"] == ["Bids 系列なし"]
+    det = oo._extract_detail({"order_book_json": json.dumps({"content": {"asks": [[4100, 3]], "bids": []}})})
+    assert det["complete"] is True and det["issues"] == ["Bids 空配列"]
+
+
+def test_one_sided_xhr_falls_through_to_complete_highcharts():
+    payload = {"order_book_json": json.dumps({"content": {"asks": [[4100, 3]]}}),
+               "highcharts": json.loads(OB_HC.read_text())}
+    det = oo._extract_detail(payload)
+    assert det["method"] == "highcharts" and det["complete"] and len(det["bids"]) == 15
+
+
+def test_scrape_retries_one_sided_then_succeeds(stub_browser):
+    one_sided = json.dumps({"error": False, "content": {"asks": [[4160.0, 3]]}})
+    calls = stub_browser([
+        _payload(order_book_json=one_sided, xhr_status=200),
+        _payload(order_book_json=OB_JSON.read_text(), xhr_status=200, market_depth_head=MD_HEAD.read_text()),
+    ])
+    r = asyncio.run(oo.scrape_myfxbook_open_orders("XAUUSD"))
+    assert len(calls) == 2
+    assert r["error"] is None and r["bid_count"] == 15 and r["ask_count"] == 15
+    assert "1:order_book_json（片側）" in r["note"] and "片側のみ取得" not in r["note"]
+
+
+def test_scrape_still_one_sided_after_all_attempts_returns_with_note(stub_browser):
+    one_sided = json.dumps({"error": False, "content": {"asks": [[4160.0, 3], [4100.0, float("nan")]]}})
+    calls = stub_browser([_payload(order_book_json=one_sided, xhr_status=200,
+                                   market_depth_head=MD_HEAD.read_text())] * 3)
+    r = asyncio.run(oo.scrape_myfxbook_open_orders("XAUUSD"))
+    assert len(calls) == 3
+    assert r["error"] is None
+    assert r["bid_count"] == 0 and r["ask_count"] == 1 and r["summary"] == {"bid": 0, "ask": 1}
+    assert "片側のみ取得（Asks 不正行 1 件を除外、Bids 系列なし。3 回の試行で両側そろわず）" in r["note"]
+    assert r["note"].startswith("取得方法: order_book_json")
+
+
+def test_scrape_notes_invalid_rows_on_complete_data(stub_browser):
+    data = json.loads(OB_JSON.read_text())
+    data["content"]["bids"].append([float("nan"), 5])
+    stub_browser([_payload(order_book_json=json.dumps(data), xhr_status=200, market_depth_head=MD_HEAD.read_text())])
+    r = asyncio.run(oo.scrape_myfxbook_open_orders("XAUUSD"))
+    assert r["error"] is None and r["bid_count"] == 15
+    assert "入力の注意: Bids 不正行 1 件を除外" in r["note"]
