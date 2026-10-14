@@ -67,7 +67,7 @@ def test_fetched_clusters_are_zone_rows_with_side_share_source_and_time():
         assert all(str(item[k]) in item['source_quote'] for k in SHOWN if item.get(k))
         assert '損切り' not in item['source_quote'] and '指値' not in item['source_quote']
     legend = figure['legend']
-    assert '60分遅れ' in legend and 'ポジションの数でロットではありません' in legend and '15価格' in legend
+    assert '60分遅れ' in legend and '注文・建玉の数でロットではありません' in legend and '15価格' in legend
     assert '未約定の注文か保有中の建玉か、損切りか指値かを示していない' in legend
     assert figure['missing'] == []
 
