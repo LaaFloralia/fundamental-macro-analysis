@@ -8,6 +8,11 @@
      ``/community/order-book-data.json?symbolName={symbol}`` の応答
      ``{"content": {"asks": [[price, count], ...], "bids": [...], "decimalCount": 2}}`` を
      Playwright の response として受け取る。Asks / Bids は系列名で識別する。
+  1b. in_page_fetch: ページ表示後 XHR_WAIT_S 秒たってもページ自身の XHR が見えないときだけ、
+     ページ内から同じ URL を 1 回要求する（同一オリジン・同一 Cookie）。ページ自身の XHR が
+     403 などで拒否された場合は行わない。2026-10-14 の実測では、ページ内から出した要求は
+     ページ自身の要求が届いた後でも届く前でも 8 回すべて 403（Cloudflare "Attention Required"）
+     だったため、成功は期待しにくい。note に状態を残して効果を確かめる。
   2. highcharts: 上記を取り逃した場合、``#orderBookChartContainer`` の Highcharts 系列
      （name = "Asks" / "Bids"、point.price と point.y）を page.evaluate で読む。
   3. body_text: 最後の手段として body の inner_text を解析する。テキストでは
@@ -19,6 +24,7 @@
   - 見出しは "Order Book (Positions)"、系列名は "Asks" / "Bids"、Y 軸は
     "Amount of ask orders" / "Amount of bid orders"、ツールチップの単位は "positions"。
     値は件数で、ロット数ではない。各系列は件数の多い順に上位 15 件で、価格順ではない。
+  - 同じ URL を同じページから 2 回目に要求すると 403、ページの再読込も 403 になる（2026-10-14 実測）。
   - Asks も Bids も現在価格の上下両側に分布する（2026-10-14 の XAUUSD では現値 4151.73 に対し
     Asks 4103.99〜4190.00、Bids 3458.12〜5175.78）。通常の板（Bid は下、Ask は上）とは並びが違う。
   - これが未約定の指値・逆指値注文なのか、保有ポジションの価格分布なのかをページは説明していない。
@@ -57,13 +63,29 @@ ORDER_BOOK_XHR = "/community/order-book-data.json"
 MARKET_DEPTH_XHR = "/community/market-depth-data.json"
 ORDER_BOOK_CONTAINER_ID = "orderBookChartContainer"
 
-# データ待ちの上限（秒）。order-book-data.json は通常ロード開始から 4 秒前後で届く。
+# 1 試行内のデータ待ちの上限（秒）。order-book-data.json は通常ロード開始から 4 秒前後で届く。
 DATA_WAIT_S = 20.0
+# ページ表示後この秒数たってもページ自身の XHR が見えなければ、ページ内から同じ URL を 1 回だけ要求する。
+XHR_WAIT_S = 8.0
+# ページ内要求のタイムアウト（秒）。
+IN_PAGE_FETCH_TIMEOUT_S = 8.0
+# 現在価格用の market-depth-data.json を order book の後に待つ上限（秒）。
+MARKET_DEPTH_WAIT_S = 3.0
 # Cloudflare の非対話チャレンジが自動で抜けるのを待つ上限（秒）。対話型は待っても抜けない。
 CHALLENGE_WAIT_S = 8.0
-# 失敗時の再試行は 1 回だけ。間隔（秒）。
+# 試行は最大 3 回、間隔 5 秒。全体（全試行と待ち）を TOTAL_BUDGET_S 秒以内に収める。
 RETRY_DELAY_S = 5.0
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3
+TOTAL_BUDGET_S = 88.0
+# 残り時間がこれ未満なら次の試行を始めない（起動 + 表示 + XHR 待ちに必要な最小時間）。
+MIN_ATTEMPT_S = 15.0
+
+
+
+def _now() -> float:
+    """締切計算用の単調時計（テストで差し替える）。"""
+    return time.monotonic()
+
 
 CHALLENGE_TITLES = ("Just a moment", "Attention Required", "Performing security verification")
 
@@ -85,6 +107,24 @@ _JS_ORDER_BOOK_SERIES = """(containerId) => {
     name: s.name,
     points: s.points.map(p => [p.price !== undefined ? p.price : (p.options && p.options.price), p.y]),
   }));
+}"""
+
+# ページ自身の XHR と同じ URL 形（symbolName と乱数 z）・同じ X-Requested-With で、
+# 同一オリジン・同一 Cookie のまま 1 回だけ要求する。応答は先頭 maxChars 文字だけ返す。
+_JS_IN_PAGE_FETCH = """async ([path, symbol, maxChars, timeoutMs]) => {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const url = path + '?symbolName=' + encodeURIComponent(symbol) + '&z=' + Math.random();
+    const r = await fetch(url, {credentials: 'same-origin', signal: ctl.signal,
+                                headers: {'X-Requested-With': 'XMLHttpRequest'}});
+    const text = await r.text();
+    return {status: r.status, text: maxChars > 0 ? text.slice(0, maxChars) : text};
+  } catch (e) {
+    return {status: null, error: String(e && e.name || e)};
+  } finally {
+    clearTimeout(timer);
+  }
 }"""
 
 
@@ -355,22 +395,45 @@ def _cluster_and_classify(
     }
 
 
-async def _load_outlook_once(p, symbol: str, use_new_headless: bool) -> dict:
+async def _in_page_fetch(page, path: str, symbol: str, max_chars: int) -> dict:
+    """ページ内（同一オリジン・同一 Cookie）から path を 1 回要求する。例外は status None で返す。"""
+    try:
+        res = await page.evaluate(
+            _JS_IN_PAGE_FETCH, [path, symbol, max_chars, int(IN_PAGE_FETCH_TIMEOUT_S * 1000)])
+    except Exception as exc:  # noqa: BLE001
+        return {"status": None, "error": type(exc).__name__}
+    return res if isinstance(res, dict) else {"status": None, "error": "invalid"}
+
+
+async def _load_outlook_once(p, symbol: str, use_new_headless: bool,
+                             deadline: Optional[float] = None) -> dict:
     """outlook ページを 1 回開き、Order Book の材料を集める。
 
-    Returns: {"order_book_json", "market_depth_head", "highcharts", "body_text",
-              "challenge", "launch", "elapsed_s"}
+    deadline: _now()（time.monotonic）基準の締切。待ちはこれを超えない。
+
+    Returns: {"order_book_json", "order_book_fetch", "market_depth_head", "market_depth_source",
+              "highcharts", "body_text", "challenge", "xhr_status", "fetch_status",
+              "launch", "elapsed_s"}
+      xhr_status: ページ自身の order-book XHR の HTTP 状態（見えなければ None）
+      fetch_status: ページ内要求の HTTP 状態（行わなければ None、失敗は "error"）
     """
     out: dict = {
         "order_book_json": None,
+        "order_book_fetch": None,
         "market_depth_head": None,
+        "market_depth_source": None,
         "highcharts": None,
         "body_text": "",
         "challenge": False,
+        "xhr_status": None,
+        "fetch_status": None,
         "launch": None,
         "elapsed_s": None,
     }
-    t0 = time.monotonic()
+    t0 = _now()
+    if deadline is None:
+        deadline = t0 + TOTAL_BUDGET_S
+    own_fetch = {"active": False}
     browser = None
     try:
         if use_new_headless:
@@ -393,59 +456,84 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool) -> dict:
 
         async def _on_response(resp) -> None:
             try:
+                if own_fetch["active"] and resp.request.resource_type == "fetch":
+                    return  # 自前のページ内要求は戻り値で受け取る
                 url = resp.url
-                if ORDER_BOOK_XHR in url and out["order_book_json"] is None and resp.status == 200:
-                    out["order_book_json"] = await resp.text()
+                if ORDER_BOOK_XHR in url and out["xhr_status"] is None:
+                    out["xhr_status"] = resp.status
+                    if resp.status == 200:
+                        out["order_book_json"] = await resp.text()
                 elif MARKET_DEPTH_XHR in url and out["market_depth_head"] is None and resp.status == 200:
                     body = await resp.body()
                     out["market_depth_head"] = body[:2000].decode("utf-8", "replace")
+                    out["market_depth_source"] = "xhr"
             except Exception:  # noqa: BLE001 — 応答本文が取れなくても他経路で続行
                 pass
 
         page.on("response", lambda r: asyncio.ensure_future(_on_response(r)))
 
-        resp = await page.goto(OUTLOOK_URL.format(symbol=symbol), timeout=BROWSER_TIMEOUT,
+        goto_ms = max(1000, int(min(BROWSER_TIMEOUT / 1000, deadline - _now() - 3) * 1000))
+        resp = await page.goto(OUTLOOK_URL.format(symbol=symbol), timeout=goto_ms,
                                wait_until="domcontentloaded")
         cf_mitigated = resp.headers.get("cf-mitigated") if resp else None
 
-        deadline = time.monotonic() + DATA_WAIT_S
-        challenge_deadline = time.monotonic() + CHALLENGE_WAIT_S
+        data_deadline = min(_now() + DATA_WAIT_S, deadline - 3)
+        challenge_deadline = _now() + CHALLENGE_WAIT_S
+        shown_at: Optional[float] = None
         scrolled = False
-        while time.monotonic() < deadline:
-            if out["order_book_json"] is not None:
+        while _now() < data_deadline:
+            if out["order_book_json"] is not None or out["order_book_fetch"] is not None:
                 break
+            if out["xhr_status"] is not None and out["xhr_status"] != 200:
+                break  # ページ自身の要求が拒否された。待っても届かない
             try:
                 title = await page.title()
             except Exception:  # noqa: BLE001 — 遷移中
                 title = ""
             if _is_challenge(title=title, cf_mitigated=cf_mitigated):
-                if time.monotonic() > challenge_deadline:
+                if _now() > challenge_deadline:
                     out["challenge"] = True
                     break
                 # 非対話チャレンジは通過すると自動で本ページへ遷移する
                 await page.wait_for_timeout(500)
                 continue
             cf_mitigated = None  # 本ページへ遷移済み。初回応答のヘッダは以後見ない
+            if shown_at is None:
+                shown_at = _now()
             if not scrolled:
                 try:
                     await page.locator(f"#{ORDER_BOOK_CONTAINER_ID}").scroll_into_view_if_needed(timeout=2000)
                     scrolled = True
                 except Exception:  # noqa: BLE001 — 要素がまだ無い
                     pass
+            if (out["xhr_status"] is None and out["fetch_status"] is None
+                    and _now() - shown_at >= XHR_WAIT_S):
+                own_fetch["active"] = True
+                res = await _in_page_fetch(page, ORDER_BOOK_XHR, symbol, 0)
+                out["fetch_status"] = res.get("status") if res.get("status") is not None else "error"
+                if res.get("status") == 200 and res.get("text"):
+                    out["order_book_fetch"] = res["text"]
+                    if out["market_depth_head"] is None:
+                        md = await _in_page_fetch(page, MARKET_DEPTH_XHR, symbol, 2000)
+                        if md.get("status") == 200 and md.get("text"):
+                            out["market_depth_head"] = md["text"]
+                            out["market_depth_source"] = "in_page_fetch"
+                break  # 拒否された場合も同じ要求は繰り返さず、次の試行に回す
             await page.wait_for_timeout(500)
 
         if not out["challenge"]:
-            # 現在価格用の market-depth-data.json を少しだけ待つ（通常は order book と同時に届く）
-            md_deadline = time.monotonic() + 5.0
-            while out["market_depth_head"] is None and time.monotonic() < md_deadline:
-                await page.wait_for_timeout(250)
-            if out["order_book_json"] is None:
+            if out["order_book_json"] is not None:
+                # 現在価格用の market-depth-data.json を少しだけ待つ（通常は order book と同時に届く）
+                md_deadline = min(_now() + MARKET_DEPTH_WAIT_S, deadline - 2)
+                while out["market_depth_head"] is None and _now() < md_deadline:
+                    await page.wait_for_timeout(250)
+            elif out["order_book_fetch"] is None:
                 try:
                     out["highcharts"] = await page.evaluate(_JS_ORDER_BOOK_SERIES, ORDER_BOOK_CONTAINER_ID)
                 except Exception:  # noqa: BLE001
                     out["highcharts"] = None
         try:
-            out["body_text"] = await page.inner_text("body")
+            out["body_text"] = await page.inner_text("body", timeout=3000)
         except Exception:  # noqa: BLE001
             out["body_text"] = ""
         if not out["challenge"] and _is_challenge(body_text=out["body_text"]):
@@ -453,18 +541,24 @@ async def _load_outlook_once(p, symbol: str, use_new_headless: bool) -> dict:
     finally:
         if browser is not None:
             try:
-                await browser.close()
+                await asyncio.wait_for(browser.close(), timeout=5)
             except Exception:  # noqa: BLE001
                 pass
-        out["elapsed_s"] = round(time.monotonic() - t0, 1)
+        out["elapsed_s"] = round(_now() - t0, 1)
     return out
 
 
 def _extract_from_payload(payload: dict) -> tuple[List[dict], List[dict], Optional[str]]:
-    """収集物から (bids, asks, method) を決める。優先順: XHR JSON → Highcharts → body テキスト。"""
+    """収集物から (bids, asks, method) を決める。
+
+    優先順: ページ自身の XHR → ページ内要求 → Highcharts → body テキスト。
+    """
     bids, asks = _parse_orderbook_json(payload.get("order_book_json"))
     if bids or asks:
         return bids, asks, "order_book_json"
+    bids, asks = _parse_orderbook_json(payload.get("order_book_fetch"))
+    if bids or asks:
+        return bids, asks, "in_page_fetch"
     bids, asks = _parse_highcharts_series(payload.get("highcharts"))
     if bids or asks:
         return bids, asks, "highcharts"
@@ -472,6 +566,18 @@ def _extract_from_payload(payload: dict) -> tuple[List[dict], List[dict], Option
     if bids or asks:
         return bids, asks, "body_text"
     return [], [], None
+
+
+def _attempt_state(payload: dict, method: Optional[str]) -> str:
+    """note に残す 1 試行分の要約。例: "データなし (chromium-new-headless, 12.0s, XHR 403)"。"""
+    state = "challenge" if payload.get("challenge") else (method or "データなし")
+    parts = [str(payload.get("launch")), f"{payload.get('elapsed_s')}s"]
+    if not payload.get("challenge") and method != "order_book_json":
+        xs = payload.get("xhr_status")
+        parts.append(f"XHR {xs if xs is not None else '未着'}")
+        if payload.get("fetch_status") is not None:
+            parts.append(f"ページ内要求 {payload['fetch_status']}")
+    return f"{state} ({', '.join(parts)})"
 
 
 async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[float] = None) -> dict:
@@ -525,20 +631,27 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
     attempts: List[str] = []
     last_exc: Optional[Exception] = None
 
+    deadline = _now() + TOTAL_BUDGET_S
     try:
         async with async_playwright() as p:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 if attempt > 1:
+                    if deadline - _now() < RETRY_DELAY_S + MIN_ATTEMPT_S:
+                        attempts.append(f"{attempt}:時間上限で打切り")
+                        break
                     await asyncio.sleep(RETRY_DELAY_S)
+                remaining = deadline - _now()
                 try:
-                    payload = await _load_outlook_once(p, symbol, use_new_headless=True)
-                except Exception as exc:  # noqa: BLE001 — 1 回だけ再試行
+                    payload_i = await asyncio.wait_for(
+                        _load_outlook_once(p, symbol, use_new_headless=True, deadline=deadline),
+                        timeout=max(remaining, 1.0))
+                except Exception as exc:  # noqa: BLE001 — 次の試行へ
                     last_exc = exc
                     attempts.append(f"{attempt}:例外 {type(exc).__name__}")
                     continue
+                payload = payload_i
                 bids, asks, method = _extract_from_payload(payload)
-                state = "challenge" if payload["challenge"] else (method or "データなし")
-                attempts.append(f"{attempt}:{state} ({payload['launch']}, {payload['elapsed_s']}s)")
+                attempts.append(f"{attempt}:{_attempt_state(payload, method)}")
                 if method:
                     break
     except Exception as exc:  # noqa: BLE001
@@ -566,7 +679,8 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
 
     current_price = _parse_market_depth_actual(payload.get("market_depth_head"))
     if current_price is not None:
-        notes.append("現在価格: market-depth-data.json の actual")
+        via = "ページ内要求" if payload.get("market_depth_source") == "in_page_fetch" else "XHR"
+        notes.append(f"現在価格: market-depth-data.json の actual（{via}）")
     else:
         current_price = _extract_current_price(payload.get("body_text") or "", symbol)
         if current_price is not None:
