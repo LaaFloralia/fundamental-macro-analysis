@@ -67,6 +67,27 @@ def test_a_complete_calendar_with_no_us_event_says_nothing_scheduled():
     assert result['figure']['cautions'] == [] and result['coverage'] == 'complete'
 
 
+ARCHIVE = ('{}はカレンダーの週タブの外で、表には発表済みの記録から復元した分だけを載せている'
+           '（声明・議事要旨など数値のない発表は漏れることがある）')
+
+
+@pytest.mark.parametrize('stamp,mode,span', [
+    ('2026-10-14T18:00:00+09:00', 'weekly', '10/07〜10/11'),   # 7 days back reaches the previous week
+    ('2026-10-12T18:00:00+09:00', 'daily', '10/09〜10/11'),    # Monday: from Friday
+    ('2026-10-14T18:00:00+09:00', 'daily', None),              # Wednesday: from Tuesday, inside the tabs
+    ('2026-10-12T00:00:00+09:00', 'weekly', '10/05〜10/11')])
+def test_results_before_the_week_tabs_are_said_to_come_from_the_archive(stamp, mode, span):
+    result = board.event_figure(sample(), datetime.fromisoformat(stamp), mode)
+    archive = [c for c in result['figure']['cautions'] if 'カレンダーの週タブの外' in c['text']]
+    if span is None:
+        assert archive == [] and not any('週タブの外' in n for n in result['notes'])
+        return
+    text = ARCHIVE.format(span)
+    assert archive == [{'text': text, 'source_quote': f'米指標｜注意: {text}'}]
+    assert f'米指標｜注意: {text}' in result['rows'] and text in result['notes']
+    assert result['coverage'] == 'complete'  # not a calendar shortfall
+
+
 def test_a_failed_calendar_is_not_reported_as_nothing_scheduled():
     data = sample()
     data['economic_calendar'] = {'error': 'ページ取得失敗: timeout', 'events': []}

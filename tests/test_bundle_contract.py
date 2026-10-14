@@ -62,3 +62,20 @@ def test_a_failed_or_incomplete_calendar_is_named_at_the_top():
     assert bundle.CALENDAR_CHIP['unknown'] in chips and bundle.CALENDAR_CHIP['failed'] not in chips
     chips = [x['text'] for x in bundle.observations(sample(), NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
     assert not set(bundle.CALENDAR_CHIP.values()) & set(chips)
+
+
+def test_the_reports_excluded_materials_reach_the_limits_and_survive_a_rebuild(tmp_path):
+    note = '判断から除外した材料: 注文板の集計（提供元の更新が止まっている）。'
+    body = SOURCE.replace('XAUUSD：', '判断から除外する材料：**注文板の集計**（提供元の更新が止まっている）。\nXAUUSD：', 1)
+    assert note in bundle.observations(sample(), NOW + timedelta(minutes=10), 'daily', body)['limitations']
+    assert f'制約: {note}' in bundle.build_observations(sample(), 'daily', body)['appendix']
+    assert not any(x.startswith('判断から除外') for x in bundle.build_observations(sample(), 'daily', SOURCE)['limitations'])
+    failed = sample()
+    failed['xau_levels'] = {'error': 'Twelve Data 1h 取得不可', 'levels': []}
+    body = body.replace(DRAW_LINE, '方向: none')
+    manifest, figures, source, summary = prepared(tmp_path, failed, source=body)
+    assert note in [x['text'] for x in summary['limitations']] and f'制約: {note}' in source
+    bundle.check_regenerated(failed, manifest, figures, source, summary)
+    summary['limitations'] = [x for x in summary['limitations'] if x['text'] != note]
+    with pytest.raises(bundle.BundleError, match='Limitations differ'):
+        bundle.check_regenerated(failed, manifest, figures, source, summary)

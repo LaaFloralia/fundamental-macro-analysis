@@ -123,6 +123,9 @@ def _figure_gone(key, data):
     return f'米指標の表: 経済指標カレンダーの取得に失敗（{error}）'
 
 
+EXCLUDED_LINE = re.compile(r'^判断から除外する材料：(.+)$', re.M)
+
+
 def observations(data, now=None, mode='daily', source=None):
     """Three figures from one collection: bias board, liquidity map, US event table.
 
@@ -167,6 +170,10 @@ def build_observations(data, mode='daily', source=None):
     if (stamp - start).total_seconds() > COLLECTION_MAX_SECONDS:
         limitations.append(f'収集に{int((stamp - start).total_seconds() // 60)}分かかった。'
                            '判定は収集終了時刻を基準にし、それまでに取得した値を使う')
+    # The report's excluded materials stay on the page (section 0 always has the line).
+    excluded = EXCLUDED_LINE.search(source or '')
+    if excluded and plain_text(excluded.group(1)).strip():
+        limitations.append(f'判断から除外した材料: {plain_text(excluded.group(1)).strip()}')
     rows.extend(lead)
     lead = [{'text': text, 'source_quote': text} for text in lead]
     order = {key: index for index, key in enumerate(REQUIRED_FIGURES)}
@@ -372,7 +379,7 @@ def make_summary(source, mode, as_of, lead=(), cutoff=None):
     conclusion = next((line for line in lines if re.match(r'XAUUSD\s*(?:[:：]|は)', line)), paragraphs[0])
     plain = plain_text
     if len(plain(conclusion)) > CONCLUSION_MAX:
-        raise BundleError(f'Conclusion line is over {CONCLUSION_MAX} characters; shorten it without dropping conditions')
+        raise BundleError(f'Conclusion line is over {CONCLUSION_MAX} characters; shorten it and keep the main drivers')
     stamp = timestamp(as_of)
     end = timestamp(cutoff) if cutoff else stamp
     span = stamp.strftime('%H:%M') + (f'〜{end.strftime("%H:%M")}' if end.strftime('%H:%M') != stamp.strftime('%H:%M') else '')

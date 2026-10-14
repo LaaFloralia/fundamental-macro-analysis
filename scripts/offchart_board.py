@@ -185,20 +185,20 @@ def _bar_span(value):
     return f'{t.strftime("%m/%d %H:%M")}〜{(t + timedelta(hours=1)).strftime("%H:%M")} JST'
 
 
+def market_time(q):
+    """The quote's market time (Twelve Data last_quote_at, epoch seconds) in JST; None when absent or unreadable."""
+    epoch = q.get('last_quote_at')
+    try:
+        return None if isinstance(epoch, bool) else datetime.fromtimestamp(float(epoch), JST)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 def quote_state(q, stamp):
     """(word, reference) for the price the liquidity distances are measured from. With the market time
     (Twelve Data last_quote_at): the last price of a closed market, the market time, or a reference price when
-    it is over an hour old, after the cutoff or unknown. Collections that did not keep the market time are
-    judged on the fetch time as before."""
-    if 'last_quote_at' not in q:
-        late = stale_time(q.get('fetched_at'), stamp, QUOTE_FRESH_HOURS)
-        fetched = _parse_jst(q.get('fetched_at'))
-        return (f'{late}・参考値', True) if late else (f'取得 {fetched.strftime("%m/%d %H:%M")} JST', False)
-    epoch = q.get('last_quote_at')
-    try:
-        market = None if isinstance(epoch, bool) else datetime.fromtimestamp(float(epoch), JST)
-    except (TypeError, ValueError, OverflowError, OSError):
-        market = None
+    it is over an hour old, after the cutoff or unknown (including collections that did not keep it)."""
+    market = market_time(q)
     if market is None:
         return '市場時刻不明・参考価格', True
     shown = f'{market.strftime("%m/%d %H:%M")} JST'
@@ -534,9 +534,12 @@ def bias_rows(data, stamp, mode, source=None):
     yields = data.get('us_yields') or {}
     us2y = yields.get('US2Y') if isinstance(yields, dict) else None
     # Only a quote from the current US trading date is "today"; otherwise FRED with its own date.
-    if not weekly and isinstance(us2y, dict) and us2y.get('stale') is False and \
-            not stale_time(us2y.get('as_of_jst'), stamp) and \
-            all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close')):
+    today = not weekly and isinstance(us2y, dict) and us2y.get('stale') is False and \
+        not stale_time(us2y.get('as_of_jst'), stamp) and \
+        all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close'))
+    # CNBC gives the change and both ends; ends that contradict the change are not drawn.
+    mismatch = today and abs((us2y['value'] - us2y['prev_close']) - us2y['change']) > 0.0015
+    if today and not mismatch:
         # Both ends at one precision with the change, so the printed ends give the printed change.
         change, places, ep = shown_ends(us2y['change'], us2y['value'], us2y['prev_close'], 3, 0.05)
         side, strength = judge(us2y['change'], 0.05, -1)
@@ -553,7 +556,7 @@ def bias_rows(data, stamp, mode, source=None):
         late = (stale_day(pair[0][0], stamp, MAX_AGE_DAYS['DGS2']) if pair
                 else ('取得失敗' if not present(s) else f'直近{back + 1}観測なし'))
         if late:
-            skip('米2年債', late)
+            skip('米2年債', f'CNBC 前日比が当日値と前日終値の差と合わない／FRED {late}' if mismatch else late)
         else:
             (d1, v1), (d0, v0) = pair
             threshold = 0.10 if weekly else 0.05
@@ -1162,9 +1165,11 @@ def liquidity_figure(data, stamp, mode, source=None):
                          'state_path': f'xau_levels.levels.{index}.state', 'state': level.get('state')})
     # The distances are measured from this price; quote_state says when it is a reference only.
     observed, reference = quote_state(q, stamp)
+    market = market_time(q)
     items.append(_liq('current', '現在値', fmt(price), price, state='current', state_word=observed, icon='▶', value=price))
     bindings.append({'figure': 'liquidity', 'label': '現在値', 'path': 'report_quote.close', 'value': number(price),
-                     'digits': 2, 'unit': 'USD/oz', 'observedAt': str(q.get('fetched_at') or q.get('datetime') or '')})
+                     'digits': 2, 'unit': 'USD/oz',
+                     'observedAt': market.isoformat() if market else str(q.get('fetched_at') or q.get('datetime') or '')})
     mo = num(lv.get('midnight_open'))
     if mo is not None and not far(mo):
         items.append(_liq('reference', 'NY 0時の始値', fmt(mo), mo, state='reference', state_word='当日の始値（参考）',
@@ -1395,8 +1400,8 @@ def event_figure(data, stamp, mode):
             record = s or ev
             surprise = compute_surprise(record) if actual != '—' else None
             if actual == '—' and is_statement(ev):
-                # A statement, a speech or minutes: no number to compare; the report's news line judges it.
-                diff, symbol, word, tone = '数値の結果なし（声明・発言など）', '—', 'ニュース行で判断', 'neutral'
+                # A statement, a speech or minutes: no number, and nothing here confirms what was said.
+                diff, symbol, word, tone = '数値の結果なし・内容は未確認（声明・発言など）', '—', '内容未確認', 'neutral'
             elif actual == '—':
                 diff, symbol, word, tone = '結果を未取得（発表時刻は経過）', '—', '結果未取得', 'neutral'
             elif surprise:
@@ -1446,6 +1451,16 @@ def event_figure(data, stamp, mode):
         rows.append(cautions[0]['source_quote'])
         if shortfall[0] != 'incomplete':
             notes.append(text)  # also among the limitations; the missing-tab note below covers a partial fetch
+    # The page's week tabs start on the cutoff week's Monday; earlier days come only from the archive.
+    start = results_start(stamp, mode)
+    monday = datetime.combine(stamp.astimezone(JST).date() - timedelta(days=stamp.astimezone(JST).weekday()),
+                              datetime.min.time(), JST)
+    if start < monday:
+        text = (f'{start:%m/%d}〜{monday - timedelta(days=1):%m/%d}はカレンダーの週タブの外で、表には発表済みの記録から復元した分だけを'
+                '載せている（声明・議事要旨など数値のない発表は漏れることがある）')
+        cautions.append({'text': text, 'source_quote': f'米指標｜注意: {text}'})
+        rows.append(cautions[-1]['source_quote'])
+        notes.append(text)
     if not items:
         # Only a complete fetch can say 「該当なし」; any other cannot confirm that nothing is scheduled.
         unread = {'failed': '取得失敗', 'incomplete': '取得が不完全', 'unknown': '取得範囲が未確認'}
@@ -1459,6 +1474,7 @@ def event_figure(data, stamp, mode):
         notes.append(f'米指標: Investing.comの週タブ（{"・".join(calendar["missing_tabs"])}）が見つからず、その週の予定は表に入っていない')
     legend = ('米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
               'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
+              '予定はInvesting.comの重要度★3の行だけから取るため、提供元が★2以下としたTier A/Bの発表は載りません。'
               f'期間は{period}（JSTの日付単位）、{tier_scope("weekly" if weekly else "daily")}。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
               '（カレンダーの取得に失敗したときも）。取得が失敗・不完全なとき、取得範囲を確認できないときは「該当なし」とせず、予定を確認できないと示します。'
               '発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。'

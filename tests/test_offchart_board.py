@@ -431,6 +431,22 @@ def test_stale_cnbc_quote_falls_back_to_fred_with_its_own_date():
     assert '米2年債利回り（前営業日比）' in rows_of(data)
 
 
+def test_cnbc_change_that_contradicts_its_ends_is_not_drawn():
+    data = sample()
+    data['us_yields']['US2Y'].update(value=4.800, prev_close=4.790, change=-0.010)
+    items, _, notes = board.bias_rows(data, NOW, 'daily', SOURCE)
+    labels = [i['label'] for i in items]
+    assert '米2年債利回り（当日）' not in labels and '米2年債利回り（前営業日比）' in labels  # FRED instead
+    assert not any('米2年債' in n for n in notes)  # FRED supplied the row: nothing missing
+    del data['fred']['DGS2']
+    items, _, notes = board.bias_rows(data, NOW, 'daily', SOURCE)
+    assert not any(i['material'] == '米2年債' for i in items)
+    assert any('前日比が当日値と前日終値の差と合わない' in n for n in notes if '米2年債' in n)
+    data = sample()
+    data['us_yields']['US2Y'].update(value=4.800, prev_close=4.790, change=0.010)  # consistent
+    assert rows_of(data)['米2年債利回り（当日）']['change'] == '+0.010pp'
+
+
 def test_dollar_falls_back_to_the_broad_index_without_dxy_history():
     data = sample()
     del data['dxy']['recent_closes']
@@ -589,7 +605,7 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     assert (pwh['icon'], pwh['touched']) == ('✓', '最初に抜けた足 10/12 09:00 JST（アジア）')
     assert by['London安値（当日）']['icon'] == '↘' and by['London安値（当日）']['pool'] == 'SSL'  # left through the low
     assert by['新規失業保険申請 発表15分足安値（10/12 21:30）']['state_word'] == '掃引済み・Tier B'
-    assert by['現在値']['state_word'] == '取得 10/13 22:14 JST'
+    assert by['現在値']['state_word'] == '市場時刻不明・参考価格'  # the sample kept no market time
     assert by['NY 0時の始値']['state_word'] == '当日の始値（参考）'  # not premium / discount
     assert result['figure']['aux'][0]['state_word'] == 'MyFXBook・10/13 18:03 JST'
     assert [i['label'] for i in items if i.get('offscale')] == ['前月高値（9月）', '前週安値（10/05週）']
@@ -605,7 +621,7 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     del data['report_quote']['fetched_at']
     data['xau_levels']['cautions'] = ['最終確定足が10/13 16:00 JSTで、その後の5時間分の足がない。以降の値動きは状態に入っていない']
     result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
-    assert next(i for i in result['figure']['items'] if i['kind'] == 'current')['state_word'] == '取得時刻の記録なし・参考値'
+    assert next(i for i in result['figure']['items'] if i['kind'] == 'current')['state_word'] == '市場時刻不明・参考価格'
     # The heading says up to which closed hour the states were judged.
     span = board._bar_span(sample()["xau_levels"]["last_bar_utc"])
     assert span.endswith(' JST') and '〜' in span
@@ -621,25 +637,37 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
             ({'last_quote_at': epoch('2026-10-10T05:59:00+09:00'), 'is_market_open': False}, '休場中の最終値（市場 10/10 05:59 JST）', False),
             ({'last_quote_at': epoch('2026-10-13T22:30:00+09:00'), 'is_market_open': True},
              '市場 10/13 22:30 JST が収集時刻より後・参考価格', True),
-            ({'last_quote_at': None}, '市場時刻不明・参考価格', True)):
+            ({'last_quote_at': None}, '市場時刻不明・参考価格', True),
+            ({}, '市場時刻不明・参考価格', True)):  # old collections without the key: the fetch time does not decide
         data = sample()
         data['report_quote'].update(extra)
+        assert ('last_quote_at' in data['report_quote']) is bool(extra)
         figure = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']
         assert next(i for i in figure['items'] if i['kind'] == 'current')['state_word'] == word
         assert figure['subtitle'].endswith('。距離は参考価格（現在値の行）から') is reference
         assert board.nearest_chip(data, NOW).endswith('・距離は参考価格から') is reference
-    for fetched, word in (('2026-10-13T12:00:00+00:00', '取得 10/13 21:00 JST・1時間より前・参考値'),
-                          ('2026-10-13T13:30:00+00:00', '取得 10/13 22:30 JST が収集時刻より後・参考値')):
+    for fetched in ('2026-10-13T13:10:00+00:00', '2026-10-13T12:00:00+00:00'):  # a fresh fetch is still a reference
         data = sample()
         data['report_quote']['fetched_at'] = fetched
         current = next(i for i in board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']['items'] if i['kind'] == 'current')
-        assert current['state_word'] == word
+        assert current['state_word'] == '市場時刻不明・参考価格'
     data = sample()
     del data['report_quote']['fetched_at']
     data['xau_levels']['cautions'] = ['最終確定足が10/13 16:00 JSTで、その後の5時間分の足がない。以降の値動きは状態に入っていない']
     result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
     assert result['figure']['cautions'][0]['source_quote'] == '流動性｜注意: ' + data['xau_levels']['cautions'][0]
     assert result['rows'][0] == result['figure']['cautions'][0]['source_quote']
+
+
+def test_current_price_binding_is_observed_at_the_market_time_when_kept():
+    observed = lambda data: next(b for b in board.liquidity_figure(data, NOW, 'daily', SOURCE)['bindings']
+                                 if b['label'] == '現在値')['observedAt']
+    data = sample()
+    assert observed(data) == '2026-10-13T13:14:30+00:00'  # no market time: the fetch time as before
+    data['report_quote']['last_quote_at'] = datetime.fromisoformat('2026-10-13T22:10:00+09:00').timestamp()
+    assert observed(data) == '2026-10-13T22:10:00+09:00'
+    data['report_quote']['last_quote_at'] = None
+    assert observed(data) == '2026-10-13T13:14:30+00:00'
 
 
 def test_weekly_map_widens_the_range_and_scales_the_band():
@@ -751,7 +779,7 @@ def test_released_without_a_prerelease_record_is_labelled_and_missing_actual_wai
     assert (claims['diff'], claims['direction']) == ('結果を未取得（発表時刻は経過）', '結果未取得')
     data['economic_calendar']['events'][1]['indicator'] = 'Fed Chair Powell Speaks'
     speech = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
-    assert (speech['diff'], speech['direction']) == ('数値の結果なし（声明・発言など）', 'ニュース行で判断')
+    assert (speech['diff'], speech['direction']) == ('数値の結果なし・内容は未確認（声明・発言など）', '内容未確認')
 
 
 def test_empty_window_yields_one_quoted_row():
@@ -809,7 +837,7 @@ def test_bundle_builds_three_figures_with_bindings_quotes_and_a_lead_chip():
     assert [f['id'] for f in result['figures']] == ['bias', 'liquidity', 'calendar'] and result['missing'] == []
     assert [x['text'] for x in result['lead']] == [
         '次の米指標: CPI・コアCPI（Tier A） 10/14（水）21:30 JST',
-        '直近の未到達: 上 新規失業保険申請 発表15分足高値（10/12 21:30） 4,195.50（+18.03）／下 前週安値（10/05週） 4,061.73（-115.74）']
+        '直近の未到達: 上 新規失業保険申請 発表15分足高値（10/12 21:30） 4,195.50（+18.03）／下 前週安値（10/05週） 4,061.73（-115.74）・距離は参考価格から']
     full = SOURCE + result['appendix']
     for figure in result['figures']:
         for item in figure['items']:

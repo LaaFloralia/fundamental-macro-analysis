@@ -407,7 +407,7 @@ def test_average_entries_carry_their_own_provider_and_time():
     liquidity = figure(result, 'liquidity')
     aux = {i['label']: i for i in liquidity['aux']}
     assert aux['個人ロングの平均建値']['state_word'] == aux['個人ショートの平均建値']['state_word'] == 'MyFXBook・09/09 17:30 JST'
-    assert next(i for i in liquidity['items'] if i['label'] == '現在値')['state_word'] == '取得時刻の記録なし・参考値'  # not the collection time
+    assert next(i for i in liquidity['items'] if i['label'] == '現在値')['state_word'] == '市場時刻不明・参考価格'  # not the collection time
 
 
 def test_in_progress_edition_stays_fresh_across_midnight_without_relabeling():
