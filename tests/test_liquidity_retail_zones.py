@@ -56,12 +56,12 @@ def test_fetched_clusters_are_zone_rows_with_side_share_source_and_time():
     assert list(rows) == ['4,429.00〜4,434.56', '4,190.00〜4,201.50', '4,104.00〜4,170.00']  # price order
     above = rows['4,190.00〜4,201.50']
     assert (above['label'], above['pool'], above['distance_text'], above['state_word'], above['touched'], above['icon']) == \
-        ('個人の建玉が集まる価格帯（MyFXBook・60分遅れ）', 'BSL', '+12.53（+0.30%）', '取得時上側の70%・35件', '取得 10/13 22:12 JST', '▭')
+        ('個人の建玉が集まる価格帯', 'BSL', '+12.53（+0.30%）', '35件', 'MyFXBook・60分遅れ・取得 10/13 22:12 JST', '▭')
     below = rows['4,104.00〜4,170.00']
-    assert (below['pool'], below['distance_text'], below['state_word']) == ('SSL', '-7.47（-0.18%）', '取得時下側の100%・279件')
+    assert (below['pool'], below['distance_text'], below['state_word']) == ('SSL', '-7.47（-0.18%）', '279件')
     assert rows['4,429.00〜4,434.56']['offscale'] is True and not above.get('offscale')
-    assert above['source_quote'] == ('流動性｜個人の建玉が集まる価格帯（MyFXBook・60分遅れ）: 4,190.00〜4,201.50｜BSL｜+12.53（+0.30%）'
-                                     '｜取得時上側の70%・35件｜取得 10/13 22:12 JST')
+    assert above['source_quote'] == ('流動性｜個人の建玉が集まる価格帯: 4,190.00〜4,201.50｜BSL｜+12.53（+0.30%）'
+                                     '｜35件｜MyFXBook・60分遅れ・取得 10/13 22:12 JST')
     for item in zones(figure):
         assert all(str(item[k]) in item['source_quote'] for k in SHOWN if item.get(k))
         assert '損切り' not in item['source_quote'] and '指値' not in item['source_quote']
@@ -94,7 +94,7 @@ def test_failed_fetch_uses_clusters_kept_within_three_days_with_their_fetch_time
     data['retail_analytics'] = {'previous_pools': {'date': '2026-10-10', 'fetched_at': '2026-10-10T00:03:00Z',
                                                    'bsl': ORDER_BOOK['bsl_candidates'], 'ssl': ORDER_BOOK['ssl_candidates']}}
     figure = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']
-    assert {i['touched'] for i in zones(figure)} == {'前回取得 10/10 09:03 JST'}
+    assert {i['touched'] for i in zones(figure)} == {'MyFXBook・60分遅れ・前回取得 10/10 09:03 JST'}
     # No stored bars in this sample: the state says so rather than guessing.
     assert {i['state_word'].split('・')[-1] for i in zones(figure)} == {'取得後の足なし'}
     data['retail_analytics']['previous_pools']['date'] = '2026-10-09'   # four calendar days: not used
@@ -124,11 +124,11 @@ def test_kept_clusters_take_their_state_from_the_stored_bars_after_the_fetch():
                                                   'bsl': oo['bsl_candidates'], 'ssl': oo['ssl_candidates']}
     stamp = bundle.analysis_cutoff(data)
     rows = {i['price_text']: i for i in zones(board.liquidity_figure(data, stamp, 'daily')['figure'])}
-    assert {i['touched'] for i in rows.values()} == {'前回取得 10/13 09:02 JST'}
+    assert {i['touched'] for i in rows.values()} == {'MyFXBook・60分遅れ・前回取得 10/13 09:02 JST'}
     # 前日高値（10/13） 4,200.45 traded above the whole 4,173.86〜4,190.61 cluster after the fetch.
-    assert rows['4,173.86〜4,190.61']['state_word'].startswith('取得時上側の70%・35件・価格帯を抜けた・')
-    assert rows['4,429.00〜4,434.56']['state_word'] == '取得時上側の30%・15件・取得後は価格帯に未到達'
-    assert rows['4,104.00〜4,170.00']['state_word'].startswith('取得時下側の100%・279件・価格帯に到達・抜けていない（最初の足 10/13 ')
+    assert rows['4,173.86〜4,190.61']['state_word'].startswith('35件・価格帯を抜けた・')
+    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・取得後は価格帯に未到達'
+    assert rows['4,104.00〜4,170.00']['state_word'].startswith('279件・価格帯に到達・抜けていない（最初の足 10/13 ')
     edition(data, real_source('2026-10-14T1800-r3.md'))
 
 
@@ -142,17 +142,17 @@ def test_real_1014_daily_shows_kept_clusters_and_entries_and_rebuilds_exactly():
     for line in (
             '流動性｜個人ロングの平均建値: 4,393.67｜+250.41（+6.04%）｜61%・含み損 -5.7%｜MyFXBook・取得 10/14 18:03 JST',
             '流動性｜個人ショートの平均建値: 3,996.87｜-146.39（-3.53%）｜39%・含み損 -3.7%｜MyFXBook・取得 10/14 18:03 JST',
-            '流動性｜個人の建玉が集まる価格帯（MyFXBook・60分遅れ）: 4,173.86〜4,190.61｜BSL｜+30.60（+0.74%）'
-            '｜35件・価格帯に到達後に反転（10/13 17:00 JST）｜前回取得 10/13（時刻の記録なし）',
-            '流動性｜個人の建玉が集まる価格帯（MyFXBook・60分遅れ）: 4,104.00〜4,170.00｜現在値を含む'
-            '｜279件・価格帯に到達後も戻りが小さい（10/13 22:00 JST）｜前回取得 10/13（時刻の記録なし）',
-            '流動性｜個人の建玉が集まる価格帯（MyFXBook・60分遅れ）: 4,429.00〜4,434.56｜BSL｜+285.74（+6.90%）'
-            '｜15件・直近24時間は価格帯に未到達｜前回取得 10/13（時刻の記録なし）'):
+            '流動性｜個人の建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜+30.60（+0.74%）'
+            '｜35件・価格帯に到達後に反転（10/13 17:00 JST）｜MyFXBook・60分遅れ・前回取得 10/13（時刻の記録なし）',
+            '流動性｜個人の建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む'
+            '｜279件・価格帯に到達後も戻りが小さい（10/13 22:00 JST）｜MyFXBook・60分遅れ・前回取得 10/13（時刻の記録なし）',
+            '流動性｜個人の建玉が集まる価格帯: 4,429.00〜4,434.56｜BSL｜+285.74（+6.90%）'
+            '｜15件・直近24時間は価格帯に未到達｜MyFXBook・60分遅れ・前回取得 10/13（時刻の記録なし）'):
         assert line in full
     shown = [i['label'] for i in figure['items'] if not i.get('offscale')]
     outside = [i['label'] for i in figure['items'] if i.get('offscale')]
-    assert shown.count('個人の建玉が集まる価格帯（MyFXBook・60分遅れ）') == 2
-    assert outside == ['前月高値（9月）', '個人の建玉が集まる価格帯（MyFXBook・60分遅れ）', '個人ロングの平均建値', '個人ショートの平均建値']
+    assert shown.count('個人の建玉が集まる価格帯') == 2
+    assert outside == ['前月高値（9月）', '個人の建玉が集まる価格帯', '個人ロングの平均建値', '個人ショートの平均建値']
     assert figure['missing'] == [] and 'aux' not in figure
     # Four calendar days later the same kept clusters are no longer shown.
     late = deepcopy(data)
@@ -168,8 +168,8 @@ def test_real_1013_order_book_clusters_on_the_1014_map_rebuild_exactly():
     oo['XAUUSD']['timestamp'] = '2026-10-14T09:02:30Z'
     data['myfxbook_open_orders'] = oo
     _, full, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    assert '流動性｜個人の建玉が集まる価格帯（MyFXBook・60分遅れ）: 4,173.86〜4,190.61｜BSL｜+30.60（+0.74%）｜取得時上側の70%・35件｜取得 10/14 18:02 JST' in full
-    assert '流動性｜個人の建玉が集まる価格帯（MyFXBook・60分遅れ）: 4,104.00〜4,170.00｜現在値を含む｜取得時下側の100%・279件｜取得 10/14 18:02 JST' in full
+    assert '流動性｜個人の建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜+30.60（+0.74%）｜35件｜MyFXBook・60分遅れ・取得 10/14 18:02 JST' in full
+    assert '流動性｜個人の建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む｜279件｜MyFXBook・60分遅れ・取得 10/14 18:02 JST' in full
 
 
 def test_real_1013_collection_rebuilds_without_a_liquidity_map():

@@ -1108,7 +1108,8 @@ def _band_late(liq, stamp):
     return f'GVZ {late}' if late else None
 
 
-RETAIL_ZONE = '個人の建玉が集まる価格帯（MyFXBook・60分遅れ）'  # the provider: verified real accounts, 60 minutes delayed
+RETAIL_ZONE = '個人の建玉が集まる価格帯'
+ZONE_SOURCE = 'MyFXBook・60分遅れ'  # the provider: verified real accounts, 60 minutes delayed
 ZONE_ICON = '▭'
 ZONE_MAX_AGE_DAYS = 3  # clusters kept from an earlier collection are shown at most this many calendar days later
 # retail_analytics.detect_sweeps verdicts (the collector's last 24 hours of Dukascopy 1-hour bars)
@@ -1188,7 +1189,7 @@ def _retail_zones(data, stamp, price, away, far):
     current = [(side, c) for side in ('bsl', 'ssl') for c in (oo.get(f'{side}_candidates') or [])] if present(oo) else []
     late = stale_time(oo.get('timestamp'), stamp) if current else None
     if current and not late:
-        origin = f'取得 {_stamp(oo.get("timestamp"))}'
+        origin = f'{ZONE_SOURCE}・取得 {_stamp(oo.get("timestamp"))}'
         zones = [(side, c, '') for side, c in current]
     else:
         why = (f'今回の取得失敗（{_clean(oo.get("error"))[:60]}）' if isinstance(oo, dict) and oo.get('error')
@@ -1198,14 +1199,14 @@ def _retail_zones(data, stamp, price, away, far):
         day = (prev or {}).get('date') or (ra.get('baseline_date') if baseline else None)
         age = stale_day(day, stamp, ZONE_MAX_AGE_DAYS) if day else '記録なし'
         if age:
-            return [], [], [f'{RETAIL_ZONE}: {why}・前回分: {age}']
+            return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why}・前回分: {age}']
         if prev:
             fetched = _parse_jst(prev.get('fetched_at'))
-            origin = f'前回取得 {_stamp(prev["fetched_at"])}' if fetched else f'前回取得 {_md(day)}（時刻の記録なし）'
+            origin = f'{ZONE_SOURCE}・前回取得 ' + (_stamp(prev['fetched_at']) if fetched else f'{_md(day)}（時刻の記録なし）')
             zones = [(side, c, _zone_state(data, num(c.get('low')), num(c.get('high')), side, fetched) if fetched else '')
                      for side in ('bsl', 'ssl') for c in prev.get(side) or []]
         else:
-            origin = f'前回取得 {_md(day)}（時刻の記録なし）'
+            origin = f'{ZONE_SOURCE}・前回取得 {_md(day)}（時刻の記録なし）'
             zones = [(e['side'].lower(), e, SWEEP_VERDICT.get(e.get('verdict'), '') +
                       (f'（{_utc_label(e["swept_at_utc"])}）' if e.get('swept_at_utc') else '')) for e in baseline]
     rows = []
@@ -1219,16 +1220,17 @@ def _retail_zones(data, stamp, price, away, far):
             pool, near = 'SSL', high
         else:
             pool, near = '', None
-        share, count = num(c.get('share_pct')), num(c.get('volume_sum'))
-        words = ([f'取得時{"上" if side == "bsl" else "下"}側の{share:g}%'] if share is not None else []) \
-            + ([f'{count:,.0f}件'] if count is not None else []) + ([state] if state else [])
+        # The count alone: a share of the side at fetch time (「取得時下側の100%」) reads against a BSL tag once
+        # the price has moved past the zone.
+        count = num(c.get('volume_sum'))
+        words = ([f'{count:,.0f}件'] if count is not None else []) + ([state] if state else [])
         rows.append(_liq('zone', RETAIL_ZONE, fmt(low) if low == high else f'{fmt(low)}〜{fmt(high)}',
                          near if near is not None else price, pool=pool, state='zone',  # a zone around the price sits by it
                          state_word='・'.join(words), icon=ZONE_ICON, touched=origin,
                          distance_text=away(near) if near is not None else '現在値を含む',
                          offscale=near is not None and far(near)))
     if not rows:
-        return [], [], [f'{RETAIL_ZONE}: {why or "価格帯の値なし"}']
+        return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why or "価格帯の値なし"}']
     return rows, [], []
 
 
@@ -1332,7 +1334,7 @@ def liquidity_figure(data, stamp, mode, source=None):
               f'{ZONE_ICON}{RETAIL_ZONE}は、MyFXBookのOrder Book（認証済みの実口座だけ・60分遅れ）が上下それぞれ件数の多い'
               '15価格を示したものを、売り・買いを合わせて近い価格どうしでまとめた帯です（こちらの集計・未検証）。'
               '件数はポジションの数でロットではありません。取得元は未約定の注文か保有中の建玉か、損切りか指値かを示していないため、'
-              '注文の種類は分かりません。割合は取得時の価格より上（下）の件数に占めるその帯の割合、距離は現在値に近い端まで、'
+              '注文の種類は分かりません。件数は帯に含まれる価格の合計、距離は現在値に近い端まで、'
               'BSL・SSLは現在値より上か下か（現在値を含む帯は付けない）。取得時刻は取得した時刻で、内容はその60分前の状態です。'
               '今回の取得に失敗したときは'
               f'{ZONE_MAX_AGE_DAYS}日以内に取得できた分を取得日時と一緒に出し、取得後の確定足で価格帯に届いたか・抜けたかを示します'
