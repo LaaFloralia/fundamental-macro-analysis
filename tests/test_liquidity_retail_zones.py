@@ -57,17 +57,17 @@ def test_fetched_clusters_are_zone_rows_with_side_share_source_and_time():
     assert list(rows) == ['4,429.00〜4,434.56', '4,190.00〜4,201.50', '4,104.00〜4,170.00']  # price order
     above = rows['4,190.00〜4,201.50']
     assert (above['label'], above['pool'], above['distance_text'], above['state_word'], above['touched'], above['icon']) == \
-        ('個人の注文・建玉が集まる価格帯', 'BSL', '+12.53（+0.30%）', '35件', 'MyFXBook・10/13 22:12 JST 取得（60分遅れ）', '▭')
+        ('個人の注文・建玉が集まる価格帯', 'BSL', '差 +12.53', '35件', '', '▭')
     below = rows['4,104.00〜4,170.00']
-    assert (below['pool'], below['distance_text'], below['state_word']) == ('SSL', '-7.47（-0.18%）', '279件')
+    assert (below['pool'], below['distance_text'], below['state_word']) == ('SSL', '差 -7.47', '279件')
     assert rows['4,429.00〜4,434.56']['offscale'] is True and not above.get('offscale')
-    assert above['source_quote'] == ('流動性｜個人の注文・建玉が集まる価格帯: 4,190.00〜4,201.50｜BSL｜+12.53（+0.30%）'
-                                     '｜35件｜MyFXBook・10/13 22:12 JST 取得（60分遅れ）')
+    assert above['source_quote'] == '流動性｜個人の注文・建玉が集まる価格帯: 4,190.00〜4,201.50｜BSL｜差 +12.53｜35件'
     for item in zones(figure):
         assert all(str(item[k]) in item['source_quote'] for k in SHOWN if item.get(k))
         assert '損切り' not in item['source_quote'] and '指値' not in item['source_quote']
     legend = figure['legend']
-    assert '60分遅れ' in legend and '注文・建玉の数でロットではありません' in legend and '15価格' in legend
+    assert '注文・建玉 MyFXBook・10/13 22:12 JST 取得（60分遅れ）' in legend  # the fetch line (not on every row)
+    assert '注文・建玉の数でロットではありません' in legend and '15価格' in legend
     assert '未約定の注文か保有中の建玉か、損切りか指値かを示していない' in legend
     assert figure['missing'] == []
 
@@ -95,7 +95,8 @@ def test_failed_fetch_uses_clusters_kept_within_three_days_with_their_fetch_time
     data['retail_analytics'] = {'previous_pools': {'date': '2026-10-10', 'fetched_at': '2026-10-10T00:03:00Z',
                                                    'bsl': ORDER_BOOK['bsl_candidates'], 'ssl': ORDER_BOOK['ssl_candidates']}}
     figure = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']
-    assert {i['touched'] for i in zones(figure)} == {'MyFXBook・10/10 09:03 JST の取得分'}
+    assert {i['touched'] for i in zones(figure)} == {''}
+    assert [n['text'] for n in figure['notices']] == ['個人の注文・建玉は前回 10/10 09:03 JST の取得分（最新の取得に失敗）']
     # The full reason is a limitation (not a 欠測 line under the map: the kept clusters are shown).
     result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
     assert result['figure']['missing'] == []
@@ -130,11 +131,11 @@ def test_kept_clusters_take_their_state_from_the_stored_bars_after_the_fetch():
                                                   'bsl': oo['bsl_candidates'], 'ssl': oo['ssl_candidates']}
     stamp = bundle.analysis_cutoff(data)
     rows = {i['price_text']: i for i in zones(board.liquidity_figure(data, stamp, 'daily')['figure'])}
-    assert {i['touched'] for i in rows.values()} == {'MyFXBook・10/13 09:02 JST の取得分'}
+    assert {i['touched'] for i in rows.values()} == {''}
     # 前日高値（10/13） 4,200.45 traded above the whole 4,173.86〜4,190.61 cluster after the fetch.
-    assert rows['4,173.86〜4,190.61']['state_word'].startswith('35件・価格帯を抜けた・')
-    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・取得後は価格帯に未到達'
-    assert rows['4,104.00〜4,170.00']['state_word'].startswith('279件・価格帯に到達・抜けていない（最初の足 10/13 ')
+    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・抜けて戻した（10/13 13:00 JST）'
+    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・取得後は未到達'
+    assert rows['4,104.00〜4,170.00']['state_word'] == '279件・到達・抜けていない（10/13 09:15 JST）'
     edition(data, real_source('2026-10-14T1800-r3.md'))
 
 
@@ -146,14 +147,13 @@ def test_real_1014_daily_shows_kept_clusters_and_entries_and_rebuilds_exactly():
     result, full, summary, figures, _ = edition(data, real_source('2026-10-14T1800-r3.md'))
     figure = next(f for f in figures if f['id'] == 'liquidity')
     for line in (
-            '流動性｜個人ロングの平均建値: 4,393.67｜+250.41（+6.04%）｜個人の61%がロング・平均で含み損 -5.7%｜MyFXBook・取得 10/14 18:03 JST',
-            '流動性｜個人ショートの平均建値: 3,996.87｜-146.39（-3.53%）｜個人の39%がショート・平均で含み損 -3.7%｜MyFXBook・取得 10/14 18:03 JST',
-            '流動性｜個人の注文・建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜+30.60（+0.74%）'
-            '｜35件・価格帯に到達後に反転（10/13 17:00 JST）｜MyFXBook・10/13 の取得分（時刻の記録なし）',
-            '流動性｜個人の注文・建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む'
-            '｜279件・価格帯に到達後も戻りが小さい（10/13 22:00 JST）｜MyFXBook・10/13 の取得分（時刻の記録なし）',
-            '流動性｜個人の注文・建玉が集まる価格帯: 4,429.00〜4,434.56｜BSL｜+285.74（+6.90%）'
-            '｜15件・直近24時間は価格帯に未到達｜MyFXBook・10/13 の取得分（時刻の記録なし）',
+            '流動性｜個人ロングの平均建値: 4,393.67｜差 +250.41｜個人61%ロング・含み損-5.7%\n',
+            '流動性｜個人ショートの平均建値: 3,996.87｜差 -146.39｜個人39%ショート・含み損-3.7%\n',
+            '流動性｜個人の注文・建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜差 +30.60｜35件・到達後に反転（10/13 17:00 JST）\n',
+            '流動性｜個人の注文・建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む｜279件・到達後も戻りが小さい（10/13 22:00 JST）\n',
+            '流動性｜個人の注文・建玉が集まる価格帯: 4,429.00〜4,434.56｜BSL｜差 +285.74｜15件・24時間は未到達\n',
+            '流動性｜表示の注記: 個人の注文・建玉は前回 10/13 の取得分（最新の取得に失敗）\n',
+            '個人の取得: 平均建値 MyFXBook・10/14 18:03 JST。',
             '制約: 流動性マップ: 個人の注文・建玉が集まる価格帯は10/13の前回取得分を表示'
             '（今回の取得失敗（Order Book ペアを抽出できず (DOM 変更の可能性)））'):
         assert line in full
@@ -176,10 +176,9 @@ def test_real_1013_order_book_clusters_on_the_1014_map_rebuild_exactly():
     oo['XAUUSD']['timestamp'] = '2026-10-14T09:02:30Z'
     data['myfxbook_open_orders'] = oo
     _, full, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    assert ('流動性｜個人の注文・建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜+30.60（+0.74%）｜35件'
-            '｜MyFXBook・10/14 18:02 JST 取得（60分遅れ）') in full
-    assert ('流動性｜個人の注文・建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む｜279件'
-            '｜MyFXBook・10/14 18:02 JST 取得（60分遅れ）') in full
+    assert '流動性｜個人の注文・建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜差 +30.60｜35件\n' in full
+    assert '流動性｜個人の注文・建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む｜279件\n' in full
+    assert '／注文・建玉 MyFXBook・10/14 18:02 JST 取得（60分遅れ）。' in full
     assert '前回取得分を表示' not in full
 
 
@@ -261,7 +260,7 @@ def test_long_kept_cluster_states_wrap_inside_a_390px_screen(name):
         kept_without_time(data)
     _, full, summary, figures, _ = edition(data, real_source('2026-10-14T1800-r3.md'))
     words = [i['state_word'] for f in figures if f['id'] == 'liquidity' for i in zones(f)]
-    assert max(len(w) for w in words) >= 30  # e.g. 「35件・価格帯を抜けた・抜けて推移（最初に抜けた足 10/13 …）」
+    assert max(len(w) for w in words) >= 24  # e.g. 「279件・到達後も戻りが小さい（10/13 22:00 JST）」
     page_html, _ = dash.build(full, summary, figures, title='t', source_name='s.md')
     page, opened, right = screen_widths(page_html)
     assert (page, opened) == (390, 390) and right <= 390
@@ -274,8 +273,7 @@ def test_zone_rows_say_the_kind_is_unknown_and_the_legend_states_the_scraper_rul
     import inspect
     from scrapers import myfxbook_open_orders as oo
     figure = board.liquidity_figure(with_order_book(sample()), NOW, 'daily', SOURCE)['figure']
-    assert {(i['label'], i['touched']) for i in zones(figure)} == \
-        {('個人の注文・建玉が集まる価格帯', 'MyFXBook・10/13 22:12 JST 取得（60分遅れ）')}
+    assert {(i['label'], i['touched']) for i in zones(figure)} == {('個人の注文・建玉が集まる価格帯', '')}
     assert {i['pool'] for i in zones(figure)} == {'BSL', 'SSL'}  # above the price: buy-side liquidity candidate
     legend = figure['legend']
     assert 'AsksとBidsそれぞれについて件数の多い15価格' in legend and '上下それぞれ件数の多い15価格' not in legend
@@ -296,10 +294,10 @@ def test_kept_clusters_without_a_fetch_time_take_the_collectors_verdict_for_the_
     result, full, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
     figure = next(f for f in result['figures'] if f['id'] == 'liquidity')
     rows = {i['price_text']: i for i in zones(figure)}
-    assert {i['touched'] for i in rows.values()} == {'MyFXBook・10/13 の取得分（時刻の記録なし）'}
-    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・価格帯に到達後に反転（10/13 17:00 JST）'
-    assert rows['4,104.00〜4,170.00']['state_word'] == '279件・価格帯に到達後も戻りが小さい（10/13 22:00 JST）'
-    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・直近24時間は価格帯に未到達'
+    assert {i['touched'] for i in rows.values()} == {''}
+    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・到達後に反転（10/13 17:00 JST）'
+    assert rows['4,104.00〜4,170.00']['state_word'] == '279件・到達後も戻りが小さい（10/13 22:00 JST）'
+    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・24時間は未到達'
     assert all(i['state_word'] for i in rows.values())  # never an empty state
     assert ('制約: 流動性マップ: 個人の注文・建玉が集まる価格帯は10/13の前回取得分を表示'
             '（今回の取得失敗（Order Book ペアを抽出できず (DOM 変更の可能性)））') in full
@@ -319,9 +317,9 @@ def test_kept_clusters_without_a_fetch_time_or_a_matching_verdict_say_the_state_
 
 
 @pytest.mark.parametrize('oo_change,brief', [
-    ({'error': 'Order Book ペアを抽出できず (DOM 変更の可能性)'}, '最新の取得に失敗したため'),
-    ({'error': None, 'timestamp': '2026-10-14T09:02:30Z', 'bsl_candidates': [], 'ssl_candidates': []}, '最新の取得で価格帯がなかったため'),
-    ({'error': None, 'timestamp': '2026-10-12T09:02:30Z'}, '最新の取得が古いため')])
+    ({'error': 'Order Book ペアを抽出できず (DOM 変更の可能性)'}, '最新の取得に失敗'),
+    ({'error': None, 'timestamp': '2026-10-14T09:02:30Z', 'bsl_candidates': [], 'ssl_candidates': []}, '最新の取得で価格帯なし'),
+    ({'error': None, 'timestamp': '2026-10-12T09:02:30Z'}, '最新の取得が古い')])
 def test_kept_clusters_say_briefly_why_this_collection_did_not_get_them(oo_change, brief):
     data = kept_without_time(real('2026-10-14T1800.data.json'))
     if 'bsl_candidates' not in oo_change:  # a stale fetch: clusters present, but too old to show
@@ -330,9 +328,9 @@ def test_kept_clusters_say_briefly_why_this_collection_did_not_get_them(oo_chang
     data['myfxbook_open_orders']['XAUUSD'].update(oo_change)
     result, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
     figure = next(f for f in result['figures'] if f['id'] == 'liquidity')
-    assert {i['touched'] for i in zones(figure)} == {'MyFXBook・10/13 の取得分（時刻の記録なし）'}
+    assert {i['touched'] for i in zones(figure)} == {''}
     # One notice line above the map says why (instead of repeating it on every row).
-    text = f'個人の注文・建玉は、{brief}10/13の取得分（時刻の記録なし）を表示しています。'
+    text = f'個人の注文・建玉は前回 10/13 の取得分（{brief}）'
     assert figure['notices'] == [{'text': text, 'source_quote': f'流動性｜表示の注記: {text}'}]
 
 

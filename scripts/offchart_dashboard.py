@@ -434,11 +434,13 @@ def _ladder_row(i, band='', price=None):
     touched = f'<span class="touched">{e(i["touched"])}</span>' if i.get('touched') else ''
     target = f'<span class="target">{e(i["target"])}</span>' if i.get('target') else ''
     side = _side_class(i, price)
+    # A tree: the price on the left, the row's node (its state symbol) on the trunk, the level and its state on the right.
     return (f'<li class="lv kind-{e(i["kind"])} state-{e(i["state"])}{side}{band}{" is-target" if target else ""}">'
             f'<span class="lv-price">{_price(i["price_text"])}</span>'
+            f'<span class="lv-node" aria-hidden="true"><span class="icon">{e(i["icon"])}</span></span>'
             f'<span class="lv-name"><span class="lv-label">{e(i["label"])}</span>{pool}{target}</span>'
             f'<span class="lv-dist">{e(i["distance_text"])}</span>'
-            f'<span class="lv-state"><span class="icon" aria-hidden="true">{e(i["icon"])}</span>{e(i["state_word"])}{touched}</span></li>')
+            f'<span class="lv-state">{e(i["state_word"])}{touched}</span></li>')
 
 
 def liquidity_section(figure):
@@ -448,7 +450,8 @@ def liquidity_section(figure):
     lower, upper = band.get('lower'), band.get('upper')
     price = next((i['position'] for i in figure['items'] if i.get('kind') == 'current'), None)
     rows, upper_done, lower_done = [], False, False
-    edge = lambda word, value: f'<li class="band-edge">{e(band["label"])} {word} {value:,.2f}</li>'
+    edge = lambda word, value: (f'<li class="band-edge {"side-above" if word == "上限" else "side-below"}">'
+                                f'{e(band["label"])} {word} {value:,.2f}</li>')
     for i in [i for i in figure['items'] if not i.get('offscale')]:
         if upper is not None and not upper_done and i['position'] <= upper:
             rows.append(edge('上限', upper))
@@ -474,7 +477,6 @@ def liquidity_section(figure):
                      f'<p>{e(figure.get("legend"))}</p>{aux_html}{_sources(figure)}')
     return (f'<section class="data-figure fig-liq" id="liquidity" aria-labelledby="liq-title">'
             f'{_fig_head(figure, "liq-title")}{cautions}'
-            f'<div class="ladder-head" aria-hidden="true"><span>価格</span><span>水準</span><span>現在値からの距離</span><span>状態</span></div>'
             f'<ul class="ladder">{"".join(rows)}</ul>{offscale}{missing}{howto}</section>')
 
 
@@ -570,25 +572,36 @@ tr.day th{background:var(--wash);font-size:.82rem;font-weight:700;padding:6px 10
 .tone-neutral .dir-symbol{color:var(--flat)}.chg-series .ser{display:block}.board .chg .s-positive{color:var(--up)}
 .board .chg .s-negative{color:var(--down)}.board .chg .s-neutral{color:var(--flat)}
 .vh{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.dir-word{font-size:.88rem;font-weight:600}
-.ladder-head{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;font-size:.72rem;color:var(--muted);
-padding:0 12px 4px 16px;border-bottom:1px solid var(--ink)}
-.ladder{list-style:none;margin:0;padding:0}
-.lv{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;align-items:center;padding:9px 12px 9px 16px;
-border-bottom:1px solid var(--line);font-size:.9rem;border-left:4px solid transparent}
-.lv.side-above{border-left-color:var(--above)}.lv.side-below{border-left-color:var(--below)}.lv.side-at{border-left-color:var(--at)}
-.lv.in-band{background:var(--band)}.lv.part-band{box-shadow:inset -6px 0 0 var(--band-mark)}.lv-price{font-weight:700}.lv-label{margin-right:6px}
+.ladder{list-style:none;margin:0;padding:0;--px:7rem;--node:30px;--gap:8px}
+.lv{--trunk:var(--line);display:grid;grid-template-columns:var(--px) var(--node) minmax(0,1fr);
+grid-template-areas:"price node name" "dist node state";column-gap:var(--gap);row-gap:0;align-items:baseline;padding:8px 10px 8px 0;font-size:.9rem}
+.lv.side-above{--trunk:var(--above)}.lv.side-below{--trunk:var(--below)}.lv.side-at{--trunk:var(--at)}
+.lv.in-band{background:var(--band)}.lv.part-band{box-shadow:inset -6px 0 0 var(--band-mark)}
+.lv-price{grid-area:price;text-align:right;font-weight:700}.lv-label{margin-right:6px}.lv-name{grid-area:name}
+.lv-node{grid-area:node;align-self:stretch;position:relative;margin:-8px 0;
+background:linear-gradient(var(--trunk),var(--trunk)) 100% calc(8px + .85em)/50% 2px no-repeat,linear-gradient(var(--trunk),var(--trunk)) 50% 0/3px 100% no-repeat}
+.lv-node .icon{position:absolute;left:50%;top:calc(8px + .85em);width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;
+background:var(--paper);border:2px solid var(--trunk);display:flex;align-items:center;justify-content:center;font-size:.68rem;line-height:1;
+font-weight:700;color:var(--ink)}
+.side-above .lv-node .icon{color:var(--down)}.side-below .lv-node .icon{color:var(--up)}
+.state-swept .lv-node .icon,.state-broken .lv-node .icon,.state-forming .lv-node .icon,.kind-reference .lv-node .icon{color:var(--flat)}
+.kind-retail .lv-node .icon,.kind-zone .lv-node .icon{color:#7a5c9e}.kind-zone .lv-node .icon{border-radius:6px;height:28px;margin-top:-14px}
+.kind-reference .lv-node .icon{border-style:dashed}
 .pool{display:inline-block;font-size:.68rem;font-weight:700;padding:0 6px;border-radius:3px;color:#fff;vertical-align:1px}
 .pool-bsl{background:var(--down)}.pool-ssl{background:var(--up)}
-.lv-dist{font-size:.82rem;color:var(--muted)}.lv>span{min-width:0;overflow-wrap:anywhere}
-.lv-state{font-size:.82rem}.icon{display:inline-block;width:1.2em;font-weight:700}.touched{display:block;font-size:.72rem;color:var(--muted)}
-.state-resting .icon{color:var(--accent)}.state-swept .icon{color:var(--flat)}.state-swept .lv-price,.state-broken .lv-price{color:var(--muted)}
-.kind-current{background:var(--ink)!important;color:#fff;border-radius:3px;border-left-color:var(--ink)}
-.kind-current .lv-dist,.kind-current .touched{color:#dfe7e3}
+.lv-dist{grid-area:dist;text-align:right;font-size:.78rem;color:var(--muted)}.lv>span{min-width:0;overflow-wrap:anywhere}
+.lv-state{grid-area:state;font-size:.82rem}.touched{display:block;font-size:.72rem;color:var(--muted)}
+.state-swept .lv-price,.state-broken .lv-price{color:var(--muted)}
+.kind-current{background:var(--ink)!important;color:#fff;border-radius:3px}
+.kind-current .lv-dist,.kind-current .touched{color:#dfe7e3}.kind-current .lv-node{background:none}
+.kind-current .lv-node .icon{background:#fff;border-color:#fff;color:var(--ink)}
 .ladder>.kind-current{position:-webkit-sticky;position:sticky;top:0;bottom:0;z-index:2;box-shadow:0 1px 6px rgba(0,0,0,.18)}
-.kind-reference{color:var(--muted);font-size:.82rem}.kind-retail .icon,.kind-zone .icon{color:#7a5c9e}
+.kind-reference{color:var(--muted);font-size:.82rem}
 .kind-draw,.is-target{outline:2px solid var(--accent);outline-offset:-2px}
 .target{display:inline-block;max-width:100%;margin-left:6px;font-size:.72rem;font-weight:700;color:var(--accent);overflow-wrap:anywhere}
-.band-edge{list-style:none;font-size:.72rem;color:#55709c;border-bottom:1px dashed var(--band-mark);padding:2px 12px;text-align:right}
+.band-edge{list-style:none;font-size:.72rem;color:#55709c;border-bottom:1px dashed var(--band-mark);padding:2px 12px;text-align:right;
+--trunk:var(--line);background:linear-gradient(var(--trunk),var(--trunk)) calc(var(--px) + var(--gap) + var(--node) / 2 - 1.5px) 0/3px 100% no-repeat}
+.band-edge.side-above{--trunk:var(--above)}.band-edge.side-below{--trunk:var(--below)}
 .offscale{margin-top:20px}.offscale>span{display:block;font-size:.78rem;font-weight:700;color:var(--muted);padding:0 10px 2px;
 border-bottom:1px solid var(--ink)}
 .events td,.events th{font-size:.88rem}.ev-time{white-space:nowrap;font-weight:600}.ev-name span{display:block}
@@ -621,8 +634,7 @@ gap:2px 10px;padding:12px 4px;border-bottom:1px solid var(--line)}
 .board .cell-base{grid-area:base;border:0;padding:0}.base-text{display:inline;margin-right:8px}
 .board .cell-text{grid-column:1/-1;grid-row:2;border:0;padding:0}
 .hz-head{border-bottom:1px solid var(--ink);padding-bottom:6px;margin-bottom:0}
-.ladder-head{display:none}.offscale>span{border-bottom-color:var(--line)}.lv{grid-template-columns:6.6em minmax(0,1fr);grid-template-areas:"price name" "dist state";gap:2px 10px;font-size:.86rem;padding:9px 8px 9px 10px}
-.lv-price{grid-area:price}.lv-name{grid-area:name}.lv-dist{grid-area:dist}.lv-state{grid-area:state}
+.offscale>span{border-bottom-color:var(--line)}.ladder{--px:5.6rem;--node:28px;--gap:6px}.lv{font-size:.86rem;padding:8px 4px 8px 0}
 .events tr{display:grid;grid-template-columns:3.4em minmax(0,1fr) auto;grid-template-areas:"time name dir" "time nums nums" "time diff diff";
 gap:2px 8px;padding:10px 4px;border-bottom:1px solid var(--line)}.events tr.day{display:block;padding:0}.events tr.day th{display:block}
 .events td,.events th{border:0;padding:0}.ev-time{grid-area:time}.ev-name{grid-area:name;min-width:0}.events .cell-dir{grid-area:dir;text-align:right}

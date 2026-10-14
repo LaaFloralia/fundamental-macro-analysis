@@ -407,7 +407,8 @@ def test_average_entries_carry_their_own_provider_and_time():
     result = bundle.observations(sample_data(), NOW)
     liquidity = figure(result, 'liquidity')
     retail = {i['label']: i for i in liquidity['items'] if i['kind'] == 'retail'}
-    assert retail['個人ロングの平均建値']['touched'] == retail['個人ショートの平均建値']['touched'] == 'MyFXBook・取得 09/09 17:30 JST'
+    assert retail['個人ロングの平均建値']['touched'] == retail['個人ショートの平均建値']['touched'] == ''
+    assert '個人の取得: 平均建値 MyFXBook・09/09 17:30 JST' in liquidity['legend']  # r12: one fetch line in the legend
     assert next(i for i in liquidity['items'] if i['label'] == '現在値')['state_word'] == '市場時刻不明・参考価格'  # not the collection time
 
 

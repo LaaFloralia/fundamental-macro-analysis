@@ -179,7 +179,7 @@ def test_daily_rows_compare_each_input_with_its_baseline_and_map_it_to_gold():
     assert (etf['symbol'], etf['baseline'], etf['note']) == ('▽', '5営業日前 1,056.27 t', '20営業日 +7.99 t')
     assert 'viz' not in etf
     cot = rows['投機筋の買い越し（COT Managed Money）']
-    assert (cot['symbol'], cot['direction'], cot['display'], cot['change']) == ('—', '中立（偏りなし）', '110,987枚', '前週比 -9,331枚')
+    assert (cot['symbol'], cot['direction'], cot['display'], cot['change']) == ('—', '中立', '110,987枚', '前週比 -9,331枚')
     assert cot['baseline'] == '156週百分位 43.9'
     data = sample()
     data['offchart_features']['positioning']['cot_gold_mm'].update(mm_net_pct_oi=21.04, window=['2023-10-10', '2026-10-06'])
@@ -623,19 +623,19 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
         '新規失業保険申請 発表15分足安値（10/12 21:30）', '前日安値（10/12）', '前週安値（10/05週）']
     by = {i['label']: i for i in items}
     pdh = by['前日高値（10/12）']
-    assert (pdh['pool'], pdh['icon'], pdh['state_word'], pdh['distance_text']) == ('BSL', '●', '未到達', '+38.74（+0.93%）')
+    assert (pdh['pool'], pdh['icon'], pdh['state_word'], pdh['distance_text']) == ('BSL', '●', '未到達', '差 +38.74')
     assert 'proximity' not in pdh  # the distance is the number alone
     assert pdh['target'] == '◎ 目的地の仮説' and pdh['source_quote'].endswith('｜◎ 目的地の仮説')
     assert not any(i['kind'] == 'draw' for i in items)  # the draw marks its level instead of adding a row
     pwh = by['前週高値（10/05週）']
-    assert (pwh['icon'], pwh['touched']) == ('✓', '最初に抜けた足 10/12 09:00 JST（アジア）')
+    assert (pwh['icon'], pwh['touched'], pwh['state_word']) == ('✓', '', '抜けて戻した')  # r12: no first bar, the plain word
     assert by['London安値（当日）']['icon'] == '↘' and by['London安値（当日）']['pool'] == 'SSL'  # left through the low
-    assert by['新規失業保険申請 発表15分足安値（10/12 21:30）']['state_word'] == '掃引済み・Tier B'
+    assert by['新規失業保険申請 発表15分足安値（10/12 21:30）']['state_word'] == '抜けて戻した'  # the tier is in the US table
     assert by['現在値']['state_word'] == '市場時刻不明・参考価格'  # the sample kept no market time
     assert by['NY 0時の始値']['state_word'] == '当日の始値（参考）'  # not premium / discount
     retail = next(i for i in result['figure']['items'] if i['label'] == '個人ロングの平均建値')
     assert (retail['state_word'], retail['touched'], retail['offscale']) == \
-        ('個人の56%がロング・平均で含み損 -5.3%', 'MyFXBook・取得 10/13 18:03 JST', True)
+        ('個人56%ロング・含み損-5.3%', '', True)
     assert [i['label'] for i in items if i.get('offscale')] == ['前月高値（9月）', '前週安値（10/05週）']
     assert '未到達（確定足で一度も抜けていない）' in result['figure']['legend'] and '注文そのものは観測していません' in result['figure']['legend']
     assert result['figure']['cautions'] == []
@@ -673,7 +673,7 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
         assert ('last_quote_at' in data['report_quote']) is bool(extra)
         figure = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']
         assert next(i for i in figure['items'] if i['kind'] == 'current')['state_word'] == word
-        assert figure['subtitle'].endswith('。距離は参考価格（現在値の行）から') is reference
+        assert figure['subtitle'].endswith('。差は参考価格（現在値の行）から') is reference
         assert board.nearest_chip(data, NOW).endswith('・距離は参考価格から') is reference
     for fetched in ('2026-10-13T13:10:00+00:00', '2026-10-13T12:00:00+00:00'):  # a fresh fetch is still a reference
         data = sample()
@@ -756,7 +756,7 @@ def test_event_table_keeps_us_tier_a_and_b_inside_their_windows():
     assert (claims['tier'], claims['status'], claims['previous'], claims['forecast'], claims['actual']) == \
         ('B', '発表済み', '220K', '225K', '231K')  # the pre-release forecast, not the revised 230K
     assert (claims['diff'], claims['symbol'], claims['direction']) == ('結果−予想 +6K', '△', '上向き（弱）')  # one series
-    assert claims['memo'] == '発表15分足 高 4,195.50（未到達）／安 4,168.20（掃引済み）'
+    assert claims['memo'] == ''  # r12: the release candle's high and low are rows of the liquidity map only
     cpi = by['CPI（前月比・9月）']
     assert (cpi['tier'], cpi['status'], cpi['date'], cpi['time']) == ('A', '予定', '10/14（水）', '21:30')
     assert (cpi['diff'], cpi['symbol'], cpi['direction']) == ('nowcast 0.53%（予想との差 -0.07pp）', '△', '上向き（弱・予測）')
@@ -922,7 +922,7 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
     # Levels without their stored bars cannot be rebuilt (test below); this one checks the other figures.
     del data['xau_levels']
     manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
-    assert manifest['schemaVersion'] == 7
+    assert manifest['schemaVersion'] == 8
     bundle.check_regenerated(data, manifest, figures, source, summary)
     assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
     assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source

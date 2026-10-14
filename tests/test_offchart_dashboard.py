@@ -83,7 +83,7 @@ def test_build_renders_one_page_with_collapsed_explanations_and_the_markdown_dow
     assert '<colgroup><col class="c-lbl">' in page and 'class="cell-text" colspan="2"' in page
     assert 'class="lv kind-level state-resting side-above in-band is-target"' in page and '◎ 目的地の仮説' in page
     assert 'class="jump"' not in page and 'href="#bias"' not in page and 'ページ内の移動' not in page
-    assert '表示範囲の外' in page and 'class="band-edge">想定変動 ±1σ（1日・±60.0ドル） 上限 4,237.47' in page
+    assert '表示範囲の外' in page and 'class="band-edge side-above">想定変動 ±1σ（1日・±60.0ドル） 上限 4,237.47' in page
     assert 'class="prox"' not in page and 'band-note' not in page and '<th scope="col">推移</th>' not in page
     assert '全文' not in page and '条件と取り消し' not in page and 'キリ' not in page
     assert audit == {'source_sha256': hashlib.sha256(source.encode('utf-8')).hexdigest(),

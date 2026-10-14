@@ -140,7 +140,7 @@ def test_rows_carry_a_side_spine_above_or_below_the_current_price():
     assert classes == [('level', ' side-above'), ('zone', ' side-at'), ('current', ''), ('level', ' side-below'),
                        ('level', ' side-above')]  # the last one: the 表示範囲の外 list
     css = dash.CSS
-    assert '.lv.side-above{border-left-color:var(--above)}' in css and '.lv.side-below{border-left-color:var(--below)}' in css
+    assert '.lv.side-above{--trunk:var(--above)}' in css and '.lv.side-below{--trunk:var(--below)}' in css  # r12: the tree's trunk
 
 
 def test_the_current_row_is_sticky_and_no_ancestor_clips_it():
@@ -162,10 +162,11 @@ def test_kept_clusters_get_one_notice_line_and_plain_fetch_lines():
                                                    'bsl': ORDER_BOOK['bsl_candidates'], 'ssl': ORDER_BOOK['ssl_candidates']}}
     page, summary, figures, full = page_of(data=data)
     liq = page[page.index('id="liquidity"'):page.index('id="calendar"')]
-    text = '個人の注文・建玉は、最新の取得に失敗したため10/13 22:12 JSTの取得分を表示しています。'
+    text = '個人の注文・建玉は前回 10/13 22:12 JST の取得分（最新の取得に失敗）'  # r12: shorter, no per-row fetch line
     assert liq.count('class="liq-notice"') == 1 and text in liq
     assert f'流動性｜表示の注記: {text}' in full
-    assert 'MyFXBook・10/13 22:12 JST の取得分' in liq and '今回は取得失敗' not in liq and '種類不明' not in liq[:liq.index('<details')]
+    assert 'の取得分' not in liq[liq.index('<ul class="ladder">'):liq.index('<details')]
+    assert '今回は取得失敗' not in liq and '種類不明' not in liq[:liq.index('<details')]
     assert any('前回取得分を表示（今回の取得失敗（Order Book ペアを抽出できず））' in x['text'] for x in summary['limitations'])
     assert text in acceptance.shown_texts(summary, figures)
 
@@ -174,20 +175,21 @@ def test_fresh_clusters_name_source_time_and_delay_without_the_kind():
     from tests.test_offchart_board import with_order_book
     figure = board.liquidity_figure(with_order_book(sample()), NOW, 'daily', SOURCE)['figure']
     zones = [i for i in figure['items'] if i['kind'] == 'zone']
-    assert {i['touched'] for i in zones} == {'MyFXBook・10/13 22:12 JST 取得（60分遅れ）'}
+    assert {i['touched'] for i in zones} == {''}  # r12: the fetch time is in the legend
+    assert '注文・建玉 MyFXBook・10/13 22:12 JST 取得（60分遅れ）' in figure['legend']
     assert figure['notices'] == [] and '種類は分かりません（種類不明）' in figure['legend']
 
 
 def test_average_entries_say_who_holds_them_and_the_average_pl():
     figure = board.liquidity_figure(sample(), NOW, 'daily', SOURCE)['figure']
     words = {i['label']: i['state_word'] for i in figure['items'] if i['kind'] == 'retail'}
-    assert words == {'個人ロングの平均建値': '個人の56%がロング・平均で含み損 -5.3%',
-                     '個人ショートの平均建値': '個人の44%がショート・平均で含み損 -3.8%'}
+    assert words == {'個人ロングの平均建値': '個人56%ロング・含み損-5.3%',  # r12: the owner's shorter wording
+                     '個人ショートの平均建値': '個人44%ショート・含み損-3.8%'}
     data = sample()
     data['retail_sentiment']['XAUUSD']['avg_long_entry'] = 4000.0
     words = {i['label']: i['state_word'] for i in board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']['items']
              if i['kind'] == 'retail'}
-    assert words['個人ロングの平均建値'].startswith('個人の56%がロング・平均で含み益 +')
+    assert words['個人ロングの平均建値'].startswith('個人56%ロング・含み益+')
 
 
 def test_the_liquidity_subtitle_keeps_only_the_as_of_hour():
