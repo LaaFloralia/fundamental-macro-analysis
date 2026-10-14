@@ -538,7 +538,10 @@ def bias_rows(data, stamp, mode, source=None):
         not stale_time(us2y.get('as_of_jst'), stamp) and \
         all(num(us2y.get(k)) is not None for k in ('change', 'value', 'prev_close'))
     # CNBC gives the change and both ends; ends that contradict the change are not drawn.
-    mismatch = today and abs((num(us2y['value']) - num(us2y['prev_close'])) - num(us2y['change'])) > 0.0015
+    ends = num(us2y['value']) - num(us2y['prev_close']) if today else None
+    # Also when the ends and the change fall in different verdict classes (sign or strength).
+    mismatch = today and (abs(ends - num(us2y['change'])) > 0.0015 or
+                          judge(ends, 0.05, -1) != judge(num(us2y['change']), 0.05, -1))
     if today and not mismatch:
         # Both ends at one precision with the change, so the printed ends give the printed change.
         change, places, ep = shown_ends(us2y['change'], us2y['value'], us2y['prev_close'], 3, 0.05)
@@ -1168,8 +1171,8 @@ def liquidity_figure(data, stamp, mode, source=None):
     market = market_time(q)
     items.append(_liq('current', '現在値', fmt(price), price, state='current', state_word=observed, icon='▶', value=price))
     bindings.append({'figure': 'liquidity', 'label': '現在値', 'path': 'report_quote.close', 'value': number(price),
-                     'digits': 2, 'unit': 'USD/oz',
-                     'observedAt': market.isoformat() if market else str(q.get('fetched_at') or q.get('datetime') or '')})
+                     'digits': 2, 'unit': 'USD/oz', 'observedAt': market.isoformat() if market else '',  # unknown: not the fetch
+                     'fetchedAt': str(q.get('fetched_at') or q.get('datetime') or '')})
     mo = num(lv.get('midnight_open'))
     if mo is not None and not far(mo):
         items.append(_liq('reference', 'NY 0時の始値', fmt(mo), mo, state='reference', state_word='当日の始値（参考）',
@@ -1401,7 +1404,7 @@ def event_figure(data, stamp, mode):
             surprise = compute_surprise(record) if actual != '—' else None
             if actual == '—' and is_statement(ev):
                 # A statement, a speech or minutes: no number, and nothing here confirms what was said.
-                diff, symbol, word, tone = '数値の結果なし・内容は未確認（声明・発言など）', '—', '内容未確認', 'neutral'
+                diff, symbol, word, tone = '予定時刻を経過・実施と内容は未確認（声明・発言など）', '—', '内容未確認', 'neutral'
             elif actual == '—':
                 diff, symbol, word, tone = '結果を未取得（発表時刻は経過）', '—', '結果未取得', 'neutral'
             elif surprise:
@@ -1455,7 +1458,9 @@ def event_figure(data, stamp, mode):
     start = results_start(stamp, mode)
     monday = datetime.combine(stamp.astimezone(JST).date() - timedelta(days=stamp.astimezone(JST).weekday()),
                               datetime.min.time(), JST)
+    chips = []
     if start < monday:
+        chips.append(f'米指標の結果: {start:%m/%d}〜{monday - timedelta(days=1):%m/%d}は記録からの復元のみ')
         text = (f'{start:%m/%d}〜{monday - timedelta(days=1):%m/%d}はカレンダーの週タブの外で、表には発表済みの記録から復元した分だけを'
                 '載せている（声明・議事要旨など数値のない発表は漏れることがある）')
         cautions.append({'text': text, 'source_quote': f'米指標｜注意: {text}'})
@@ -1489,10 +1494,10 @@ def event_figure(data, stamp, mode):
     rows.append('米指標表の読み方: ' + legend)
     figure = {'id': 'calendar', 'type': 'event_table', 'kicker': '気をつける指標',
               'title': '米国の重要指標' + (f'（{period}）' if weekly else '（直近の結果とこの先の予定）'),
-              'subtitle': f'時刻はJST。{tier_scope("weekly" if weekly else "daily")}', 'items': items, 'cautions': cautions, 'legend': legend,
+              'subtitle': f'時刻はJST。{tier_scope("weekly" if weekly else "daily")}（Investing.comの重要度★3のみ）', 'items': items, 'cautions': cautions, 'legend': legend,
               'sources': [{'label': 'Investing.com', 'url': 'https://www.investing.com/economic-calendar/'},
                           {'label': 'Cleveland Fed nowcast', 'url': 'https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting'}]}
-    return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes,
+    return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes, 'chips': chips,
             'coverage': shortfall[0] if shortfall else 'complete'}
 
 

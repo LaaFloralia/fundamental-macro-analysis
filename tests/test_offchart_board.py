@@ -447,6 +447,21 @@ def test_cnbc_change_that_contradicts_its_ends_is_not_drawn():
     assert rows_of(data)['米2年債利回り（当日）']['change'] == '+0.010pp'
 
 
+@pytest.mark.parametrize('value,prev_close,change', [
+    (4.800, 4.799, -0.0004),   # within 0.0015 but the opposite sign
+    (4.800, 4.800, 0.001),     # flat ends, a nonzero change
+    (4.800, 4.799, 0.0),       # a zero change, ends apart
+    (4.8505, 4.800, 0.0495)])  # within 0.0015 but across the 0.05 line (strong vs weak)
+def test_cnbc_change_in_another_verdict_class_than_its_ends_is_not_drawn(value, prev_close, change):
+    data = sample()
+    data['us_yields']['US2Y'].update(value=value, prev_close=prev_close, change=change)
+    rows = rows_of(data)
+    assert '米2年債利回り（当日）' not in rows and '米2年債利回り（前営業日比）' in rows
+    del data['fred']['DGS2']
+    notes = board.bias_rows(data, NOW, 'daily', SOURCE)[2]
+    assert any('CNBC 前日比が当日値と前日終値の差と合わない' in n for n in notes if '米2年債' in n)
+
+
 def test_dollar_falls_back_to_the_broad_index_without_dxy_history():
     data = sample()
     del data['dxy']['recent_closes']
@@ -660,14 +675,17 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
 
 
 def test_current_price_binding_is_observed_at_the_market_time_when_kept():
-    observed = lambda data: next(b for b in board.liquidity_figure(data, NOW, 'daily', SOURCE)['bindings']
-                                 if b['label'] == '現在値')['observedAt']
+    def times(data):
+        b = next(b for b in board.liquidity_figure(data, NOW, 'daily', SOURCE)['bindings'] if b['label'] == '現在値')
+        return b['observedAt'], b['fetchedAt']
     data = sample()
-    assert observed(data) == '2026-10-13T13:14:30+00:00'  # no market time: the fetch time as before
+    assert times(data) == ('', '2026-10-13T13:14:30+00:00')  # no market time: the fetch time is not an observation
     data['report_quote']['last_quote_at'] = datetime.fromisoformat('2026-10-13T22:10:00+09:00').timestamp()
-    assert observed(data) == '2026-10-13T22:10:00+09:00'
+    assert times(data) == ('2026-10-13T22:10:00+09:00', '2026-10-13T13:14:30+00:00')
     data['report_quote']['last_quote_at'] = None
-    assert observed(data) == '2026-10-13T13:14:30+00:00'
+    assert times(data) == ('', '2026-10-13T13:14:30+00:00')
+    del data['report_quote']['fetched_at']
+    assert times(data) == ('', '2026-10-13')  # the quote's date only
 
 
 def test_weekly_map_widens_the_range_and_scales_the_band():
@@ -779,7 +797,7 @@ def test_released_without_a_prerelease_record_is_labelled_and_missing_actual_wai
     assert (claims['diff'], claims['direction']) == ('結果を未取得（発表時刻は経過）', '結果未取得')
     data['economic_calendar']['events'][1]['indicator'] = 'Fed Chair Powell Speaks'
     speech = board.event_figure(data, NOW, 'daily')['figure']['items'][0]
-    assert (speech['diff'], speech['direction']) == ('数値の結果なし・内容は未確認（声明・発言など）', '内容未確認')
+    assert (speech['diff'], speech['direction']) == ('予定時刻を経過・実施と内容は未確認（声明・発言など）', '内容未確認')
 
 
 def test_empty_window_yields_one_quoted_row():
@@ -1018,7 +1036,8 @@ def test_us_event_lines_use_the_same_gap_text_as_the_board():
 @pytest.mark.parametrize('change,symbol', [(0.04999999999999982, '▼'), (0.0499, '▽'), (-0.05000000000000071, '▲')])
 def test_unrounded_us2y_change_is_judged_on_the_threshold(change, symbol):
     data = sample()
-    data['us_yields']['US2Y'].update(value=4.841 if change > 0 else 4.741, change=change)
+    # Ends that agree with the change (a 0.0499 change with ends 0.0500 apart is a mismatch now).
+    data['us_yields']['US2Y'].update(value={0.0499: 4.8409}.get(change, 4.841 if change > 0 else 4.741), change=change)
     assert rows_of(data)['米2年債利回り（当日）']['symbol'] == symbol
 
 

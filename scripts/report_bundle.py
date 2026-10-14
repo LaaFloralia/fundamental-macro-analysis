@@ -167,6 +167,8 @@ def build_observations(data, mode='daily', source=None):
     lead.extend(GONE_CHIP[key] for key in REQUIRED_FIGURES if key not in drawn)
     if events and events.get('coverage') in CALENDAR_CHIP:
         lead.append(CALENDAR_CHIP[events['coverage']])
+    if events:
+        lead.extend(events.get('chips') or [])  # results restored from the archive only
     if (stamp - start).total_seconds() > COLLECTION_MAX_SECONDS:
         limitations.append(f'収集に{int((stamp - start).total_seconds() // 60)}分かかった。'
                            '判定は収集終了時刻を基準にし、それまでに取得した値を使う')

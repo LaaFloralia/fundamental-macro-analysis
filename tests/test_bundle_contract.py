@@ -79,3 +79,18 @@ def test_the_reports_excluded_materials_reach_the_limits_and_survive_a_rebuild(t
     summary['limitations'] = [x for x in summary['limitations'] if x['text'] != note]
     with pytest.raises(bundle.BundleError, match='Limitations differ'):
         bundle.check_regenerated(failed, manifest, figures, source, summary)
+
+
+def test_results_restored_from_the_archive_are_a_lead_chip_that_survives_a_rebuild(tmp_path):
+    chip = '米指標の結果: 10/06〜10/11は記録からの復元のみ'  # Weekly on Tuesday 10/13: from 10/06
+    failed = sample()
+    failed['xau_levels'] = {'error': 'Twelve Data 1h 取得不可', 'levels': []}
+    body = SOURCE.replace(DRAW_LINE, '方向: none')
+    manifest, figures, source, summary = prepared(tmp_path, failed, source=body, mode='weekly')
+    assert chip in [x['text'] for x in summary['chips']] and chip in source
+    bundle.check_regenerated(failed, manifest, figures, source, summary)
+    summary['chips'] = [x for x in summary['chips'] if x['text'] != chip]
+    with pytest.raises(bundle.BundleError, match='Lead chips differ'):
+        bundle.check_regenerated(failed, manifest, figures, source, summary)
+    daily = [x['text'] for x in bundle.observations(sample(), NOW + timedelta(minutes=10), 'daily', SOURCE)['lead']]
+    assert not any(x.startswith('米指標の結果:') for x in daily)  # Tuesday Daily: from Monday, inside the tabs

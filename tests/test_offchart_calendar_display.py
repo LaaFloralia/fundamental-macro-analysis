@@ -80,12 +80,21 @@ def test_results_before_the_week_tabs_are_said_to_come_from_the_archive(stamp, m
     result = board.event_figure(sample(), datetime.fromisoformat(stamp), mode)
     archive = [c for c in result['figure']['cautions'] if 'カレンダーの週タブの外' in c['text']]
     if span is None:
-        assert archive == [] and not any('週タブの外' in n for n in result['notes'])
+        assert archive == [] and not any('週タブの外' in n for n in result['notes']) and result['chips'] == []
         return
+    assert result['chips'] == [f'米指標の結果: {span}は記録からの復元のみ']
     text = ARCHIVE.format(span)
     assert archive == [{'text': text, 'source_quote': f'米指標｜注意: {text}'}]
     assert f'米指標｜注意: {text}' in result['rows'] and text in result['notes']
     assert result['coverage'] == 'complete'  # not a calendar shortfall
+
+
+def test_the_table_subtitle_names_the_top_importance_limit():
+    for mode, scope in (('daily', '予定はTier Aが7日先・Tier Bが2日先まで'), ('weekly', None)):
+        figure = board.event_figure(sample(), NOW, mode)['figure']
+        assert figure['subtitle'].endswith('（Investing.comの重要度★3のみ）')
+        assert scope is None or figure['subtitle'] == f'時刻はJST。{scope}（Investing.comの重要度★3のみ）'
+        assert '重要度★3の行だけから取る' in figure['legend']
 
 
 def test_a_failed_calendar_is_not_reported_as_nothing_scheduled():
