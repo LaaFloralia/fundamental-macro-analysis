@@ -22,7 +22,7 @@ from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_s
 from scrapers.positioning_history import MIN_DISTINCT, MIN_SAMPLES
 from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, NOWCAST_MAX_PER_WINDOW, adopted_nowcasts,
                                  display_name, event_window, gap_display, nowcast_age, nowcast_fetch_problem,
-                                 nowcast_gap, results_start, tier, window_label)
+                                 nowcast_gap, results_start, tier, tier_scope, window_label)
 from scripts.report_bundle import number
 
 JST = ZoneInfo('Asia/Tokyo')
@@ -1023,9 +1023,11 @@ def _draw(source):
         return None
     found = re.search(r'対象時間（JST）[:：]\s*(\S+)\s*[～〜~]\s*(\S+)', block)
     start, end = (_parse_jst(found.group(1)), _parse_jst(found.group(2))) if found else (None, None)
+    # numeric_validation writes 「使ったSMT事実: なし」 when no silver/dollar fact supports the draw.
+    smt = re.search(r'使ったSMT事実[:：]\s*(\S.*)', block)
     return {'direction': 'up' if match.group(1) in ('up', '上') else 'down', 'level': _clean(match.group(2)),
             'price': price, 'window': (start, end) if start and end and start < end else None,
-            'quote': _clean(match.group(0))}
+            'unsupported': bool(smt) and smt.group(1).strip() == 'なし', 'quote': _clean(match.group(0))}
 
 
 def _window_text(window):
@@ -1144,7 +1146,8 @@ def liquidity_figure(data, stamp, mode, source=None):
             raise ValueError('The draw is not one of the listed levels')
         if (draw['direction'] == 'up') != (match['position'] > price):
             raise ValueError('The draw is on the wrong side of the price')
-        target = '◎ 目的地の仮説' + (f'（{_window_text(draw["window"])}）' if draw.get('window') else '')
+        target = ('◎ 目的地の仮説' + (f'（{_window_text(draw["window"])}）' if draw.get('window') else '')
+                  + ('・他市場の裏付けなし' if draw.get('unsupported') else ''))
         match['target'] = target
         match['source_quote'] += f'｜{target}'
     items.sort(key=lambda i: (-i['position'], {'current': 1}.get(i['kind'], 0)))
@@ -1402,7 +1405,7 @@ def event_figure(data, stamp, mode):
         notes.append(f'米指標: Investing.comの週タブ（{"・".join(calendar["missing_tabs"])}）が見つからず、その週の予定は表に入っていない')
     legend = ('米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
               'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
-              f'期間は{period}（JSTの日付単位）。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
+              f'期間は{period}（JSTの日付単位）、{tier_scope("weekly" if weekly else "daily")}。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
               '（カレンダーの取得に失敗したときも）。取得が失敗・不完全なときは「該当なし」とせず、予定を確認できないと示します。'
               '発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。'
               '同時刻の系列をまとめた票はバイアス盤の「指標の結果」行（2系列以上がそろえば強）。'
@@ -1416,7 +1419,7 @@ def event_figure(data, stamp, mode):
     rows.append('米指標表の読み方: ' + legend)
     figure = {'id': 'calendar', 'type': 'event_table', 'kicker': '気をつける指標',
               'title': '米国の重要指標' + (f'（{period}）' if weekly else '（直近の結果とこの先の予定）'),
-              'subtitle': '時刻はJST。Tier Aは常に、Tier Bは近いときだけ表示', 'items': items, 'cautions': cautions, 'legend': legend,
+              'subtitle': f'時刻はJST。{tier_scope("weekly" if weekly else "daily")}', 'items': items, 'cautions': cautions, 'legend': legend,
               'sources': [{'label': 'Investing.com', 'url': 'https://www.investing.com/economic-calendar/'},
                           {'label': 'Cleveland Fed nowcast', 'url': 'https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting'}]}
     return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes,

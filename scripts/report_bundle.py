@@ -309,6 +309,8 @@ def check_regenerated(data, manifest, figures, source, summary=None):
         # The page's conclusion is the report's line with only the plain-text conversion.
         if not quote or quote not in body or conclusion.get('text') != plain_text(quote):
             raise BundleError('Conclusion differs from the report line it quotes')
+        if summary.get('confidence') != confidence_badge(body):
+            raise BundleError('Confidence differs from the report line it quotes')
     levels = data.get('xau_levels') or {}
     if levels.get('levels') and not levels.get('error') and not data.get('xau_bars_used'):
         raise BundleError('Liquidity levels are shown without the stored bars they were computed from')
@@ -340,6 +342,19 @@ def plain_text(text):
     return text.replace('**', '').replace('`', '')
 
 
+CONFIDENCE_LINE = re.compile(r'^\s*信頼度[:：]\s*\**(High|Med-cautious|Med|Low)\b.*$', re.M)
+
+
+def confidence_badge(source):
+    """The report's own confidence word (section 0, first line), shown beside the conclusion; None without the line."""
+    sections = re.split(r'^##\s+', source, flags=re.M)
+    intro = next((s for s in sections if re.match(r'.*(?:サマリー|要約)', s.split('\n', 1)[0])), '')
+    found = CONFIDENCE_LINE.search(intro)
+    if not found:
+        return None
+    return {'text': f'信頼度 {found.group(1)}', 'source_quote': found.group(0).strip()}
+
+
 def make_summary(source, mode, as_of, lead=(), cutoff=None):
     """The conclusion quoted from the report; no editorial text is invented here.
 
@@ -364,6 +379,7 @@ def make_summary(source, mode, as_of, lead=(), cutoff=None):
             'report_date': stamp.date().isoformat(),
             'as_of_label': f'{stamp.strftime("%m/%d")}（{"月火水木金土日"[stamp.weekday()]}）{span} JST 収集',
             'conclusion': {'title': '結論', 'text': plain(conclusion), 'source_quote': conclusion},
+            'confidence': confidence_badge(source),
             'chips': list(lead),
             'note': '向き・価格・指標は原稿と収集データの引用です。売買の確率や到達を示すものではありません。'}
 

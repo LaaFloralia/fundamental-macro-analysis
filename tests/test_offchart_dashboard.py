@@ -52,6 +52,8 @@ def test_validate_accepts_a_bundled_edition_and_lists_each_verified_item():
     (lambda s, f: f[0]['verdicts'][0].update(direction='上向き・強'), r'verdicts\[0\]'),
     (lambda s, f: s['conclusion'].update(text=s['conclusion']['text'] + ' 4,321'), r'conclusion: numbers'),
     (lambda s, f: s['chips'][0].update(text='次のTier A指標: CPI（あと99時間）'), r'chips\[0\]'),
+    (lambda s, f: s['confidence'].update(text='信頼度 High'), r'confidence: the word'),
+    (lambda s, f: s['confidence'].update(source_quote='信頼度: High'), r'confidence: source_quote is missing'),
     (lambda s, f: f[2].update(type='pie'), r'Unknown figure type')])
 def test_validate_rejects_strings_or_numbers_the_markdown_does_not_contain(mutate, message):
     source, summary, figures = edition()
@@ -70,6 +72,7 @@ def test_build_renders_one_page_with_collapsed_explanations_and_the_markdown_dow
     href = re.search(r'id="source-markdown" download="daily.md" href="data:text/markdown;charset=utf-8;base64,([^"]+)"', page)
     assert base64.b64decode(href.group(1)).decode('utf-8') == source
     assert page.index('class="tiles"') < page.index('class="conclusion"') < page.index('id="bias"')
+    assert '<p class="conclusion"><span class="conf">信頼度 Low</span>XAUUSD：' in page
     assert page.index('id="bias"') < page.index('id="liquidity"') < page.index('id="calendar"')
     assert '<colgroup><col class="c-lbl">' in page and 'class="cell-text" colspan="2"' in page
     assert 'class="lv kind-level state-resting in-band is-target"' in page and '◎ 目的地の仮説' in page

@@ -117,6 +117,12 @@ def window_label(stamp: datetime, mode: str) -> str:
     return f"{start.strftime('%m/%d')}からの結果と、Tier Aは{end['A']}・Tier Bは{end['B']}までの予定"
 
 
+def tier_scope(mode: str) -> str:
+    """How far ahead each tier is listed, from AHEAD_DAYS (the Weekly lists both tiers over the same days)."""
+    a, b = AHEAD_DAYS[(mode, "A")], AHEAD_DAYS[(mode, "B")]
+    return f"予定はTier A・Bとも{a}日先まで" if a == b else f"予定はTier Aが{a}日先・Tier Bが{b}日先まで"
+
+
 def gap_text(gap: float) -> str:
     """Signed pp with enough decimals to stay on the same side of zero and of ±GAP_NEUTRAL_PP."""
     for places in range(2, 7):
@@ -241,8 +247,8 @@ def format_us_event_lines(events, nowcast, now, mode: str = "daily") -> list[str
     stamp = stamp_of(now)
     calendar, events = events, (events.get("events") if isinstance(events, dict) else events)
     # With a time, the same releases and period as the HTML table (event_window).
-    lines = [f"### 米国の重要指標（{window_label(stamp, mode)}。HTMLの表と同じ期間、Tier A=常時・Tier B=近接時、コード分類）"
-             if stamp else "### 米国の重要指標（Tier A=常時・Tier B=近接時、コード分類）"]
+    lines = [f"### 米国の重要指標（{window_label(stamp, mode)}。HTMLの表と同じ期間、{tier_scope(mode)}、コード分類）"
+             if stamp else f"### 米国の重要指標（{tier_scope(mode)}、コード分類）"]
     adopted = {id(ev): gap for _, ev, gap in adopted_nowcasts(calendar, nowcast, stamp, mode)} if stamp else {}
     rows = []
     for ev in events or []:

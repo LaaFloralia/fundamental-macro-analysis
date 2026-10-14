@@ -631,6 +631,12 @@ def test_a_draw_must_be_a_listed_level_with_the_same_price_and_side():
     pdh = next(i for i in board.liquidity_figure(sample(), NOW, 'daily', timed)['figure']['items'] if i.get('target'))
     assert (pdh['label'], pdh['target']) == ('前日高値（10/12）', '◎ 目的地の仮説（10/13 22:40〜翌06:00）')
     assert pdh['source_quote'].endswith('｜◎ 目的地の仮説（10/13 22:40〜翌06:00）')
+    # numeric_validation writes 「使ったSMT事実: なし」 when no silver or dollar fact supports the draw.
+    window = '～ 2026-10-14T06:00:00+09:00'
+    bare = timed.replace(window, window + '\n- 使ったSMT事実: なし')
+    pdh = next(i for i in board.liquidity_figure(sample(), NOW, 'daily', bare)['figure']['items'] if i.get('target'))
+    assert pdh['target'] == '◎ 目的地の仮説（10/13 22:40〜翌06:00）・他市場の裏付けなし'
+    assert board._draw(timed.replace(window, window + '\n- 使ったSMT事実: H1:previous_day:high'))['unsupported'] is False
 
 
 def test_no_levels_no_map():
@@ -826,7 +832,9 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
         ('Lead chips differ', lambda m, f, s, c: c['limitations'].append(c['chips'].pop(0))),
         ('Limitations differ', lambda m, f, s, c: c['limitations'].pop()),
         ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(text=c['conclusion']['text'] + '（買い優勢）')),
-        ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(source_quote='XAUUSD：別の行'))]
+        ('Conclusion differs', lambda m, f, s, c: c['conclusion'].update(source_quote='XAUUSD：別の行')),
+        ('Confidence differs', lambda m, f, s, c: c['confidence'].update(text='信頼度 High')),
+        ('Confidence differs', lambda m, f, s, c: c.pop('confidence'))]
     for message, change in tampered:
         m, f, c = deepcopy(manifest), deepcopy(figures), deepcopy(summary)
         change(m, f, source, c)

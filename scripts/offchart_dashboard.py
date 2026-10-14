@@ -120,6 +120,12 @@ def validate(summary: dict, figures: list, source: str) -> list:
         quote = quoted('conclusion', conclusion)
         if numbers(conclusion.get('text')) - numbers(quote):
             raise DashboardError('conclusion: numbers are not in its source line')
+    confidence = summary.get('confidence')
+    if confidence:
+        # 「信頼度 Low」 from 「信頼度: Low ｜ スコア 0 …」: the word must be the line's.
+        word = str(confidence.get('text') or '').removeprefix('信頼度 ')
+        if not word or not re.match(rf'\s*信頼度[:：]\s*\**{re.escape(word)}\b', quoted('confidence', confidence)):
+            raise DashboardError('confidence: the word is not in its source line')
     for index, chip in enumerate(summary.get('chips') or []):
         _check_text(f'chips[{index}]', quoted(f'chips[{index}]', chip), [chip.get('text')])
     for index, note in enumerate(summary.get('limitations') or []):
@@ -446,6 +452,8 @@ h1{font-size:1.6rem;margin:2px 0 0;line-height:1.3}h2{font-size:1.2rem;margin:2p
 .asof-chip{font-size:.95rem;font-weight:600;white-space:nowrap}
 .lead{margin:18px 0 6px}.conclusion{margin:12px 0 0;padding:16px 20px;background:var(--wash);border-left:5px solid var(--accent);
 font-size:1.02rem;line-height:1.8;white-space:pre-line}
+.conf{display:inline-block;margin-right:8px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:#fff;
+font-size:.8rem;font-weight:700;line-height:1.7;vertical-align:1px;white-space:nowrap}
 .chips{list-style:none;padding:0;margin:10px 0 0;display:flex;flex-wrap:wrap;gap:8px}
 .chips li{background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:.85rem}
 .data-figure{margin-top:30px}.fig-head .sub{margin:2px 0 12px;color:var(--muted);font-size:.85rem}
@@ -541,6 +549,8 @@ gap:2px 8px;padding:8px 4px;border-bottom:1px solid var(--line)}.events tr.day{d
 def build(source: str, summary: dict, figures: list, *, title: str, source_name: str) -> tuple[str, dict]:
     checked = validate(summary, figures, source)
     conclusion = summary.get('conclusion') or {}
+    confidence = summary.get('confidence') or {}
+    badge = f'<span class="conf">{e(confidence["text"])}</span>' if confidence.get('text') else ''
     chips = ''.join(f'<li>{e(c["text"])}</li>' for c in summary.get('chips') or [])
     tiles = tiles_html(next((f for f in figures if f.get('type') == 'bias_board'), None))
     sections = ''.join(SECTIONS[f['type']](f) for f in figures)
@@ -559,7 +569,7 @@ def build(source: str, summary: dict, figures: list, *, title: str, source_name:
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="{e(title)}"><title>{e(title)}</title><style>{CSS}</style></head>
 <body><main class="dash">
 <header class="mast"><div><span class="eyebrow">{e(summary.get('eyebrow', 'REPORT'))}</span><h1>{e(summary.get('short_title', title))}</h1></div><div class="asof-chip">{e(summary.get('as_of_label', ''))}</div></header>
-<section class="lead" aria-label="結論">{tiles}{f'<p class="conclusion">{e(conclusion["text"])}</p>' if conclusion.get('text') else ''}{f'<ul class="chips">{chips}</ul>' if chips else ''}{f'<ul class="jump" aria-label="ページ内の移動">{jump}</ul>' if jump else ''}</section>
+<section class="lead" aria-label="結論">{tiles}{f'<p class="conclusion">{badge}{e(conclusion["text"])}</p>' if conclusion.get('text') else ''}{f'<ul class="chips">{chips}</ul>' if chips else ''}{f'<ul class="jump" aria-label="ページ内の移動">{jump}</ul>' if jump else ''}</section>
 {sections}
 {limits_html}
 {note}
