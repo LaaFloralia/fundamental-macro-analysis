@@ -67,8 +67,13 @@ FIGURE_TEXT = {'bias_board': ('label', 'display', 'baseline', 'change', 'directi
 
 def shown_texts(summary, figures):
     """Strings the page must show: conclusion, lead chips, figure titles, every item and verdict, limitations."""
-    texts = [(summary.get('conclusion') or {}).get('text')]
-    texts += [x.get('text') for x in summary.get('chips') or []]
+    from scripts.offchart_dashboard import chip_texts, conclusion_parts
+    conclusion = (summary.get('conclusion') or {}).get('text')
+    parts = conclusion_parts(conclusion)  # the labelled rows show the parts, without the opening verdict
+    texts = [part for _, part in parts] if parts else [conclusion]
+    # A lead fact is shown split and reordered (time or price first): each piece must be on the page.
+    texts += [piece for x in summary.get('chips') or [] for piece in chip_texts(x.get('text'))]
+    texts.append((summary.get('confidence') or {}).get('text'))  # in the 総合 tile
     texts += [x.get('text') for x in summary.get('limitations') or []]
     for figure in figures:
         texts.append(figure.get('title'))
@@ -79,7 +84,7 @@ def shown_texts(summary, figures):
             texts += [item.get(key) for key in keys]
         # aux: retail average entries of a v5 edition (newer editions show them as items)
         texts += [item.get(key) for item in figure.get('aux') or [] for key in ('label', 'price_text', 'state_word')]
-        texts += [c.get('text') for key in ('cautions', 'missing') for c in figure.get(key) or []]
+        texts += [c.get('text') for key in ('cautions', 'notices', 'missing') for c in figure.get(key) or []]
         texts += [tile.get(key) for tile in figure.get('verdicts') or [] for key in ('label', 'direction', 'short')]
         if figure.get('reason'):
             texts.append(figure['reason'].get('text'))

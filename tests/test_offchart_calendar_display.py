@@ -89,12 +89,15 @@ def test_results_before_the_week_tabs_are_said_to_come_from_the_archive(stamp, m
     assert result['coverage'] == 'complete'  # not a calendar shortfall
 
 
-def test_the_table_subtitle_names_the_top_importance_limit():
+def test_the_short_title_leaves_time_zone_window_and_top_importance_limit_to_the_folded_legend():
     for mode, scope in (('daily', '予定はTier Aが7日先・Tier Bが2日先まで'), ('weekly', None)):
         figure = board.event_figure(sample(), NOW, mode)['figure']
-        assert figure['subtitle'].endswith('（Investing.comの重要度★3のみ）')
-        assert scope is None or figure['subtitle'] == f'時刻はJST。{scope}（Investing.comの重要度★3のみ）'
+        assert figure['title'] == '米国の重要指標' and 'subtitle' not in figure and 'kicker' not in figure
+        assert figure['legend'].startswith('時刻はすべてJST。')
+        assert scope is None or scope in figure['legend']
         assert '重要度★3の行だけから取る' in figure['legend']
+        html = dash.event_section(figure)
+        assert '<th scope="col">時刻（JST）</th>' in html and 'class="kicker"' not in html and 'class="sub"' not in html
 
 
 def test_a_failed_calendar_is_not_reported_as_nothing_scheduled():
@@ -283,11 +286,11 @@ def test_the_retail_average_is_shown_in_the_map_or_in_the_visible_outside_list()
     main_view = liquidity_html[:liquidity_html.index('<details')]
     outside = main_view[main_view.index('class="offscale"'):]
     # 4,412.64 is +5.63% from 4,177.47 (outside the ±2.5% map), 4,025.02 is -3.65%: both in the visible list.
-    for label, price, rest in (('個人ロングの平均建値', '4,412.64', '56%・含み損 -5.3%'),
-                               ('個人ショートの平均建値', '4,025.02', '44%・含み損 -3.8%')):
+    for label, price, rest in (('個人ロングの平均建値', '4,412.64', '個人の56%がロング・平均で含み損 -5.3%'),
+                               ('個人ショートの平均建値', '4,025.02', '個人の44%がショート・平均で含み損 -3.8%')):
         assert f'<span class="lv-label">{label}</span>' in outside and price in outside and rest in outside
     assert 'MyFXBook・取得 10/13 18:03 JST' in outside
-    assert '流動性｜個人ロングの平均建値: 4,412.64｜+235.17（+5.63%）｜56%・含み損 -5.3%｜MyFXBook・取得 10/13 18:03 JST' in full
+    assert '流動性｜個人ロングの平均建値: 4,412.64｜+235.17（+5.63%）｜個人の56%がロング・平均で含み損 -5.3%｜MyFXBook・取得 10/13 18:03 JST' in full
     assert '水準の決め方と状態の意味（開いて確認）' in page and 'class="aux"' not in page
     assert re.findall(r'<details[^>]*\bopen\b', page) == []
     # Inside the shown range the average is a row of the map itself.
@@ -296,4 +299,4 @@ def test_the_retail_average_is_shown_in_the_map_or_in_the_visible_outside_list()
     page, *_ = page_of(data)
     ladder = page[page.index('<ul class="ladder">'):page.index('class="offscale"')]
     assert '<span class="lv-label">個人ロングの平均建値</span>' in ladder and '含み益 +0.3%' not in ladder
-    assert '56%・含み損 -0.3%' in ladder
+    assert '個人の56%がロング・平均で含み損 -0.3%' in ladder

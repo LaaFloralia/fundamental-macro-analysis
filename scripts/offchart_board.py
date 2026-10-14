@@ -998,15 +998,13 @@ def bias_figure(data, stamp, mode, source=None):
         verdicts.append({'label': name, 'group': groups.get(name), 'symbol': main['symbol'], 'direction': main['word'],
                          'tone': main['tone'], 'origin': main['origin'], 'detail': detail, 'short': short,
                          'mismatch': differs, 'show_detail': show, 'source_quote': quote})
-    legend = ('各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は閾値以上の強い向き、△▽は閾値未満の弱い向き、'
+    legend = ('右端の「向き」列が金（XAUUSD）への向きです。各行は「現在の値」を「基準」と比べ、その変化を金の一般則で向きに写したものです。▲▼は閾値以上の強い向き、△▽は閾値未満の弱い向き、'
               '—は中立です。向きは丸める前の値で判定します。データがない材料と古い材料は行ごと省き、欠測として理由と一緒に示します。'
               + TALLY_RULE + '。' + BLEND_RULE + '。' + CAVEAT + '。'
               '推移線は判定に使った期間の観測値で、その行だけの自動尺度です（行ごとの最小〜最大に合わせるため、傾きを行どうしで比べることはできません）。'
               '大きな記号は原稿（分析本文）の判断で、規則の集計と違う場合は「集計と異なる」と理由を示します。')
     rows.append('バイアス盤の読み方: ' + legend)
-    figure = {'id': 'bias', 'type': 'bias_board', 'kicker': '期間ごとのバイアス',
-              'title': '判断材料と金（XAUUSD）への向き',
-              'subtitle': '各行が判断材料。右端が金への向き（▲▼ 強い、△▽ 弱い、— 中立）',
+    figure = {'id': 'bias', 'type': 'bias_board', 'title': 'バイアス',
               'groups': [groups['長期'], groups['短期']], 'verdicts': verdicts, 'items': items,
               'legend': legend, 'rules': [{'label': i['label'], 'rule': i['rule']} for i in items],
               'sources': [{'label': 'FRED', 'url': 'https://fred.stlouisfed.org/'},
@@ -1115,7 +1113,7 @@ def _band_late(liq, stamp):
 
 RETAIL_ZONE = '個人の注文・建玉が集まる価格帯'  # the provider does not say whether these are orders or positions
 ZONE_SOURCE = 'MyFXBook・60分遅れ'  # the provider: verified real accounts, 60 minutes delayed
-ZONE_KIND = '種類不明'  # pending orders or open positions, stops or limits: not stated by the provider
+ZONE_KIND = '種類不明'  # pending orders or open positions, stops or limits: not stated by the provider (legend only)
 ZONE_ICON = '▭'
 ZONE_MAX_AGE_DAYS = 3  # clusters kept from an earlier collection are shown at most this many calendar days later
 # scrapers.myfxbook_open_orders._cluster_and_classify defaults (the legend states them; a test keeps them equal)
@@ -1161,11 +1159,11 @@ def _retail_entries(data, stamp, price, away, far):
         parts = []
         share = num(r.get(f'{side}_pct'))
         if share is not None:
-            parts.append(f'{share:g}%')
+            parts.append(f'個人の{share:g}%が{"ロング" if side == "long" else "ショート"}')
         p = (pl.get(side) or {}).get('pl_pct')
         if num(p) is not None:
             shown_pl, places = shown(p, 1)
-            parts.append(f'{"含み益" if p >= 0 else "含み損"} {shown_pl:+.{places}f}%')
+            parts.append(f'平均で{"含み益" if p >= 0 else "含み損"} {shown_pl:+.{places}f}%')
         rows.append(_liq('retail', label, fmt(v), v, state='retail', state_word='・'.join(parts), icon='◆',
                          touched=f'{origin}・取得 {_stamp(r.get("timestamp"))}', distance_text=away(v),
                          offscale=far(v), value=v))
@@ -1225,25 +1223,27 @@ def _retail_zones(data, stamp, price, away, far):
     """MyFXBook Order Book clusters as zone rows. This collection's clusters when it got them; otherwise the
     latest clusters the collector kept (retail_analytics.previous_pools, or for older collections the swept
     baseline of retail_analytics) when at most ZONE_MAX_AGE_DAYS calendar days old; otherwise a missing line.
-    Kept clusters say on their second line that this collection did not get them (the full reason goes to the
-    limitations). Their state comes from the stored bars after their fetch time; without a fetch time, from the
-    collector's verdict for the same cluster when there is one, else 状態未確認.
-    ([rows], [], [missing lines], [notes]): the rows are rebuilt by check_regenerated, not bound one by one."""
+    Kept clusters name their fetch on their second line, and one notice above the map says why this collection's
+    are not shown (the full reason goes to the limitations). Their state comes from the stored bars after their
+    fetch time; without a fetch time, from the collector's verdict for the same cluster when there is one, else
+    状態未確認. ([rows], [], [missing lines], [notes], [notices]): the rows are rebuilt by check_regenerated, not
+    bound one by one."""
     oo = (data.get('myfxbook_open_orders') or {}).get('XAUUSD') or {}
     oo = oo if isinstance(oo, dict) else {}
     ra = data.get('retail_analytics') or {}
     ra = ra if isinstance(ra, dict) else {}
-    zones, origin, why, notes = [], '', '', []
+    zones, origin, why, notes, notices = [], '', '', [], []
     current = [(side, c) for side in ('bsl', 'ssl') for c in (oo.get(f'{side}_candidates') or [])] if present(oo) else []
     late = stale_time(oo.get('timestamp'), stamp) if current else None
     if current and not late:
-        origin = f'{ZONE_SOURCE}・{ZONE_KIND}・取得 {_stamp(oo.get("timestamp"))}'
+        origin = f'MyFXBook・{_stamp(oo.get("timestamp"))} 取得（60分遅れ）'
         zones = [(side, c, '') for side, c in current]
     else:
         why, brief = (
-            (f'今回の取得失敗（{_clean(oo.get("error"))[:60]}）', '今回は取得失敗') if oo.get('error') else
-            (f'今回の取得が古い（{late}）', '今回の取得は古い') if late else
-            ('今回の取得なし', '今回は取得なし') if not oo else ('今回の取得でクラスタなし', '今回はクラスタなし'))
+            (f'今回の取得失敗（{_clean(oo.get("error"))[:60]}）', '最新の取得に失敗したため') if oo.get('error') else
+            (f'今回の取得が古い（{late}）', '最新の取得が古いため') if late else
+            ('今回の取得なし', '最新の取得がないため') if not oo else
+            ('今回の取得でクラスタなし', '最新の取得で価格帯がなかったため'))
         prev = ra.get('previous_pools') if isinstance(ra.get('previous_pools'), dict) else None
         baseline = [e for e in ra.get('sweep_events') or [] if isinstance(e, dict) and e.get('side') in ('BSL', 'SSL')]
         day = (prev or {}).get('date') or (ra.get('baseline_date') if baseline else None)
@@ -1251,7 +1251,9 @@ def _retail_zones(data, stamp, price, away, far):
         if age:
             return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why}・前回分: {age}'], []
         fetched = _parse_jst(prev.get('fetched_at')) if prev else None
-        origin = f'{ZONE_SOURCE}・{ZONE_KIND}・前回取得 {_stamp(prev["fetched_at"]) if fetched else _md(day)}（{brief}）'
+        when = f'{_stamp(prev["fetched_at"])}' if fetched else ''
+        origin = f'MyFXBook・{when} の取得分' if when else f'MyFXBook・{_md(day)} の取得分（時刻の記録なし）'
+        kept = f'{when}の取得分' if when else f'{_md(day)}の取得分（時刻の記録なし）'
         if prev:
             zones = [(side, c, _zone_state(data, num(c.get('low')), num(c.get('high')), side, fetched) if fetched
                       else _matching_verdict(ra, day, side, c) or ZONE_UNKNOWN_STATE)
@@ -1259,6 +1261,7 @@ def _retail_zones(data, stamp, price, away, far):
         else:
             zones = [(e['side'].lower(), e, _sweep_verdict(e)) for e in baseline]
         notes.append(f'{RETAIL_ZONE}は{_md(day)}の前回取得分を表示（{why}）')
+        notices.append(f'個人の注文・建玉は、{brief}{kept}を表示しています。')
     rows = []
     for side, c, state in zones:
         low, high = num(c.get('low')), num(c.get('high'))
@@ -1280,8 +1283,8 @@ def _retail_zones(data, stamp, price, away, far):
                          distance_text=away(near) if near is not None else '現在値を含む',
                          offscale=near is not None and far(near)))
     if not rows:
-        return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why or "価格帯の値なし"}'], []
-    return rows, [], [], notes
+        return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why or "価格帯の値なし"}'], [], []
+    return rows, [], [], notes, notices
 
 
 def liquidity_figure(data, stamp, mode, source=None):
@@ -1299,7 +1302,7 @@ def liquidity_figure(data, stamp, mode, source=None):
     move = None if band_late else num(liq.get('expected_move_1sd'))
     if weekly and move:
         move = number(move * math.sqrt(5), 1)
-    items, bindings, notes, missing = [], [], [], []
+    items, bindings, notes, missing, notices = [], [], [], [], []
     if band_late:
         notes.append(f'流動性マップ: 想定変動の帯を出していない（{band_late}）')
 
@@ -1342,6 +1345,7 @@ def liquidity_figure(data, stamp, mode, source=None):
         bindings.extend(binds)
         missing.extend(gaps)
         notes.extend(f'流動性マップ: {text}' for text in (told[0] if told else []))
+        notices.extend(told[1] if len(told) > 1 else [])
     draw = _draw(source)
     if draw:
         # The draw must be one of the listed levels (same name and price) on its side of the price;
@@ -1358,9 +1362,11 @@ def liquidity_figure(data, stamp, mode, source=None):
         match['source_quote'] += f'｜{target}'
     items.sort(key=lambda i: (-i['position'], {'current': 1}.get(i['kind'], 0)))
     cautions = [{'text': text, 'source_quote': f'流動性｜注意: {text}'} for text in lv.get('cautions') or []]
+    told = [{'text': text, 'source_quote': f'流動性｜表示の注記: {text}'} for text in notices]
     gaps = [{'text': text, 'source_quote': f'流動性｜欠測: {text}'} for text in missing]
     notes.extend(f'流動性マップ: {text}' for text in missing)
-    rows = [c['source_quote'] for c in cautions] + [i['source_quote'] for i in items] + [g['source_quote'] for g in gaps]
+    rows = ([c['source_quote'] for c in cautions] + [t['source_quote'] for t in told] + [i['source_quote'] for i in items]
+            + [g['source_quote'] for g in gaps])
     band = None
     if move:
         band = {'lower': number(price - move), 'upper': number(price + move),
@@ -1368,7 +1374,8 @@ def liquidity_figure(data, stamp, mode, source=None):
         rows.append(f'流動性｜{band["label"]}: {fmt(band["lower"])}〜{fmt(band["upper"])}'
                     f'（GVZ {liq.get("gvz")}・{liq.get("gvz_as_of")}）')
     last_bar = _bar_span(lv.get('last_bar_utc'))
-    legend = ('名前付きの高値・安値と個人の注文・建玉の位置を価格順に並べています。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
+    legend = ('名前付きの高値・安値と個人の注文・建玉の位置を価格順（上ほど高い価格）に並べています。左端の線は現在値より上（赤）か下（緑）か、'
+              '濃い行が現在値で、画面を動かしても上端か下端に残ります。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
               '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
               '↗↘抜けて推移（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
               '時刻は最初に抜けた足です。形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、冒頭の直近候補から外します。'
@@ -1376,13 +1383,14 @@ def liquidity_figure(data, stamp, mode, source=None):
               'セッションは各市場の現地時間で、アジア 東京9〜16時・London ロンドン8〜13時・NY ニューヨーク8〜13時'
               '（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。'
               f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）で、'
-              '色の付いた行が帯の内側です（帯の境をまたぐ価格帯は左端だけ色を付けます）。'
+              '色の付いた行が帯の内側です（帯の境をまたぐ価格帯は右端だけ色を付けます）。'
               + (f'計算に使った最終確定足は{last_bar}（Twelve Data 1時間足）。' if last_bar else '') +
               ('発表足の高値・安値は直近7日のTier A指標の発表15分足（なければ発表時刻を含む1時間足）です。' if weekly else
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
                '翌取引日の終わりまで表示します。') +
               'NY 0時の始値は当日の参考値で、判定には使いません。'
-              '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、割合はロング（ショート）の比率、含み損益は表示した現在値との差です。'
+              '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、「個人の何%がロング（ショート）」は個人の建玉に占める割合、'
+              '「平均で含み損（含み益）」はその平均建値と表示した現在値との差です。'
               f'{ZONE_ICON}{RETAIL_ZONE}は、MyFXBookのOrder Book（認証済みの実口座だけ・60分遅れ）がAsksとBidsそれぞれについて'
               '件数の多い15価格を示したものを合わせ、こちらで帯にまとめたものです（未検証）。'
               f'取得時の価格から±{ZONE_FILTER_PCT:g}%を超える価格は除き、取得時の価格より上と下に分け、価格順で直前の価格との差が'
@@ -1391,18 +1399,18 @@ def liquidity_figure(data, stamp, mode, source=None):
               f'種類は分かりません（{ZONE_KIND}）。件数は帯に含まれる価格の合計、距離は現在値に近い端まで、'
               'BSL・SSLは現在値より上か下か（現在値を含む帯は付けない）。取得時刻は取得した時刻で、内容はその60分前の状態です。'
               '今回の取得に失敗したときは'
-              f'{ZONE_MAX_AGE_DAYS}日以内に取得できた分を前回の取得日時・今回の状況と一緒に出し、取得後の確定足で価格帯に届いたか・抜けたかを示します'
+              f'{ZONE_MAX_AGE_DAYS}日以内に取得できた分を前回の取得日時と一緒に出し（図の上にその旨を1行で示します）、'
+              '取得後の確定足で価格帯に届いたか・抜けたかを示します'
               '（取得時刻の記録がない分は日付だけを示し、取得元が同じ価格帯を直近24時間の足で判定していればその判定、'
               'なければ「状態未確認」とします。時刻は価格帯に最初に届いた足）。今回の取得に失敗した理由は制約に書きます。'
               f'平均建値は取得から{QUOTE_MAX_HOURS}時間以内、帯のGVZは観測日が{GVZ_MAX_AGE_DAYS}日以内のときだけ出し、'
               '古い・欠けているときは理由を図の下と制約に書きます。'
               'Order Block・FVGはチャートで判断する領域のため載せていません。')
     rows.append('流動性マップの読み方: ' + legend)
-    figure = {'id': 'liquidity', 'type': 'liquidity_map', 'kicker': '意識する価格',
-              'title': '流動性の位置（Liquidity）',
-              'subtitle': (f'上ほど高い価格。状態は{last_bar}の確定1時間足まで。' if last_bar else '上ほど高い価格。')
+    figure = {'id': 'liquidity', 'type': 'liquidity_map', 'title': '流動性（Liquidity）',
+              'subtitle': (f'状態は{last_bar}の確定1時間足まで。' if last_bar else '')
                           + ('距離は参考価格（現在値の行）から' if reference else ''),
-              'items': items, 'cautions': cautions, 'band': band, 'missing': gaps, 'legend': legend,
+              'items': items, 'cautions': cautions, 'notices': told, 'band': band, 'missing': gaps, 'legend': legend,
               'sources': [{'label': 'Twelve Data', 'url': 'https://twelvedata.com/'},
                           {'label': 'FRED GVZCLS', 'url': 'https://fred.stlouisfed.org/series/GVZCLS'},
                           {'label': 'MyFXBook', 'url': 'https://www.myfxbook.com/community/outlook/XAUUSD'}]}
@@ -1639,7 +1647,7 @@ def event_figure(data, stamp, mode):
                       'tone': 'neutral', 'memo': '', 'released': False, 'empty': True, 'source_quote': quote})
     if calendar.get('missing_tabs'):
         notes.append(f'米指標: Investing.comの週タブ（{"・".join(calendar["missing_tabs"])}）が見つからず、その週の予定は表に入っていない')
-    legend = ('米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
+    legend = ('時刻はすべてJST。米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
               'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
               '予定はInvesting.comの重要度★3の行だけから取るため、提供元が★2以下としたTier A/Bの発表は載りません。'
               f'期間は{period}（JSTの日付単位）、{tier_scope("weekly" if weekly else "daily")}。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
@@ -1654,9 +1662,8 @@ def event_figure(data, stamp, mode):
               '発表後も窓が終わるまでは「停止中」と表示します。'
               'KZは各市場の現地時間で、London 英国8〜11時（JST 夏16〜19時・冬17〜20時）・NY 米東部8〜12時（JST 夏21〜翌1時・冬22〜翌2時）。')
     rows.append('米指標表の読み方: ' + legend)
-    figure = {'id': 'calendar', 'type': 'event_table', 'kicker': '気をつける指標',
-              'title': '米国の重要指標' + (f'（{period}）' if weekly else '（直近の結果とこの先の予定）'),
-              'subtitle': f'時刻はJST。{tier_scope("weekly" if weekly else "daily")}（Investing.comの重要度★3のみ）', 'items': items, 'cautions': cautions, 'legend': legend,
+    figure = {'id': 'calendar', 'type': 'event_table', 'title': '米国の重要指標', 'items': items, 'cautions': cautions,
+              'legend': legend,
               'sources': [{'label': 'Investing.com', 'url': 'https://www.investing.com/economic-calendar/'},
                           {'label': 'Cleveland Fed nowcast', 'url': 'https://www.clevelandfed.org/indicators-and-data/inflation-nowcasting'}]}
     return {'figure': figure, 'rows': rows, 'bindings': bindings, 'notes': notes, 'chips': chips,

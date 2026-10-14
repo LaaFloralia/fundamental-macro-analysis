@@ -635,7 +635,7 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     assert by['NY 0時の始値']['state_word'] == '当日の始値（参考）'  # not premium / discount
     retail = next(i for i in result['figure']['items'] if i['label'] == '個人ロングの平均建値')
     assert (retail['state_word'], retail['touched'], retail['offscale']) == \
-        ('56%・含み損 -5.3%', 'MyFXBook・取得 10/13 18:03 JST', True)
+        ('個人の56%がロング・平均で含み損 -5.3%', 'MyFXBook・取得 10/13 18:03 JST', True)
     assert [i['label'] for i in items if i.get('offscale')] == ['前月高値（9月）', '前週安値（10/05週）']
     assert '未到達（確定足で一度も抜けていない）' in result['figure']['legend'] and '注文そのものは観測していません' in result['figure']['legend']
     assert result['figure']['cautions'] == []
@@ -654,7 +654,8 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     span = board._bar_span(sample()["xau_levels"]["last_bar_utc"])
     assert span.endswith(' JST') and '〜' in span
     assert board.liquidity_figure(sample(), NOW, 'daily', SOURCE)['figure']['subtitle'].startswith(
-        f'上ほど高い価格。状態は{span}の確定1時間足まで。')
+        f'状態は{span}の確定1時間足まで。')  # 「上ほど高い価格」 is in the folded legend
+    assert '価格順（上ほど高い価格）' in board.liquidity_figure(sample(), NOW, 'daily', SOURCE)['figure']['legend']
     # With the market time (Twelve Data last_quote_at) the market time decides, and a closed market shows its
     # last price; a reference price is said in the heading and the nearest-level chip as well.
     epoch = lambda iso: datetime.fromisoformat(iso).timestamp()
@@ -766,7 +767,7 @@ def test_event_table_keeps_us_tier_a_and_b_inside_their_windows():
     for item in figure['items']:
         shown_fields_are_quoted(item, ('date', 'time', 'label', 'status', 'previous', 'forecast', 'actual', 'diff',
                                        'direction', 'symbol', 'memo'))
-    assert figure['title'] == '米国の重要指標（直近の結果とこの先の予定）'
+    assert figure['title'] == '米国の重要指標' and 'kicker' not in figure and 'subtitle' not in figure
 
 
 def test_weekly_table_covers_last_week_and_the_next_eight_days():
@@ -774,7 +775,8 @@ def test_weekly_table_covers_last_week_and_the_next_eight_days():
     assert labels[0] == 'ミシガン大 1年先インフレ期待（10月）' and '耐久財受注（前月比・9月）' in labels
     assert 'FOMC 政策金利' not in labels  # 10/29 is beyond eight days
     figure = board.event_figure(sample(), NOW, 'weekly')['figure']
-    assert figure['title'] == '米国の重要指標（10/06〜10/13の結果と10/21までの予定）'  # dates, not 「来週」
+    assert figure['title'] == '米国の重要指標'
+    assert '期間は10/06〜10/13の結果と10/21までの予定' in figure['legend']  # dates, not 「来週」 (in the folded legend)
 
 
 @pytest.mark.parametrize('when,expected', [
@@ -920,7 +922,7 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
     # Levels without their stored bars cannot be rebuilt (test below); this one checks the other figures.
     del data['xau_levels']
     manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
-    assert manifest['schemaVersion'] == 6
+    assert manifest['schemaVersion'] == 7
     bundle.check_regenerated(data, manifest, figures, source, summary)
     assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
     assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source

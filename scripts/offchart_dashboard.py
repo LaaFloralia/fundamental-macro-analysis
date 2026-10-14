@@ -121,6 +121,57 @@ def _check_series(where, item):
         raise DashboardError(f'{where}.series: parts differ from its change text')
 
 
+CONCLUSION_SPLIT = re.compile(r'^(?P<head>.*?)理由[:：](?P<reason>.+?)反対材料[:：](?P<counter>.+)$', re.S)
+CONCLUSION_HEAD = re.compile(r'^\s*XAUUSD\s*[:：][^。]*。?\s*$')
+
+
+def conclusion_parts(text):
+    """The conclusion as labelled rows when it reads 「XAUUSD：<総合の語>。理由：…。反対材料：…。」: [(label, text)].
+    The opening 「XAUUSD：<語>。」 is left out (the tiles above show the verdict); any other opening stays as an
+    unlabelled first row. None for other conclusions (shown as one paragraph). Every text is a part of the line."""
+    match = CONCLUSION_SPLIT.match(str(text or ''))
+    if not match or not match['reason'].strip() or not match['counter'].strip():
+        return None
+    head = match['head'].strip()
+    parts = [] if not head or CONCLUSION_HEAD.match(head) else [('', head)]
+    return parts + [('理由', match['reason'].strip()), ('反対材料', match['counter'].strip())]
+
+
+# Fixed row labels of the lead list for chips whose own prefix is not used as the label.
+CHIP_LABELS = {'直近の未到達': '未到達の水準'}
+NEXT_RELEASE = re.compile(r'^(?P<names>.+?)\s+(?P<when>\d{2}/\d{2}（.）\d{2}:\d{2} JST)$')
+NEAREST_SIDE = re.compile(r'^(?P<side>[上下]) (?P<name>.+) (?P<price>[\d,]+\.\d+)(?P<dist>（[+\-−][\d,.]+）)$')
+NEAREST_TAIL = '・距離は参考価格から'
+
+
+def chip_parts(text):
+    """One lead chip as (label, lines): each line is a list of (piece, bold). The label is the chip's own prefix
+    (「次の米指標」「停止中」…, CHIP_LABELS for 直近の未到達) or 注意 when it has none; every piece is a part of the
+    chip text, only reordered: the next release shows its time first, an unreached level its price first."""
+    text = str(text or '')
+    prefix, sep, rest = text.partition(': ')
+    if not sep or len(prefix) > 12:
+        return '注意', [[(text, False)]]
+    label = CHIP_LABELS.get(prefix, prefix)
+    if prefix == '次の米指標':
+        match = NEXT_RELEASE.match(rest)
+        if match:
+            return label, [[(match['when'], True), (match['names'], False)]]
+    if prefix == '直近の未到達':
+        tail = rest.endswith(NEAREST_TAIL)
+        body = rest[:-len(NEAREST_TAIL)] if tail else rest
+        sides = [NEAREST_SIDE.match(part) for part in body.split('／')]
+        if all(sides):
+            lines = [[(m['side'], False), (m['price'], True), (m['dist'], False), (m['name'], False)] for m in sides]
+            return label, lines + ([[(NEAREST_TAIL.lstrip('・'), False)]] if tail else [])
+    return label, [[(rest, False)]]
+
+
+def chip_texts(text):
+    """The strings a chip shows (label excluded), for the browser check."""
+    return [piece for line in chip_parts(text)[1] for piece, _ in line]
+
+
 def validate(summary: dict, figures: list, source: str) -> list:
     """Raise on any displayed string or number that its quoted Markdown line does not contain."""
     canon_source = canonical(source)
@@ -137,6 +188,9 @@ def validate(summary: dict, figures: list, source: str) -> list:
         quote = quoted('conclusion', conclusion)
         if numbers(conclusion.get('text')) - numbers(quote):
             raise DashboardError('conclusion: numbers are not in its source line')
+        for _, part in conclusion_parts(conclusion.get('text')) or []:
+            if part not in conclusion['text']:
+                raise DashboardError(f'conclusion: "{part}" is not in the conclusion line')
     confidence = summary.get('confidence')
     if confidence:
         # 「信頼度 低」 from 「信頼度: Low ｜ スコア 0 …」: the word must be the line's (report_bundle.CONFIDENCE_JA).
@@ -146,6 +200,12 @@ def validate(summary: dict, figures: list, source: str) -> list:
             raise DashboardError('confidence: the word is not in its source line')
     for index, chip in enumerate(summary.get('chips') or []):
         _check_text(f'chips[{index}]', quoted(f'chips[{index}]', chip), [chip.get('text')])
+        label, lines = chip_parts(chip.get('text'))
+        if label not in str(chip.get('text')) and label not in ('注意', *CHIP_LABELS.values()):
+            raise DashboardError(f'chips[{index}]: label "{label}" is not in the chip')
+        for piece, _ in (x for line in lines for x in line):
+            if piece not in str(chip.get('text')):
+                raise DashboardError(f'chips[{index}]: "{piece}" is not in the chip')
     for index, note in enumerate(summary.get('limitations') or []):
         _check_text(f'limitations[{index}]', quoted(f'limitations[{index}]', note), [note.get('text')])
     source_numbers = numbers(source)
@@ -170,7 +230,7 @@ def validate(summary: dict, figures: list, source: str) -> list:
         for index, tile in enumerate(figure.get('verdicts') or []):
             where = f'{figure.get("id")}.verdicts[{index}]'
             _check_text(where, quoted(where, tile), [tile.get(k) for k in VERDICT_TEXT])
-        extras = [(f'{figure.get("id")}.{key}[{i}]', c) for key in ('cautions', 'missing')
+        extras = [(f'{figure.get("id")}.{key}[{i}]', c) for key in ('cautions', 'notices', 'missing')
                   for i, c in enumerate(figure.get(key) or [])]
         if figure.get('reason'):
             extras.append((f'{figure.get("id")}.reason', figure['reason']))
@@ -239,36 +299,65 @@ def _details(title, body):
     return f'<details class="howto"><summary>{e(title)}</summary><div class="howto-body">{body}</div></details>'
 
 
-def tiles_html(figure):
+MISMATCH_MARK = '集計と異なる'
+
+
+def _tile_origin(t):
+    """The origin line: none for the report's own verdict (「原稿の判断」), 「集計と異なる」 when it differs from the
+    tally, and the rule name when the tile shows the tally itself (no report verdict)."""
+    origin = str(t.get('origin') or '')
+    if t.get('mismatch') and MISMATCH_MARK in origin:
+        return f'<span class="tile-origin">{MISMATCH_MARK}</span>'
+    if origin and not origin.startswith('原稿の判断'):
+        return f'<span class="tile-origin">{e(origin)}</span>'
+    return ''
+
+
+def tiles_html(figure, confidence=None):
     """The per-horizon verdicts, shown first on the page (above the conclusion).
 
     A tile repeats its rule result when the report's verdict differs from it (with the report's
-    reason below), when the horizon has no material, or when a material is missing.
+    reason below), when the horizon has no material, or when a material is missing. The report's
+    confidence word sits in the 総合 tile.
     """
     if not figure or not figure.get('verdicts'):
         return ''
+    conf = (confidence or {}).get('text')
     tiles = ''.join(
         f'<div class="tile tone-{e(t.get("tone"))}{" is-mismatch" if t.get("mismatch") else ""}">'
         f'<span class="tile-label">{e(t["label"])}</span>'
         f'<span class="tile-symbol" aria-hidden="true">{e(t["symbol"])}</span>'
         f'<span class="tile-word">{e(t["direction"])}</span>'
-        f'<span class="tile-origin">{e(t["origin"])}</span>'
-        + (f'<span class="tile-detail">{e(t["detail"])}</span>' if t.get('show_detail', t.get('mismatch')) else '') + '</div>'
+        + _tile_origin(t)
+        + (f'<span class="tile-detail">{e(t["detail"])}</span>' if t.get('show_detail', t.get('mismatch')) else '')
+        + (f'<span class="tile-conf">{e(conf)}</span>' if conf and t.get('label') == '総合' else '') + '</div>'
         for t in figure['verdicts'])
     reason = figure.get('reason')
     note = f'<p class="tile-reason">{e(reason["text"])}</p>' if reason else ''
     return f'<div class="tiles" role="group" aria-label="期間ごとの金の向き">{tiles}</div>{note}'
 
 
+def _fig_head(figure, anchor):
+    """Title and, when the figure has one, its subtitle (kickers are no longer shown)."""
+    sub = f'<p class="sub">{e(figure["subtitle"])}</p>' if figure.get('subtitle') else ''
+    return f'<div class="fig-head"><h2 id="{anchor}">{e(figure["title"])}</h2>{sub}</div>'
+
+
+BOARD_HEAD = ('<colgroup><col class="c-lbl"><col class="c-now"><col class="c-base"><col class="c-dir"></colgroup>'
+              '<thead><tr><th scope="col">材料</th><th scope="col">現在</th><th scope="col">比較</th>'
+              '<th scope="col">向き</th></tr></thead>')
+
+
 def bias_section(figure):
-    body = []
+    """One block per horizon: its name with the tally beside it, then its own table."""
+    blocks = []
     details = {t.get('group'): t.get('short') or t.get('detail') for t in figure.get('verdicts') or [] if t.get('group')}
-    for group in figure.get('groups') or []:
+    for n, group in enumerate(figure.get('groups') or []):
         rows = [i for i in figure['items'] if i['group'] == group]
         if not rows:
             continue
         tally = f'<span class="grp-tally">{e(details[group])}</span>' if details.get(group) else ''
-        body.append(f'<tr class="grp"><th colspan="4" scope="colgroup">{e(group)}{tally}</th></tr>')
+        body = []
         for i in rows:
             note = f'<span class="note">{e(i["note"])}</span>' if i.get('note') else ''
             if i.get('kind') == 'text':
@@ -290,16 +379,14 @@ def bias_section(figure):
                 f'<span class="asof">{e(i["asof"])}</span>{note}</th>{middle}'
                 f'<td class="cell-dir"><span class="dir-symbol" aria-hidden="true">{e(i["symbol"])}</span>'
                 f'<span class="dir-word">{e(i["direction"])}</span></td></tr>')
+        blocks.append(f'<div class="horizon"><h3 class="hz-head" id="bias-h{n + 1}"><span class="hz-name">{e(group)}</span>'
+                      f'{tally}</h3><div class="board-wrap"><table class="board" aria-labelledby="bias-h{n + 1}">'
+                      f'{BOARD_HEAD}<tbody>{"".join(body)}</tbody></table></div></div>')
     rules = ''.join(f'<li><b>{e(r["label"])}</b>: {e(r["rule"])}</li>' for r in figure.get('rules') or [])
     howto = _details('判定ルールと出典（開いて確認）',
                      f'<p>{e(figure.get("legend"))}</p><ul class="rules">{rules}</ul>{_sources(figure)}')
-    return (f'<section class="data-figure fig-bias" id="bias" aria-labelledby="bias-title">'
-            f'<div class="fig-head"><span class="kicker">{e(figure.get("kicker"))}</span>'
-            f'<h2 id="bias-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>'
-            f'<div class="board-wrap"><table class="board"><colgroup><col class="c-lbl"><col class="c-now">'
-            f'<col class="c-base"><col class="c-dir"></colgroup><thead><tr><th scope="col">材料</th>'
-            f'<th scope="col">現在</th><th scope="col">基準と変化</th><th scope="col">金への向き</th></tr></thead>'
-            f'<tbody>{"".join(body)}</tbody></table></div>{howto}</section>')
+    return (f'<section class="data-figure fig-bias" id="bias" aria-labelledby="bias-title">{_fig_head(figure, "bias-title")}'
+            f'{"".join(blocks)}{howto}</section>')
 
 
 def _price(text):
@@ -329,11 +416,25 @@ def _band_class(i, lower, upper):
     return ' part-band' if low <= upper and high >= lower else ''
 
 
-def _ladder_row(i, band=''):
+def _side_class(i, price):
+    """The row's side of the current price for the left spine: above (warm), below (cool), or at (a zone that
+    contains the price, and the current row itself)."""
+    if price is None or i.get('kind') == 'current':
+        return ''
+    low, high = _ends(i)
+    if low > price:
+        return ' side-above'
+    if high < price:
+        return ' side-below'
+    return ' side-at'
+
+
+def _ladder_row(i, band='', price=None):
     pool = f'<span class="pool pool-{e(i["pool"].lower())}">{e(i["pool"])}</span>' if i.get('pool') else ''
     touched = f'<span class="touched">{e(i["touched"])}</span>' if i.get('touched') else ''
     target = f'<span class="target">{e(i["target"])}</span>' if i.get('target') else ''
-    return (f'<li class="lv kind-{e(i["kind"])} state-{e(i["state"])}{band}{" is-target" if target else ""}">'
+    side = _side_class(i, price)
+    return (f'<li class="lv kind-{e(i["kind"])} state-{e(i["state"])}{side}{band}{" is-target" if target else ""}">'
             f'<span class="lv-price">{_price(i["price_text"])}</span>'
             f'<span class="lv-name"><span class="lv-label">{e(i["label"])}</span>{pool}{target}</span>'
             f'<span class="lv-dist">{e(i["distance_text"])}</span>'
@@ -345,6 +446,7 @@ def liquidity_section(figure):
     same columns, then what could not be shown and why."""
     band = figure.get('band') or {}
     lower, upper = band.get('lower'), band.get('upper')
+    price = next((i['position'] for i in figure['items'] if i.get('kind') == 'current'), None)
     rows, upper_done, lower_done = [], False, False
     edge = lambda word, value: f'<li class="band-edge">{e(band["label"])} {word} {value:,.2f}</li>'
     for i in [i for i in figure['items'] if not i.get('offscale')]:
@@ -354,14 +456,15 @@ def liquidity_section(figure):
         if lower is not None and not lower_done and i['position'] < lower:
             rows.append(edge('下限', lower))
             lower_done = True
-        rows.append(_ladder_row(i, _band_class(i, lower, upper)))
+        rows.append(_ladder_row(i, _band_class(i, lower, upper), price))
     if lower is not None and not lower_done:
         rows.append(edge('下限', lower))
     off = [i for i in figure['items'] if i.get('offscale')]
     offscale = ('<div class="offscale"><span>表示範囲の外</span><ul class="ladder">'
-                + ''.join(_ladder_row(i) for i in off) + '</ul></div>') if off else ''
+                + ''.join(_ladder_row(i, price=price) for i in off) + '</ul></div>') if off else ''
     missing = ''.join(f'<p class="liq-missing">欠測: {e(m["text"])}</p>' for m in figure.get('missing') or [])
     cautions = ''.join(f'<p class="caution" role="note">{e(c["text"])}</p>' for c in figure.get('cautions') or [])
+    cautions += ''.join(f'<p class="liq-notice" role="note">{e(c["text"])}</p>' for c in figure.get('notices') or [])
     # schemaVersion 5 editions: the retail average entries were a reference line in the folded legend.
     aux = figure.get('aux') or []
     aux_html = ('<p class="aux">参考（流動性の位置ではない）: ' + ' ／ '.join(
@@ -370,8 +473,7 @@ def liquidity_section(figure):
     howto = _details('水準の決め方と状態の意味' + ('・個人の平均建値' if aux else '') + '（開いて確認）',
                      f'<p>{e(figure.get("legend"))}</p>{aux_html}{_sources(figure)}')
     return (f'<section class="data-figure fig-liq" id="liquidity" aria-labelledby="liq-title">'
-            f'<div class="fig-head"><span class="kicker">{e(figure.get("kicker"))}</span>'
-            f'<h2 id="liq-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>{cautions}'
+            f'{_fig_head(figure, "liq-title")}{cautions}'
             f'<div class="ladder-head" aria-hidden="true"><span>価格</span><span>水準</span><span>現在値からの距離</span><span>状態</span></div>'
             f'<ul class="ladder">{"".join(rows)}</ul>{offscale}{missing}{howto}</section>')
 
@@ -400,9 +502,8 @@ def event_section(figure):
     howto = _details('指標の選び方と向きの意味（開いて確認）', f'<p>{e(figure.get("legend"))}</p>{_sources(figure)}')
     cautions = ''.join(f'<p class="caution" role="note">{e(c["text"])}</p>' for c in figure.get('cautions') or [])
     return (f'<section class="data-figure fig-events" id="calendar" aria-labelledby="ev-title">'
-            f'<div class="fig-head"><span class="kicker">{e(figure.get("kicker"))}</span>'
-            f'<h2 id="ev-title">{e(figure["title"])}</h2><p class="sub">{e(figure.get("subtitle"))}</p></div>{cautions}'
-            f'<div class="board-wrap"><table class="events"><thead><tr><th scope="col">時刻</th><th scope="col">指標</th>'
+            f'{_fig_head(figure, "ev-title")}{cautions}'
+            f'<div class="board-wrap"><table class="events"><thead><tr><th scope="col">時刻（JST）</th><th scope="col">指標</th>'
             f'<th scope="col">前回</th><th scope="col">予想</th><th scope="col">結果</th><th scope="col">差・予測</th>'
             f'<th scope="col">金への向き</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>{howto}</section>')
 
@@ -411,44 +512,54 @@ SECTIONS = {'bias_board': bias_section, 'liquidity_map': liquidity_section, 'eve
 
 CSS = """
 :root{--ink:#22352f;--muted:#5d6863;--line:#dfe3dc;--paper:#fffefb;--canvas:#f3f2ec;--accent:#3f6650;
---up:#2c7a57;--down:#b0454f;--flat:#8b928d;--wash:#f1f4ee;--band:#eef3fb;
+--up:#2c7a57;--down:#b0454f;--flat:#8b928d;--wash:#f1f4ee;--band:#eef3fb;--band-mark:#9db1d6;
+--above:#d9a3a8;--below:#9cc5ae;--at:#c5cbc6;
 font:16px/1.7 "Hiragino Sans","Noto Sans JP","Yu Gothic",Meiryo,sans-serif;color:var(--ink);background:var(--canvas);
 font-variant-numeric:tabular-nums;font-synthesis:none}
 *{box-sizing:border-box}body{margin:0}a{color:var(--accent);text-underline-offset:.2em}
 .reports-back{display:block;max-width:1100px;margin:0 auto;padding:14px 20px;font-size:14px}
-main.dash{max-width:1100px;margin:0 auto 48px;background:var(--paper);border:1px solid var(--line);padding:28px 36px 20px;
+main.dash{max-width:1100px;margin:0 auto 48px;background:var(--paper);border:1px solid var(--line);padding:32px 40px 24px;
 overflow-wrap:break-word}
 .mast{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}
-.eyebrow,.kicker{display:block;color:var(--accent);font-size:.7rem;font-weight:700;letter-spacing:.1em}
-h1{font-size:1.6rem;margin:2px 0 0;line-height:1.3}h2{font-size:1.2rem;margin:2px 0 2px;line-height:1.4}
+.eyebrow{display:block;color:var(--accent);font-size:.7rem;font-weight:700;letter-spacing:.1em}
+h1{font-size:1.6rem;margin:2px 0 0;line-height:1.3}h2{font-size:1.3rem;margin:0;line-height:1.4}
 .asof-chip{font-size:.95rem;font-weight:600;white-space:nowrap}
-.lead{margin:18px 0 6px}.conclusion{margin:12px 0 0;padding:16px 20px;background:var(--wash);border-left:5px solid var(--accent);
+.lead{margin:24px 0 0}
+.conclusion{margin:18px 0 0;padding:16px 20px;background:var(--wash);border-left:5px solid var(--accent);
 font-size:1.02rem;line-height:1.8;white-space:pre-line}
-.conf{display:inline-block;margin-right:8px;padding:0 8px;border:1px solid var(--line);border-radius:4px;background:#fff;
-font-size:.8rem;font-weight:700;line-height:1.7;vertical-align:1px;white-space:nowrap}
-.chips{list-style:none;padding:0;margin:10px 0 0;display:flex;flex-wrap:wrap;gap:8px}
-.chips li{background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:.85rem;min-width:0;
-max-width:100%;overflow-wrap:anywhere}
-.data-figure{margin-top:30px}.fig-head .sub{margin:2px 0 12px;color:var(--muted);font-size:.85rem}
-.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.tile{border:1px solid var(--line);border-top:5px solid var(--flat);background:#fff;padding:10px 14px;display:grid;
-grid-template-columns:auto 1fr;grid-template-areas:"label label" "sym word" "origin origin" "detail detail";column-gap:10px;align-items:center}
+.cl-split{display:grid;gap:10px;white-space:normal}.cl-row{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:12px;align-items:baseline}
+.cl-row dt{font-size:.78rem;font-weight:700;color:var(--muted);letter-spacing:.04em}.cl-row dd{margin:0}
+.cl-plain{grid-template-columns:minmax(0,1fr)}.cl-plain dt{display:none}
+.conf-line{margin:0;font-size:.85rem;font-weight:700;color:var(--muted)}
+.facts{margin:16px 0 0;padding:0;display:grid;gap:0}
+.kv{display:grid;grid-template-columns:7.5em minmax(0,1fr);gap:12px;align-items:baseline;padding:8px 4px;border-bottom:1px solid var(--line)}
+.kv:last-child{border-bottom:0}
+.kv dt{font-size:.78rem;font-weight:700;color:var(--muted)}.kv dd{margin:0;font-size:.92rem;min-width:0;overflow-wrap:anywhere}
+.kv-line{display:block}.kv-line+.kv-line{margin-top:2px}.kv-line b{font-weight:700}
+.data-figure{margin-top:64px}.fig-head{margin-bottom:14px}.fig-head .sub{margin:4px 0 0;color:var(--muted);font-size:.85rem}
+.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.tile{border:1px solid var(--line);border-top:5px solid var(--flat);background:#fff;padding:12px 16px;display:grid;
+grid-template-columns:auto 1fr;grid-template-areas:"label label" "sym word" "origin origin" "detail detail" "conf conf";column-gap:10px;align-items:center}
 .tile.tone-positive{border-top-color:var(--up)}.tile.tone-negative{border-top-color:var(--down)}
 .tile-label{grid-area:label;font-size:.8rem;font-weight:700;color:var(--muted)}
 .tile-symbol{grid-area:sym;font-size:2.2rem;line-height:1.1}.tone-positive .tile-symbol{color:var(--up)}
 .tone-negative .tile-symbol{color:var(--down)}.tone-neutral .tile-symbol{color:var(--flat)}
 .tile-word{grid-area:word;font-size:1.15rem;font-weight:700;line-height:1.35}
-.tile-origin{grid-area:origin;font-size:.72rem;color:var(--muted)}.tile-detail{grid-area:detail;font-size:.78rem;color:var(--muted);line-height:1.5}
-.tile.is-mismatch .tile-origin{color:#8a5a00;font-weight:700}.tile-reason{margin:8px 0 0;font-size:.82rem;color:#5b4a1f;background:#fbf6e9;
+.tile-origin{grid-area:origin;font-size:.72rem;color:var(--muted)}.tile-detail{grid-area:detail;font-size:.78rem;color:var(--muted);line-height:1.5;margin-top:2px}
+.tile-conf{grid-area:conf;font-size:.78rem;font-weight:700;color:var(--muted);margin-top:4px}
+.tile.is-mismatch .tile-origin{color:#8a5a00;font-weight:700}.tile-reason{margin:10px 0 0;font-size:.82rem;color:#5b4a1f;background:#fbf6e9;
 border-left:4px solid #c9a227;padding:6px 12px}
-.grp-tally{font-weight:400;color:var(--muted);margin-left:12px;font-size:.78rem}
-.caution{margin:0 0 8px;padding:6px 12px;background:#fbf0ef;border-left:4px solid var(--down);font-size:.82rem}
-.liq-missing{font-size:.8rem;color:var(--muted);margin:8px 0 0}.aux{font-size:.8rem;color:var(--muted);margin:8px 0 0}.events tr.empty td{color:var(--muted);font-size:.86rem}
+.horizon+.horizon{margin-top:40px}
+.hz-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin:0 0 8px;font-size:1.05rem;line-height:1.4}
+.hz-name{font-weight:700}.grp-tally{font-weight:400;color:var(--muted);font-size:.8rem}
+.caution{margin:0 0 10px;padding:6px 12px;background:#fbf0ef;border-left:4px solid var(--down);font-size:.82rem}
+.liq-notice{margin:0 0 10px;padding:6px 12px;background:var(--wash);border-left:4px solid var(--flat);font-size:.82rem;color:var(--muted)}
+.liq-missing{font-size:.8rem;color:var(--muted);margin:10px 0 0}.aux{font-size:.8rem;color:var(--muted);margin:8px 0 0}.events tr.empty td{color:var(--muted);font-size:.86rem}
 .board-wrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%}.board{table-layout:fixed}
-.board .c-lbl{width:31%}.board .c-now{width:22%}.board .c-base{width:30%}.board .c-dir{width:17%}th,td{text-align:left;vertical-align:middle;padding:8px 10px;border-bottom:1px solid var(--line)}
-thead th{font-size:.72rem;color:var(--muted);font-weight:600;border-bottom:1px solid var(--ink)}
-tr.grp th,tr.day th{background:var(--wash);font-size:.82rem;font-weight:700;padding:6px 10px}
+.board .c-lbl{width:31%}.board .c-now{width:22%}.board .c-base{width:30%}.board .c-dir{width:17%}th,td{text-align:left;vertical-align:middle;padding:10px 10px;border-bottom:1px solid var(--line)}
+thead th{font-size:.72rem;color:var(--muted);font-weight:600;border-bottom:1px solid var(--ink);padding-top:4px;padding-bottom:4px}
+tr.day th{background:var(--wash);font-size:.82rem;font-weight:700;padding:6px 10px}
 .board th[scope=row]{font-weight:600;min-width:13em}.lbl{display:block}.asof,.note{display:block;font-size:.72rem;color:var(--muted);font-weight:400}
 .note{color:var(--accent)}.now-text{display:block}.viz{display:block;margin-top:4px}.viz .base{stroke:#c9cfc9;stroke-width:1;stroke-dasharray:2 2}
 .viz .tick{stroke:#9aa29c;stroke-width:1}.viz .dot0{fill:#b9c0ba}.viz .track{fill:#e7ebe5}.viz .zone{fill:#d5dbd4}
@@ -460,74 +571,106 @@ tr.grp th,tr.day th{background:var(--wash);font-size:.82rem;font-weight:700;padd
 .board .chg .s-negative{color:var(--down)}.board .chg .s-neutral{color:var(--flat)}
 .vh{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.dir-word{font-size:.88rem;font-weight:600}
 .ladder-head{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;font-size:.72rem;color:var(--muted);
-padding:0 10px 4px;border-bottom:1px solid var(--ink)}
+padding:0 12px 4px 16px;border-bottom:1px solid var(--ink)}
 .ladder{list-style:none;margin:0;padding:0}
-.lv{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;align-items:center;padding:7px 10px;
-border-bottom:1px solid var(--line);font-size:.9rem}
-.lv.in-band{background:var(--band)}.lv.part-band{background:linear-gradient(90deg,var(--band) 0 6px,transparent 6px)}.lv-price{font-weight:700}.lv-label{margin-right:6px}
+.lv{display:grid;grid-template-columns:7.5em minmax(0,1.6fr) 10.5em minmax(0,1.3fr);gap:10px;align-items:center;padding:9px 12px 9px 16px;
+border-bottom:1px solid var(--line);font-size:.9rem;border-left:4px solid transparent}
+.lv.side-above{border-left-color:var(--above)}.lv.side-below{border-left-color:var(--below)}.lv.side-at{border-left-color:var(--at)}
+.lv.in-band{background:var(--band)}.lv.part-band{box-shadow:inset -6px 0 0 var(--band-mark)}.lv-price{font-weight:700}.lv-label{margin-right:6px}
 .pool{display:inline-block;font-size:.68rem;font-weight:700;padding:0 6px;border-radius:3px;color:#fff;vertical-align:1px}
 .pool-bsl{background:var(--down)}.pool-ssl{background:var(--up)}
 .lv-dist{font-size:.82rem;color:var(--muted)}.lv>span{min-width:0;overflow-wrap:anywhere}
 .lv-state{font-size:.82rem}.icon{display:inline-block;width:1.2em;font-weight:700}.touched{display:block;font-size:.72rem;color:var(--muted)}
 .state-resting .icon{color:var(--accent)}.state-swept .icon{color:var(--flat)}.state-swept .lv-price,.state-broken .lv-price{color:var(--muted)}
-.kind-current{background:var(--ink)!important;color:#fff;border-radius:3px}.kind-current .lv-dist,.kind-current .touched{color:#dfe7e3}
+.kind-current{background:var(--ink)!important;color:#fff;border-radius:3px;border-left-color:var(--ink)}
+.kind-current .lv-dist,.kind-current .touched{color:#dfe7e3}
+.ladder>.kind-current{position:-webkit-sticky;position:sticky;top:0;bottom:0;z-index:2;box-shadow:0 1px 6px rgba(0,0,0,.18)}
 .kind-reference{color:var(--muted);font-size:.82rem}.kind-retail .icon,.kind-zone .icon{color:#7a5c9e}
 .kind-draw,.is-target{outline:2px solid var(--accent);outline-offset:-2px}
 .target{display:inline-block;max-width:100%;margin-left:6px;font-size:.72rem;font-weight:700;color:var(--accent);overflow-wrap:anywhere}
-.band-edge{list-style:none;font-size:.72rem;color:#55709c;border-bottom:1px dashed #9db1d6;padding:2px 10px;text-align:right}
-.offscale{margin-top:12px}.offscale>span{display:block;font-size:.78rem;font-weight:700;color:var(--muted);padding:0 10px 2px;
+.band-edge{list-style:none;font-size:.72rem;color:#55709c;border-bottom:1px dashed var(--band-mark);padding:2px 12px;text-align:right}
+.offscale{margin-top:20px}.offscale>span{display:block;font-size:.78rem;font-weight:700;color:var(--muted);padding:0 10px 2px;
 border-bottom:1px solid var(--ink)}
 .events td,.events th{font-size:.88rem}.ev-time{white-space:nowrap;font-weight:600}.ev-name span{display:block}
 .ev-name{font-weight:600;min-width:12em}.memo{display:block;font-size:.74rem;color:var(--muted);font-weight:400}
 .tier{display:inline-block!important;font-size:.66rem;font-weight:700;padding:0 6px;border-radius:3px;margin-bottom:2px;background:var(--ink);color:#fff}
 .tier-b{background:#8d968f}.ev-num{white-space:nowrap}.ev-diff{font-size:.8rem}tr.released{background:#fbfbf8}
-details.howto,details.limits{margin-top:10px;border:1px solid var(--line);background:#fff}
+details.howto,details.limits{margin-top:16px;border:1px solid var(--line);background:#fff}
 details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:.85rem;color:var(--accent);font-weight:600}
 .howto-body,.limits-body{padding:2px 16px 12px;font-size:.85rem;color:var(--muted)}.rules{padding-left:1.2em}
-.src{font-size:.78rem}.limits{margin-top:26px}.note-line{font-size:.78rem;color:var(--muted);margin:14px 0 0}
+.src{font-size:.78rem}.limits{margin-top:56px}.note-line{font-size:.78rem;color:var(--muted);margin:16px 0 0}
 .no-figures{margin:12px 0 0;padding:10px 14px;border:1px solid var(--line);background:#fff}
-.jump{display:flex;gap:16px;margin:12px 0 0;padding:0;list-style:none;font-size:.85rem}
-.jump a{display:inline-block;min-height:32px;line-height:32px}.events tr.same-time td,.events tr.same-time th{border-top:0}
+.events tr.same-time td,.events tr.same-time th{border-top:0}
 .events tr.same-time{background:inherit}
-footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--line);margin-top:26px;padding-top:12px;
+footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--line);margin-top:32px;padding-top:12px;
 font-size:.78rem;color:var(--muted)}
 @media(max-width:700px){
-main.dash{padding:16px 14px;border:0}.mast{align-items:flex-start;flex-direction:column;gap:4px}h1{font-size:1.3rem}
-.conclusion{padding:12px 14px;font-size:.95rem}.tiles{gap:6px}.tile{padding:8px 8px;grid-template-columns:1fr;
-grid-template-areas:"label" "sym" "word" "origin" "detail"}.tile-symbol{font-size:1.7rem}.tile-word{font-size:.92rem}
-.tile-detail{font-size:.7rem}
+main.dash{padding:18px 14px;border:0}.mast{align-items:flex-start;flex-direction:column;gap:4px}h1{font-size:1.3rem}
+h2{font-size:1.2rem}.data-figure{margin-top:44px}.horizon+.horizon{margin-top:28px}.limits{margin-top:40px}
+.conclusion{padding:12px 14px;font-size:.95rem}.cl-row{grid-template-columns:1fr;gap:0}
+.kv{grid-template-columns:5.6em minmax(0,1fr);gap:8px}.kv dd{font-size:.88rem}.kv-name{display:block;font-size:.82rem;color:var(--muted)}.kv-line+.kv-line{margin-top:8px}
+.tiles{gap:6px}.tile{padding:8px 8px;grid-template-columns:1fr;
+grid-template-areas:"label" "sym" "word" "origin" "detail" "conf"}.tile-symbol{font-size:1.7rem}.tile-word{font-size:.92rem}
+.tile-detail{font-size:.7rem}.tile-conf{font-size:.72rem}
 .board thead,.events thead{display:none}.board,.board tbody,.events,.events tbody{display:block}
 .board tr{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"lbl dir" "now now" "base base";
-gap:2px 10px;padding:10px 4px;border-bottom:1px solid var(--line)}
-.board tr.grp{display:block;padding:0}.board tr.grp th{display:block}.grp-tally{display:block;margin-left:0}
+gap:2px 10px;padding:12px 4px;border-bottom:1px solid var(--line)}
 .board th[scope=row]{grid-area:lbl;border:0;padding:0;min-width:0}.board .cell-dir{grid-area:dir;border:0;padding:0;text-align:right}
 .board .cell-now{grid-area:now;border:0;padding:0}.board .cell-now .viz{display:inline-block;margin:0 0 0 10px;vertical-align:middle}
 .now-text{display:inline}
 .board .cell-base{grid-area:base;border:0;padding:0}.base-text{display:inline;margin-right:8px}
 .board .cell-text{grid-column:1/-1;grid-row:2;border:0;padding:0}
-.ladder-head{display:none}.offscale>span{border-bottom-color:var(--line)}.lv{grid-template-columns:6.6em minmax(0,1fr);grid-template-areas:"price name" "dist state";gap:2px 10px;font-size:.86rem}
+.hz-head{border-bottom:1px solid var(--ink);padding-bottom:6px;margin-bottom:0}
+.ladder-head{display:none}.offscale>span{border-bottom-color:var(--line)}.lv{grid-template-columns:6.6em minmax(0,1fr);grid-template-areas:"price name" "dist state";gap:2px 10px;font-size:.86rem;padding:9px 8px 9px 10px}
 .lv-price{grid-area:price}.lv-name{grid-area:name}.lv-dist{grid-area:dist}.lv-state{grid-area:state}
 .events tr{display:grid;grid-template-columns:3.4em minmax(0,1fr) auto;grid-template-areas:"time name dir" "time nums nums" "time diff diff";
-gap:2px 8px;padding:8px 4px;border-bottom:1px solid var(--line)}.events tr.day{display:block;padding:0}.events tr.day th{display:block}
+gap:2px 8px;padding:10px 4px;border-bottom:1px solid var(--line)}.events tr.day{display:block;padding:0}.events tr.day th{display:block}
 .events td,.events th{border:0;padding:0}.ev-time{grid-area:time}.ev-name{grid-area:name;min-width:0}.events .cell-dir{grid-area:dir;text-align:right}
 .ev-num{display:inline-block;font-size:.8rem}.ev-num::before{content:attr(data-k) " ";color:var(--muted);font-size:.7rem}
 .events tr>.ev-num:nth-of-type(2){grid-column:2/4;grid-row:2}.events tr>.ev-num:nth-of-type(3){grid-column:2/4;grid-row:2;margin-left:6.5em}
 .events tr>.ev-num:nth-of-type(4){grid-column:2/4;grid-row:2;margin-left:13em}.ev-diff{grid-area:diff}
 }
-@media print{.reports-back,details{display:none}main.dash{border:0}}
+@media print{.reports-back,details{display:none}main.dash{border:0}.ladder>.kind-current{position:static}}
 """
+
+
+def conclusion_html(text):
+    """The labelled rows (理由・反対材料) of a conclusion in the current format, else the line as one paragraph."""
+    if not text:
+        return ''
+    parts = conclusion_parts(text)
+    if not parts:
+        return f'<p class="conclusion">{e(text)}</p>'
+    rows = ''.join(f'<div class="cl-row{"" if label else " cl-plain"}"><dt>{e(label)}</dt><dd>{e(part)}</dd></div>'
+                   for label, part in parts)
+    return f'<dl class="conclusion cl-split">{rows}</dl>'
+
+
+def chips_html(chips):
+    """The lead facts as a key-value list: the chip's label on the left, its pieces (reordered only) on the right."""
+    rows = []
+    for chip in chips:
+        label, lines = chip_parts(chip.get('text'))
+        value = ''.join('<span class="kv-line">' + ''.join(
+            ('' if n == 0 or piece.startswith('（') else ' ') + (
+                f'<b>{e(piece)}</b>' if bold else
+                f'<span class="kv-name">{e(piece)}</span>' if n == len(line) - 1 and n > 0 else f'<span>{e(piece)}</span>')
+            for n, (piece, bold) in enumerate(line)) + '</span>' for line in lines)
+        rows.append(f'<div class="kv"><dt>{e(label)}</dt><dd>{value}</dd></div>')
+    return f'<dl class="facts">{"".join(rows)}</dl>' if rows else ''
 
 
 def build(source: str, summary: dict, figures: list, *, title: str, source_name: str) -> tuple[str, dict]:
     checked = validate(summary, figures, source)
     conclusion = summary.get('conclusion') or {}
     confidence = summary.get('confidence') or {}
-    badge = f'<span class="conf">{e(confidence["text"])}</span>' if confidence.get('text') else ''
-    chips = ''.join(f'<li>{e(c["text"])}</li>' for c in summary.get('chips') or [])
-    tiles = tiles_html(next((f for f in figures if f.get('type') == 'bias_board'), None))
+    board = next((f for f in figures if f.get('type') == 'bias_board'), None)
+    tiles = tiles_html(board, confidence)
+    if confidence.get('text') and not tiles:
+        # No tiles to carry it (no bias board): the word stays above the conclusion.
+        tiles = f'<p class="conf-line">{e(confidence["text"])}</p>'
+    lead_html = conclusion_html(conclusion.get('text')) + chips_html(summary.get('chips') or [])
     sections = ''.join(SECTIONS[f['type']](f) for f in figures)
-    names = {'bias_board': 'バイアス', 'liquidity_map': '流動性', 'event_table': '米指標'}
-    jump = ''.join(f'<li><a href="#{e(f["id"])}">{names[f["type"]]}</a></li>' for f in figures)
     limits = summary.get('limitations') or []
     limits_html = ''
     if limits:
@@ -541,7 +684,7 @@ def build(source: str, summary: dict, figures: list, *, title: str, source_name:
 <html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="{e(title)}"><title>{e(title)}</title><style>{CSS}</style></head>
 <body><main class="dash">
 <header class="mast"><div><span class="eyebrow">{e(summary.get('eyebrow', 'REPORT'))}</span><h1>{e(summary.get('short_title', title))}</h1></div><div class="asof-chip">{e(summary.get('as_of_label', ''))}</div></header>
-<section class="lead" aria-label="結論">{tiles}{f'<p class="conclusion">{badge}{e(conclusion["text"])}</p>' if conclusion.get('text') else ''}{f'<ul class="chips">{chips}</ul>' if chips else ''}{f'<ul class="jump" aria-label="ページ内の移動">{jump}</ul>' if jump else ''}</section>
+<section class="lead" aria-label="結論">{tiles}{lead_html}</section>
 {sections}
 {limits_html}
 {note}

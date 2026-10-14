@@ -46,8 +46,9 @@ def test_validate_accepts_a_bundled_edition_and_lists_each_verified_item():
      r'unknown diagram type pie'),
     (lambda s, f: f[0]['items'][0]['viz'].update(type='pie'), r'unknown diagram type pie'),
     (lambda s, f: f[1]['cautions'].append({'text': '足の欠落', 'source_quote': 'どこにもない行'}), r'cautions\[0\]: source_quote'),
-    (lambda s, f: next(i for i in f[1]['items'] if i['kind'] == 'retail').update(state_word='56%・含み益 +5.3%'),
-     r'"56%・含み益 \+5\.3%" is not in its source line'),
+    (lambda s, f: next(i for i in f[1]['items'] if i['kind'] == 'retail').update(state_word='個人の56%がロング・平均で含み益 +5.3%'),
+     r'"個人の56%がロング・平均で含み益 \+5\.3%" is not in its source line'),
+    (lambda s, f: f[1].update(notices=[{'text': '前回分を表示', 'source_quote': 'どこにもない行'}]), r'notices\[0\]: source_quote'),
     (lambda s, f: f[1].update(missing=[{'text': '個人の建玉', 'source_quote': 'どこにもない行'}]), r'missing\[0\]: source_quote'),
     (lambda s, f: f[1].update(band={**f[1]['band'], 'label': '別の帯'}), r'band is not in the Markdown'),
     (lambda s, f: f[2].update(legend='独自の説明'), r'legend is not in the Markdown'),
@@ -76,11 +77,12 @@ def test_build_renders_one_page_with_collapsed_explanations_and_the_markdown_dow
     href = re.search(r'id="source-markdown" download="daily.md" href="data:text/markdown;charset=utf-8;base64,([^"]+)"', page)
     assert base64.b64decode(href.group(1)).decode('utf-8') == source
     assert page.index('class="tiles"') < page.index('class="conclusion"') < page.index('id="bias"')
-    assert '<p class="conclusion"><span class="conf">信頼度 低</span>XAUUSD：' in page
+    assert '<p class="conclusion">XAUUSD：' in page and 'class="conf"' not in page  # an older-format line, no badge
+    assert '<span class="tile-conf">信頼度 低</span>' in page
     assert page.index('id="bias"') < page.index('id="liquidity"') < page.index('id="calendar"')
     assert '<colgroup><col class="c-lbl">' in page and 'class="cell-text" colspan="2"' in page
-    assert 'class="lv kind-level state-resting in-band is-target"' in page and '◎ 目的地の仮説' in page
-    assert '<ul class="jump" aria-label="ページ内の移動"><li><a href="#bias">バイアス</a></li>' in page
+    assert 'class="lv kind-level state-resting side-above in-band is-target"' in page and '◎ 目的地の仮説' in page
+    assert 'class="jump"' not in page and 'href="#bias"' not in page and 'ページ内の移動' not in page
     assert '表示範囲の外' in page and 'class="band-edge">想定変動 ±1σ（1日・±60.0ドル） 上限 4,237.47' in page
     assert 'class="prox"' not in page and 'band-note' not in page and '<th scope="col">推移</th>' not in page
     assert '全文' not in page and '条件と取り消し' not in page and 'キリ' not in page
@@ -126,7 +128,7 @@ def test_the_board_has_no_trend_column_and_the_line_sits_under_its_value():
     source, summary, figures = edition()
     page, _ = dash.build(source, summary, figures, title='t', source_name='s.md')
     board_html = page[page.index('id="bias"'):page.index('id="liquidity"')]
-    assert board_html.count('<th scope="col">') == 4 and 'cell-viz' not in board_html
+    assert board_html.count('<th scope="col">') == 8 and 'cell-viz' not in board_html  # two horizon tables
     assert board_html.count('<svg class="viz"') == 2  # real rate and DXY over 20 observations
     assert '<td class="cell-now"><span class="now-text">2.87%</span><svg class="viz"' in board_html
     # A change without a value (「—」) is not drawn as a lone dash.
@@ -144,7 +146,8 @@ def test_a_mismatched_verdict_shows_its_rule_result_and_the_reports_reason():
     page, _ = dash.build(source, summary, result['figures'], title='t', source_name='s.md')
     tiles = page[page.index('class="tiles"'):page.index('class="conclusion"')]
     assert tiles.count('is-mismatch') == 2 and tiles.count('tile-detail') == 2  # 長期 and 総合 differ from the tally
-    assert '原稿の判断・集計と異なる' in tiles and f'<p class="tile-reason">{reason}</p>' in tiles
+    assert '<span class="tile-origin">集計と異なる</span>' in tiles and f'<p class="tile-reason">{reason}</p>' in tiles
+    assert '原稿の判断' not in tiles
     # Without a mismatch the tiles carry no rule detail; the counts sit in the group headers.
     source, summary, figures = edition()
     page, _ = dash.build(source, summary, figures, title='t', source_name='s.md')
