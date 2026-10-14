@@ -313,17 +313,23 @@ def check_regenerated(data, manifest, figures, source, summary=None):
     if levels.get('levels') and not levels.get('error') and not data.get('xau_bars_used'):
         raise BundleError('Liquidity levels are shown without the stored bars they were computed from')
     if data.get('xau_bars_used'):
-        from scrapers.xau_levels import recompute
+        from scrapers.xau_levels import level_events, recompute
         levels = data.get('xau_levels') or {}
-        computed_at = (levels.get('inputs') or {}).get('computed_at')
+        inputs = levels.get('inputs') or {}
+        computed_at = inputs.get('computed_at')
         if not computed_at:
             raise BundleError('Liquidity levels do not record when they were computed')
-        calendar = data.get('economic_calendar') or {}
+        # The same rule as the collection (main.attach_levels): the calendar's events, else the archived releases
+        # restored for a failed calendar.
+        events, events_source = level_events(data)
         try:
-            again = recompute(data['xau_bars_used'], computed_at, levels.get('price'),
-                              None if calendar.get('error') else calendar.get('events'), manifest['kind'] == 'weekly')
+            again = recompute(data['xau_bars_used'], computed_at, levels.get('price'), events,
+                              manifest['kind'] == 'weekly', events_source)
         except (TypeError, ValueError) as exc:
             raise BundleError(f'Stored bars cannot be used: {exc}') from None
+        if 'events_source' not in inputs and isinstance(again.get('inputs'), dict):
+            # Editions collected before the source was recorded (no restored events then: same events as before).
+            again['inputs'].pop('events_source', None)
         if _plain_json(again) != levels:
             raise BundleError('Liquidity levels differ from a recomputation from the stored bars')
 

@@ -181,7 +181,9 @@ def test_level_inputs_trim_to_the_previous_month_and_closed_bars():
     result = xl.build_levels(raw_h1, raw_m15, utc(NOW), price=4000.0, events=events)
     assert result['inputs'] == {'computed_at': '2026-10-13T13:15:00+00:00',
                                 'h1': {'count': len(bars), 'first_utc': '2026-08-31 22:00', 'last_utc': '2026-10-13 12:00'},
-                                'm15': {'count': 3, 'first_utc': '2026-10-12 12:30', 'last_utc': '2026-10-13 13:00'}}
+                                'm15': {'count': 3, 'first_utc': '2026-10-12 12:30', 'last_utc': '2026-10-13 13:00'},
+                                'events_source': 'calendar'}
+    assert xl.build_levels([], [], utc(NOW))['inputs']['events_source'] == 'none'
     assert xl.build_levels([], [], utc(NOW))['inputs']['h1'] == {'count': 0, 'first_utc': None, 'last_utc': None}
 
 

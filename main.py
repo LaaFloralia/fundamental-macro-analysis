@@ -63,13 +63,14 @@ from scrapers.correlation import (
 from scrapers.session_stats import compute_session_stats, format_session_stats_lines
 from scrapers.macro_surprise import (
     FORECAST_HISTORY, JST, archive_actuals, archive_forecasts, fetch_ff_week, fill_missing_forecasts, format_surprise_lines,
-    history_events, load_actual_history, load_forecast_history, merge_history_events, released_surprises,
+    history_events, load_actual_history, load_forecast_history, load_release_history, merge_history_events,
+    released_surprises,
 )
 from scrapers.liquidity_levels import TV_HISTORY, build_liquidity, choose_gvz, format_liquidity_lines, latest_tv_gvz
 from scrapers.us_yields import fetch_us_yields
 from scrapers.inflation_nowcast import fetch_nowcast, series_key as nowcast_key, target_month as nowcast_month
 from scrapers.xau_bars import collect as collect_xau_bars, snapshot as bar_snapshot
-from scrapers.xau_levels import build_levels, format_level_lines, level_inputs
+from scrapers.xau_levels import RESTORED_CALENDAR, build_levels, format_level_lines, level_events, level_inputs
 from scrapers.us_events import format_us_event_lines, results_start
 from scrapers.fred import fetch_fred_series
 from scrapers.news_triage import build_news, format_news_lines
@@ -137,6 +138,19 @@ def _get_fomc_metadata(today: datetime = None) -> dict:
     }
 
 
+def restored_calendar(since: datetime, now: datetime, history: dict, actuals: dict, releases: dict) -> dict:
+    """Released US events rebuilt from the archive for a failed or empty calendar, kept in the collected
+    data as results[RESTORED_CALENDAR] (JSON-ready):
+    {"events": [history_events rows, incl. Tier A/B releases recorded without a number],
+     "since": ISO JST, "until": ISO JST, "source": "calendar_forecasts.jsonl"}.
+    The calendar's own result is not rewritten; the release-candle levels use these events only when
+    the calendar failed (xau_levels.level_events)."""
+    until = now.astimezone(JST)
+    return {"events": history_events(since, until, history, actuals, release_history=releases),
+            "since": since.isoformat(), "until": until.isoformat(timespec="seconds"),
+            "source": FORECAST_HISTORY.name}
+
+
 def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = None,
                            gvz_fetch=None, news_builder=None, save=True, tv_history=TV_HISTORY) -> None:
     """指標サプライズ・流動性の目安・ポジショニング履歴・採点入力の取得状況を追加する。
@@ -174,11 +188,14 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
     else:
         # The calendar failed or came back empty: the releases already recorded in the archive still count, so the
         # event table keeps its results (the page cannot confirm the schedule; that is stated separately).
+        # The restored events are also kept (RESTORED_CALENDAR); statements without a number are included but
+        # have no surprise. When attach_levels already restored them, its set stays: the levels were made from it.
         try:
             history, actuals = load_forecast_history(), load_actual_history()
-            restored = history_events(since, now.astimezone(JST), history, actuals)
+            restored = restored_calendar(since, now, history, actuals, load_release_history())
+            results.setdefault(RESTORED_CALENDAR, restored)
             results["macro_surprises"] = released_surprises(
-                restored, now, lookback_hours=(now - since).total_seconds() / 3600,
+                restored["events"], now, lookback_hours=(now - since).total_seconds() / 3600,
                 forecast_history=history, actual_history=actuals)
             print(f"  [OK]    calendar_history: カレンダー取得なし・発表済みの記録から {len(results['macro_surprises'])} 件を復元")
         except Exception as e:
@@ -270,21 +287,37 @@ def attach_levels(results: dict, h1_bars: list, m15_bars: list, now: datetime, p
                   history_path: Path = FORECAST_HISTORY) -> None:
     """Named XAUUSD levels at `now` and the exact bars they used (xau_bars_used), after adding the
     released US releases the calendar page no longer lists (Monday: Friday's payrolls) from the
-    archive, so the event table, the release candles and the surprises see the same releases."""
+    archive, so the event table, the release candles and the surprises see the same releases.
+
+    Runs before enrich_offchart_inputs (collect_all_data), so a failed calendar is restored here into
+    results[RESTORED_CALENDAR] and its release candles still become levels. The events are chosen by
+    xau_levels.level_events, the rule report_bundle.check_regenerated recomputes with."""
     calendar = results.get("economic_calendar") or {}
     events = calendar.get("events") if isinstance(calendar, dict) and not calendar.get("error") else None
+    since = results_start(now, "weekly" if weekly else "daily")
     if isinstance(events, list):
-        # Also with an empty list: a calendar that lists nothing still gets the archived releases added. (A failed
-        # calendar is restored from the archive in enrich_offchart_inputs; the levels then use no calendar events,
-        # as report_bundle.check_regenerated recomputes them.)
+        # Also with an empty list: a calendar that lists nothing still gets the archived releases added.
         try:
-            since = results_start(now, "weekly" if weekly else "daily")
             calendar["history_added"] = merge_history_events(events, since, now.astimezone(JST), history_path)
             print(f"  [OK]    calendar_history: 発表済みの記録から {calendar['history_added']} 件を補完")
         except Exception as e:
             print(f"  [WARN]  calendar_history: {e}")
+    else:
+        # A failed page is not mixed with archived releases (its result stays as fetched): they are kept apart.
+        try:
+            results[RESTORED_CALENDAR] = restored_calendar(
+                since, now, load_forecast_history(history_path), load_actual_history(history_path),
+                load_release_history(history_path))
+            print(f"  [OK]    calendar_history: カレンダー取得なし・発表済みの記録から "
+                  f"{len(results[RESTORED_CALENDAR]['events'])} 件を発表足の水準用に復元")
+        except Exception as e:
+            # Recorded, so enrich_offchart_inputs does not store another set the levels did not use.
+            results[RESTORED_CALENDAR] = {"events": None, "error": type(e).__name__}
+            print(f"  [WARN]  calendar_history: {e}")
+    events, events_source = level_events(results)
     try:
-        results["xau_levels"] = build_levels(h1_bars, m15_bars, now, price=price, events=events, weekly=weekly)
+        results["xau_levels"] = build_levels(h1_bars, m15_bars, now, price=price, events=events, weekly=weekly,
+                                             events_source=events_source)
         # The exact bars used, so validation can recompute every level and state (xau_levels.recompute).
         results["xau_bars_used"] = bar_snapshot(*level_inputs(h1_bars, m15_bars, now, weekly))
         lv = results["xau_levels"]

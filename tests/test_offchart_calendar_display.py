@@ -134,6 +134,7 @@ def test_enrich_restores_archived_releases_when_the_calendar_failed(tmp_path, mo
     assert ms.archive_actuals([{**friday, 'actual': '180K'}], datetime(2026, 10, 9, 22, 0, tzinfo=ms.JST), set(), path) == 1
     monkeypatch.setattr(main, 'load_forecast_history', lambda: ms.load_forecast_history(path))
     monkeypatch.setattr(main, 'load_actual_history', lambda: ms.load_actual_history(path))
+    monkeypatch.setattr(main, 'load_release_history', lambda: ms.load_release_history(path))
     monkeypatch.setattr(main, 'append_snapshot', lambda snap: False)
     monkeypatch.setattr(main, 'load_history', lambda: [])
     for calendar in ({'error': 'ページ取得失敗: timeout', 'events': []}, {'error': None, 'events': []}):
@@ -147,6 +148,9 @@ def test_enrich_restores_archived_releases_when_the_calendar_failed(tmp_path, mo
             [('Nonfarm Payrolls (Sep)', '180K', '150K', 30.0)]
         assert restored[0]['forecast_provenance'].startswith('発表前記録')
         assert results['economic_calendar']['events'] == []          # the page's own result is not rewritten
+        kept = results['economic_calendar_restored']                   # kept apart, for the release-candle levels
+        assert [e['indicator'] for e in kept['events']] == ['Nonfarm Payrolls (Sep)']
+        assert (kept['since'], kept['source']) == ('2026-10-09T00:00:00+09:00', 'calendar_forecasts.jsonl')
         # The board shows the restored release (Monday morning looking back at Friday) with the failure line.
         data = {**sample(), 'macro_surprises': restored, 'economic_calendar': results['economic_calendar']}
         stamp = datetime(2026, 10, 12, 9, 5, tzinfo=ms.JST)

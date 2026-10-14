@@ -34,6 +34,9 @@ Conventions:
     Outside closes count towards SWEEP_HOURS only across a run with no missing bar.
   * Inputs are trimmed by level_inputs() and stored with xau_bars.snapshot(), so recompute()
     reproduces a result from the saved bars.
+  * Release candles come from the events chosen by level_events(): the calendar's events, else
+    (calendar failed) the released US events restored from the archive during collection
+    (RESTORED_CALENDAR). inputs.events_source records which: 'calendar', 'archive' or 'none'.
 """
 from __future__ import annotations
 
@@ -58,6 +61,10 @@ MISSING_BARS = 1            # missing hourly bars in a formation window that rai
 STALE_BARS = 1              # missing hourly bars after the last bar that raise a caution
 PUBLISH_LAG = timedelta(minutes=5)  # Twelve Data publishes a closed bar within a few minutes
 HOUR, QUARTER = timedelta(hours=1), timedelta(minutes=15)
+# Collection-data key holding the released US events restored from the archive when the calendar failed:
+# {"events": [...], "since": ISO, "until": ISO, "source": "calendar_forecasts.jsonl"} (main.restored_calendar).
+RESTORED_CALENDAR = "economic_calendar_restored"
+EVENTS_SOURCES = ("calendar", "archive", "none")
 
 
 def trading_date(ts: datetime) -> date:
@@ -358,6 +365,21 @@ def level_inputs(h1: list[dict], m15: list[dict], now: datetime, weekly: bool = 
             [b for b in m15 or [] if b["ts"] + QUARTER > since and b["ts"] + QUARTER <= now])
 
 
+def level_events(data: dict) -> tuple[Optional[list], str]:
+    """The events whose release candles become levels, and where they came from. One rule for the
+    collection (main.attach_levels) and the validation (report_bundle.check_regenerated):
+    the calendar's events when the calendar has no error and lists events ('calendar'; archived
+    releases it no longer lists are merged in by attach_levels), else the released events restored
+    from the archive during collection when there are any ('archive'), else (None, 'none')."""
+    calendar = (data or {}).get("economic_calendar")
+    if isinstance(calendar, dict) and not calendar.get("error") and isinstance(calendar.get("events"), list):
+        return calendar["events"], "calendar"
+    restored = (data or {}).get(RESTORED_CALENDAR)
+    if isinstance(restored, dict) and isinstance(restored.get("events"), list) and restored["events"]:
+        return restored["events"], "archive"
+    return None, "none"
+
+
 def _span(bars: list[dict]) -> dict:
     stamp = lambda b: b["ts"].strftime("%Y-%m-%d %H:%M")
     return {"count": len(bars), "first_utc": stamp(bars[0]) if bars else None,
@@ -377,14 +399,21 @@ def _level(key, name, side, value, price, formed_at, state, at, group, note, gap
 
 
 def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional[float] = None,
-                 events: Optional[list] = None, weekly: bool = False) -> dict:
-    """Named levels with their states and gaps, from the bars level_inputs() keeps at `now`."""
+                 events: Optional[list] = None, weekly: bool = False, events_source: Optional[str] = None) -> dict:
+    """Named levels with their states and gaps, from the bars level_inputs() keeps at `now`.
+
+    events_source (see level_events) is recorded in inputs; without it, 'calendar' when events are
+    given and 'none' otherwise."""
     now = now.astimezone(timezone.utc).replace(microsecond=0)
     h1, m15 = level_inputs(h1, m15, now, weekly)
+    events_source = events_source or ("none" if events is None else "calendar")
+    if events_source not in EVENTS_SOURCES:
+        raise ValueError(f"unknown events_source: {events_source}")
     result = {"source": "Twelve Data XAU/USD 1時間足（UTC、確定足）", "day_boundary": "NY 17:00",
               "price": price, "last_bar_utc": None, "trading_day": None, "midnight_open": None,
               "levels": [], "coverage": None, "cautions": [], "error": None,
-              "inputs": {"computed_at": now.isoformat(timespec="seconds"), "h1": _span(h1), "m15": _span(m15)}}
+              "inputs": {"computed_at": now.isoformat(timespec="seconds"), "h1": _span(h1), "m15": _span(m15),
+                         "events_source": events_source}}
     if not h1:
         result["error"] = "1時間足なし（水準と掃引状態は計算できません）"
         return result
@@ -473,11 +502,12 @@ def build_levels(h1: list[dict], m15: list[dict], now: datetime, price: Optional
 
 
 def recompute(snap: dict, computed_at_iso: str, price: Optional[float] = None, events: Optional[list] = None,
-              weekly: bool = False) -> dict:
+              weekly: bool = False, events_source: Optional[str] = None) -> dict:
     """build_levels again from a stored bar snapshot (xau_bars.snapshot) and its inputs.computed_at."""
     h1, m15 = restore(snap)
     now = datetime.fromisoformat(computed_at_iso)
-    return build_levels(h1, m15, now if now.tzinfo else now.replace(tzinfo=timezone.utc), price, events, weekly)
+    return build_levels(h1, m15, now if now.tzinfo else now.replace(tzinfo=timezone.utc), price, events, weekly,
+                        events_source)
 
 
 def merge_levels(levels: list[dict]) -> list[dict]:
