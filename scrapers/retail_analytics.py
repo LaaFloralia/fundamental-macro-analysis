@@ -114,6 +114,7 @@ def record_pools(open_orders: dict, current_price: Optional[float],
     history = _load_pools_history(path)
     history[today.isoformat()] = {
         "current_price": current_price,
+        "fetched_at": open_orders.get("timestamp"),  # 取得時刻（前回取得として表示するときの時点）
         "bsl": bsl,
         "ssl": ssl,
     }
@@ -142,6 +143,27 @@ def load_baseline_pools(today: Optional[date] = None,
     if not candidates:
         return None
     return candidates[min(candidates)]
+
+
+def latest_pools(today: Optional[date] = None, path: Path = POOLS_HISTORY_PATH,
+                 max_age_days: int = BASELINE_WINDOW_DAYS[1]) -> Optional[dict]:
+    """今回の取得に失敗したとき表示に使う、直近の取得成功分（当日を含む 0〜max_age_days 日前、最新優先）。
+
+    {"date", "fetched_at", "current_price", "bsl", "ssl"}。fetched_at は記録した版だけにある（古い履歴は None）。
+    """
+    today = today or date.today()
+    best = None
+    for key, snap in _load_pools_history(path).items():
+        try:
+            age = (today - datetime.strptime(key, "%Y-%m-%d").date()).days
+        except ValueError:
+            continue
+        if not isinstance(snap, dict) or not (snap.get("bsl") or snap.get("ssl")) or not 0 <= age <= max_age_days:
+            continue
+        if best is None or key > best["date"]:
+            best = {"date": key, "fetched_at": snap.get("fetched_at"), "current_price": snap.get("current_price"),
+                    "bsl": snap.get("bsl") or [], "ssl": snap.get("ssl") or []}
+    return best
 
 
 # ------------------------------------------------------------ スイープ検証
@@ -326,6 +348,7 @@ def build_retail_analytics(
         "baseline_date": None,
         "baseline_note": None,
         "sweep_events": [],
+        "previous_pools": None,
         "prev_report_at": prev_report_at if isinstance(prev_report_at, str) else (
             prev_report_at.isoformat(timespec="minutes") if prev_report_at else None
         ),
@@ -369,7 +392,12 @@ def build_retail_analytics(
             pools_map, bars, result["atr20d"], prev_report_at=prev_report_at
         )
 
-    # 5. 当日プールを履歴へ保存（翌日の答え合わせ用）
+    # 5. 今回の取得でクラスタがなければ、直近の取得成功分を表示用に添える（保存の前に読む）
+    current = open_orders if isinstance(open_orders, dict) else {}
+    if not (current.get("bsl_candidates") or current.get("ssl_candidates")):
+        result["previous_pools"] = latest_pools(today, pools_path)
+
+    # 6. 当日プールを履歴へ保存（翌日の答え合わせ用）
     record_pools(open_orders, current_price, today, pools_path)
 
     return result

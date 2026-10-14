@@ -200,3 +200,25 @@ def test_build_retail_analytics_without_h1(tmp_path):
     )
     assert result["error"] is not None
     assert result["sweep_events"] == []
+
+
+# ---------------------------------------------------------------- 取得失敗時の直近取得分（表示用）
+
+def test_failed_fetch_carries_the_latest_kept_pools_with_their_fetch_time(tmp_path):
+    path = tmp_path / "pools.json"
+    today = date(2026, 10, 14)
+    ok = {"bsl_candidates": [_pool(4173.86, 4190.61)], "ssl_candidates": [_pool(4104.0, 4170.0)],
+          "timestamp": "2026-10-14T00:03:00Z"}
+    ra.record_pools({**ok, "timestamp": "2026-10-12T00:03:00Z"}, 4150.0, date(2026, 10, 12), path)
+    ra.record_pools(ok, 4171.0, today, path)                    # this morning's fetch
+    assert json.loads(path.read_text())["2026-10-14"]["fetched_at"] == "2026-10-14T00:03:00Z"
+    failed = {"bsl_candidates": [], "ssl_candidates": [], "error": "Order Book ペアを抽出できず"}
+    result = ra.build_retail_analytics(retail={}, open_orders=failed, current_price=4143.0,
+                                       h1_path=None, today=today, pools_path=path)
+    prev = result["previous_pools"]
+    assert (prev["date"], prev["fetched_at"]) == ("2026-10-14", "2026-10-14T00:03:00Z")  # same day counts here
+    assert prev["bsl"][0]["low"] == 4173.86 and prev["ssl"][0]["high"] == 4170.0
+    # A successful fetch needs no earlier pools; too old history is not offered.
+    assert ra.build_retail_analytics(retail={}, open_orders=ok, current_price=4171.0, h1_path=None,
+                                     today=today, pools_path=path)["previous_pools"] is None
+    assert ra.latest_pools(date(2026, 10, 19), path) is None
