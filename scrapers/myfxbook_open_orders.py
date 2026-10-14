@@ -1,40 +1,205 @@
-"""MyFXBook Open Orders / Order Book ヒートマップスクレイパー
+"""MyFXBook Order Book (Positions) スクレイパー
 
 対象 URL: https://www.myfxbook.com/community/outlook/{symbol}
-取得データ: ページ内の "Order Book (Positions)" セクションから
-価格帯別の Bid 注文 (= 下方 SSL 候補) / Ask 注文 (= 上方 BSL 候補) を抽出。
+取得データ: ページの "Order Book (Positions)" チャートの価格別件数（Asks / Bids 各上位 15 件）。
 
-DOM 構造（2026-05 時点）:
-  - h3 "Order Book (Positions)" の直下に Bar chart canvas
-  - inner_text として volume\nprice の列が並ぶ (前半 ~15 件が Bids、後半 ~15 件が Asks)
-  - 末尾に "Asks", "Price", "Bids" の軸ラベル
+取得経路（2026-10-14 に実ページで確認）:
+  1. order_book_json: ページ自身が読み込む XHR
+     ``/community/order-book-data.json?symbolName={symbol}`` の応答
+     ``{"content": {"asks": [[price, count], ...], "bids": [...], "decimalCount": 2}}`` を
+     Playwright の response として受け取る。Asks / Bids は系列名で識別する。
+  2. highcharts: 上記を取り逃した場合、``#orderBookChartContainer`` の Highcharts 系列
+     （name = "Asks" / "Bids"、point.price と point.y）を page.evaluate で読む。
+  3. body_text: 最後の手段として body の inner_text を解析する。テキストでは
+     "count\nprice" の組が Asks 系列 → Bids 系列の順に並ぶ（前半 = Asks、後半 = Bids）。
+  現在価格は ``/community/market-depth-data.json`` の ``content.actual`` を優先し、
+  取れなければ Market Depth セクションの価格ラベル中央値で推定する。
 
-ICT 用途:
-  - 現在価格より上方に集中している Ask 注文 = BSL（Short SL がここで stop hunt されやすい）候補
-  - 現在価格より下方に集中している Bid 注文 = SSL（Long SL がここで stop hunt されやすい）候補
-  - top-3 クラスタを返し、Smart Money のターゲット帯を実数で示す
+ページ上の表記と、分かっていないこと:
+  - 見出しは "Order Book (Positions)"、系列名は "Asks" / "Bids"、Y 軸は
+    "Amount of ask orders" / "Amount of bid orders"、ツールチップの単位は "positions"。
+    値は件数で、ロット数ではない。各系列は件数の多い順に上位 15 件で、価格順ではない。
+  - Asks も Bids も現在価格の上下両側に分布する（2026-10-14 の XAUUSD では現値 4151.73 に対し
+    Asks 4103.99〜4190.00、Bids 3458.12〜5175.78）。通常の板（Bid は下、Ask は上）とは並びが違う。
+  - これが未約定の指値・逆指値注文なのか、保有ポジションの価格分布なのかをページは説明していない。
+    Stop / Limit の区別も示されていない。
+  - ページ下部に "Data is based on verified and real accounts only and is delayed by 60 minutes." とある。
 
-注: Bid/Ask の本質はリミット注文の集中度であり、純粋な Buy Stop / Sell Stop ではない。
-ただし MyFXBook の outlook ユーザーの保有ポジションから派生した注文集中度として、
-ICT の流動性プールの代理指標として使える。
+本モジュールの BSL / SSL 分類（従来どおり）:
+  - Asks と Bids を合算し、現在価格より上を BSL 候補、下を SSL 候補として価格帯クラスタにまとめる。
+  - Bid / Ask の別は分類に使っていない。上方の集中を「買いの損切り燃料」とみなすのは本モジュールの
+    解釈で、ページが述べている意味ではない。ICT の流動性プールの代理指標として扱う。
+
+取得失敗の主因（2026-10-14 調査）:
+  Playwright 既定の headless（chromium-headless-shell）は Cloudflare の対話型確認
+  （"Just a moment..." / "Verify you are human"、HTTP 403・cf-mitigated: challenge）で止まり、
+  60 秒待っても通過しなかった。同じ時間帯に新 headless（channel="chromium"）+ 実在の Chrome UA では
+  確認画面が出ずに 200 で表示された。そのため新 headless を優先し、確認画面は自動操作で突破しない。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import sys
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from playwright.async_api import async_playwright
 from config import BROWSER_TIMEOUT, USER_AGENT
 
+OUTLOOK_URL = "https://www.myfxbook.com/community/outlook/{symbol}"
+ORDER_BOOK_XHR = "/community/order-book-data.json"
+MARKET_DEPTH_XHR = "/community/market-depth-data.json"
+ORDER_BOOK_CONTAINER_ID = "orderBookChartContainer"
+
+# データ待ちの上限（秒）。order-book-data.json は通常ロード開始から 4 秒前後で届く。
+DATA_WAIT_S = 20.0
+# Cloudflare の非対話チャレンジが自動で抜けるのを待つ上限（秒）。対話型は待っても抜けない。
+CHALLENGE_WAIT_S = 8.0
+# 失敗時の再試行は 1 回だけ。間隔（秒）。
+RETRY_DELAY_S = 5.0
+MAX_ATTEMPTS = 2
+
+CHALLENGE_TITLES = ("Just a moment", "Attention Required", "Performing security verification")
+
+ERR_NO_PAIRS = "Order Book ペアを抽出できず (DOM 変更の可能性)"
+ERR_CHALLENGE = "Cloudflare のボット確認で遮断され Order Book を取得できず"
+
+_JS_ORDER_BOOK_SERIES = """(containerId) => {
+  if (typeof Highcharts === 'undefined' || !Highcharts.charts) return null;
+  const charts = Highcharts.charts.filter(Boolean);
+  let chart = charts.find(c => c.renderTo && c.renderTo.id === containerId);
+  if (!chart) {
+    chart = charts.find(c => {
+      const names = c.series.map(s => s.name);
+      return names.includes('Asks') && names.includes('Bids') && c.series.every(s => s.type === 'bar');
+    });
+  }
+  if (!chart) return null;
+  return chart.series.map(s => ({
+    name: s.name,
+    points: s.points.map(p => [p.price !== undefined ? p.price : (p.options && p.options.price), p.y]),
+  }));
+}"""
+
+
+def _pairs_to_dicts(rows: Any) -> List[dict]:
+    """[[price, count], ...] を {"volume": int, "price": float} のリストにする。不正行は捨てる。"""
+    out: List[dict] = []
+    if not isinstance(rows, list):
+        return out
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        price, count = row[0], row[1]
+        if isinstance(price, bool) or isinstance(count, bool):
+            continue
+        try:
+            price_f = float(price)
+            count_f = float(count)
+        except (TypeError, ValueError):
+            continue
+        if price_f <= 0 or count_f < 0:
+            continue
+        out.append({"volume": int(round(count_f)), "price": price_f})
+    return out
+
+
+def _parse_orderbook_json(payload: Any) -> tuple[List[dict], List[dict]]:
+    """order-book-data.json の応答（文字列または dict）から (bids, asks) を返す。
+
+    想定形: {"error": false, "content": {"asks": [[price, count], ...], "bids": [...]}}
+    価格は 4.19E+3 のような指数表記や整数でも来る。
+    """
+    if isinstance(payload, (str, bytes)):
+        try:
+            payload = json.loads(payload)
+        except (ValueError, TypeError):
+            return [], []
+    if not isinstance(payload, dict) or payload.get("error"):
+        return [], []
+    content = payload.get("content")
+    if not isinstance(content, dict):
+        return [], []
+    return _pairs_to_dicts(content.get("bids")), _pairs_to_dicts(content.get("asks"))
+
+
+def _parse_highcharts_series(series: Any) -> tuple[List[dict], List[dict]]:
+    """Highcharts 系列 [{"name": "Asks"|"Bids", "points": [[price, y], ...]}] から (bids, asks)。
+
+    系列名で Bid / Ask を決める。名前が想定外の系列は無視する。
+    """
+    bids: List[dict] = []
+    asks: List[dict] = []
+    if not isinstance(series, list):
+        return bids, asks
+    for s in series:
+        if not isinstance(s, dict):
+            continue
+        name = str(s.get("name") or "").strip().lower()
+        rows = _pairs_to_dicts(s.get("points"))
+        if name in ("bids", "bid"):
+            bids.extend(rows)
+        elif name in ("asks", "ask"):
+            asks.extend(rows)
+    return bids, asks
+
+
+def _parse_market_depth_actual(text_head: Optional[str]) -> Optional[float]:
+    """market-depth-data.json 応答の先頭から content.actual（現在価格）を取り出す。
+
+    応答全体は 5MB 前後あるため、先頭部分の文字列だけを正規表現で見る。
+    """
+    if not text_head:
+        return None
+    m = re.search(r'"actual"\s*:\s*(-?[\d.]+(?:[eE][+-]?\d+)?)', text_head)
+    if not m:
+        return None
+    try:
+        v = float(m.group(1))
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def _is_challenge(title: Optional[str] = None, body_text: Optional[str] = None,
+                  cf_mitigated: Optional[str] = None) -> bool:
+    """Cloudflare のボット確認ページかどうか。"""
+    if cf_mitigated and "challenge" in cf_mitigated.lower():
+        return True
+    if title and any(t.lower() in title.lower() for t in CHALLENGE_TITLES):
+        return True
+    if body_text and "Performing security verification" in body_text and "Cloudflare" in body_text:
+        return True
+    return False
+
+
+def _user_agent_for(browser_version: Optional[str]) -> str:
+    """config.USER_AGENT の Chrome バージョンを実ブラウザのメジャー版に合わせる。
+
+    新 headless の既定 UA は "HeadlessChrome/..." を含み Cloudflare に遮断されるため UA は差し替える。
+    版数だけ実エンジンと揃え、UA と実際の機能の食い違いを減らす。
+    """
+    major = None
+    if browser_version:
+        m = re.match(r"(\d+)\.", browser_version)
+        if m:
+            major = m.group(1)
+    if not major:
+        return USER_AGENT
+    return re.sub(r"Chrome/[\d.]+", f"Chrome/{major}.0.0.0", USER_AGENT)
+
 
 def _parse_orderbook_pairs(body_text: str) -> tuple[List[dict], List[dict]]:
-    """body_text から Order Book の (volume, price) ペアを抽出する。
+    """body_text から Order Book の (count, price) 組を抽出する（フォールバック用）。
+
+    inner_text では Asks 系列の組が先、Bids 系列の組が後に並ぶ（2026-10-14 に
+    SVG の aria-label "Price: 4151.490, Asks: 83" と XHR の asks/bids で照合）。
 
     Returns: (bids, asks) — それぞれ {"volume": int, "price": float} のリスト。
     """
@@ -55,8 +220,7 @@ def _parse_orderbook_pairs(body_text: str) -> tuple[List[dict], List[dict]]:
 
     section = body_text[s_idx:e_idx]
 
-    # volume(整数) + price(小数、カンマ区切り可) のペアを抽出
-    # MyFXBook の order book は volume\nprice\nvolume\nprice... の形
+    # count(整数) + price(小数、カンマ区切り可) の組を抽出
     lines = [ln.strip() for ln in section.splitlines() if ln.strip()]
 
     pairs: List[tuple[int, float]] = []
@@ -78,17 +242,15 @@ def _parse_orderbook_pairs(body_text: str) -> tuple[List[dict], List[dict]]:
     if not pairs:
         return [], []
 
-    # MyFXBook の order book は前半 ~半分が Bids、後半 ~半分が Asks の慣例
-    # ただし "Asks Price Bids" 軸ラベル順を見て調整する余地あり。
-    # 安全策: 全ペアを返し、現在価格との上下で BSL/SSL 分類する側で扱う。
+    # 系列の境目はテキストに出ないため、2 系列が同数（通常 15 + 15）である前提で半分に割る。
+    # 前半 = Asks、後半 = Bids。奇数件のときは Asks 側を 1 件少なくする。
     half = len(pairs) // 2
-    bids_raw = pairs[:half] if half > 0 else []
-    asks_raw = pairs[half:]
+    asks_raw = pairs[:half]
+    bids_raw = pairs[half:]
 
     bids = [{"volume": v, "price": p} for v, p in bids_raw]
     asks = [{"volume": v, "price": p} for v, p in asks_raw]
     return bids, asks
-
 
 def _extract_current_price(body_text: str, symbol: str) -> Optional[float]:
     """body_text から現在価格を抽出する。Mid-Market price セクションから推定。
@@ -193,14 +355,133 @@ def _cluster_and_classify(
     }
 
 
+async def _load_outlook_once(p, symbol: str, use_new_headless: bool) -> dict:
+    """outlook ページを 1 回開き、Order Book の材料を集める。
+
+    Returns: {"order_book_json", "market_depth_head", "highcharts", "body_text",
+              "challenge", "launch", "elapsed_s"}
+    """
+    out: dict = {
+        "order_book_json": None,
+        "market_depth_head": None,
+        "highcharts": None,
+        "body_text": "",
+        "challenge": False,
+        "launch": None,
+        "elapsed_s": None,
+    }
+    t0 = time.monotonic()
+    browser = None
+    try:
+        if use_new_headless:
+            try:
+                browser = await p.chromium.launch(headless=True, channel="chromium")
+                out["launch"] = "chromium-new-headless"
+            except Exception:  # noqa: BLE001 — フル Chromium 未導入時は旧 headless へ
+                browser = None
+        if browser is None:
+            browser = await p.chromium.launch(headless=True)
+            out["launch"] = "chromium-headless-shell"
+
+        context = await browser.new_context(
+            user_agent=_user_agent_for(browser.version),
+            viewport={"width": 1366, "height": 900},
+            locale="en-US",
+            ignore_https_errors=True,
+        )
+        page = await context.new_page()
+
+        async def _on_response(resp) -> None:
+            try:
+                url = resp.url
+                if ORDER_BOOK_XHR in url and out["order_book_json"] is None and resp.status == 200:
+                    out["order_book_json"] = await resp.text()
+                elif MARKET_DEPTH_XHR in url and out["market_depth_head"] is None and resp.status == 200:
+                    body = await resp.body()
+                    out["market_depth_head"] = body[:2000].decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001 — 応答本文が取れなくても他経路で続行
+                pass
+
+        page.on("response", lambda r: asyncio.ensure_future(_on_response(r)))
+
+        resp = await page.goto(OUTLOOK_URL.format(symbol=symbol), timeout=BROWSER_TIMEOUT,
+                               wait_until="domcontentloaded")
+        cf_mitigated = resp.headers.get("cf-mitigated") if resp else None
+
+        deadline = time.monotonic() + DATA_WAIT_S
+        challenge_deadline = time.monotonic() + CHALLENGE_WAIT_S
+        scrolled = False
+        while time.monotonic() < deadline:
+            if out["order_book_json"] is not None:
+                break
+            try:
+                title = await page.title()
+            except Exception:  # noqa: BLE001 — 遷移中
+                title = ""
+            if _is_challenge(title=title, cf_mitigated=cf_mitigated):
+                if time.monotonic() > challenge_deadline:
+                    out["challenge"] = True
+                    break
+                # 非対話チャレンジは通過すると自動で本ページへ遷移する
+                await page.wait_for_timeout(500)
+                continue
+            cf_mitigated = None  # 本ページへ遷移済み。初回応答のヘッダは以後見ない
+            if not scrolled:
+                try:
+                    await page.locator(f"#{ORDER_BOOK_CONTAINER_ID}").scroll_into_view_if_needed(timeout=2000)
+                    scrolled = True
+                except Exception:  # noqa: BLE001 — 要素がまだ無い
+                    pass
+            await page.wait_for_timeout(500)
+
+        if not out["challenge"]:
+            # 現在価格用の market-depth-data.json を少しだけ待つ（通常は order book と同時に届く）
+            md_deadline = time.monotonic() + 5.0
+            while out["market_depth_head"] is None and time.monotonic() < md_deadline:
+                await page.wait_for_timeout(250)
+            if out["order_book_json"] is None:
+                try:
+                    out["highcharts"] = await page.evaluate(_JS_ORDER_BOOK_SERIES, ORDER_BOOK_CONTAINER_ID)
+                except Exception:  # noqa: BLE001
+                    out["highcharts"] = None
+        try:
+            out["body_text"] = await page.inner_text("body")
+        except Exception:  # noqa: BLE001
+            out["body_text"] = ""
+        if not out["challenge"] and _is_challenge(body_text=out["body_text"]):
+            out["challenge"] = True
+    finally:
+        if browser is not None:
+            try:
+                await browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+        out["elapsed_s"] = round(time.monotonic() - t0, 1)
+    return out
+
+
+def _extract_from_payload(payload: dict) -> tuple[List[dict], List[dict], Optional[str]]:
+    """収集物から (bids, asks, method) を決める。優先順: XHR JSON → Highcharts → body テキスト。"""
+    bids, asks = _parse_orderbook_json(payload.get("order_book_json"))
+    if bids or asks:
+        return bids, asks, "order_book_json"
+    bids, asks = _parse_highcharts_series(payload.get("highcharts"))
+    if bids or asks:
+        return bids, asks, "highcharts"
+    bids, asks = _parse_orderbook_pairs(payload.get("body_text") or "")
+    if bids or asks:
+        return bids, asks, "body_text"
+    return [], [], None
+
+
 async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[float] = None) -> dict:
-    """MyFXBook の Order Book セクションから注文集中度を取得する。
+    """MyFXBook の Order Book (Positions) から価格別件数の集中帯を取得する。
 
     Args:
         symbol: 銘柄名 (例: "XAUUSD", "USDJPY")
         current_price_hint: TwelveData 等で取得済みの現在価格。
-            ページ内 Market Depth 由来の推定中央値と 2% 以上乖離する場合は
-            hint を優先する（ページ側パースの異常検知用クロスチェック）。
+            ページ由来の現在価格と 2% 以上乖離する場合は hint を優先する
+            （ページ側パースの異常検知用クロスチェック）。
 
     Returns:
         {
@@ -216,9 +497,10 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
             "ssl_concentration": dict | None,   # top-1 互換用
             "summary": {"bid": int, "ask": int},  # 互換用
             "buckets": [],  # 旧スキーマ互換 (空 list、後方互換のため残置)
-            "note": str | None,
+            "note": str | None,   # 取得方法・試行回数・価格の出典など
             "error": str | None,
         }
+        volume_sum は件数（positions）の合計で、ロット数ではない。
     """
     result = {
         "source": "MyFXBook (Order Book Positions)",
@@ -236,48 +518,74 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
         "error": None,
     }
 
-    url = f"https://www.myfxbook.com/community/outlook/{symbol}"
+    payload: Optional[dict] = None
+    bids: List[dict] = []
+    asks: List[dict] = []
+    method: Optional[str] = None
+    attempts: List[str] = []
+    last_exc: Optional[Exception] = None
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(user_agent=USER_AGENT, ignore_https_errors=True)
-            page = await context.new_page()
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                if attempt > 1:
+                    await asyncio.sleep(RETRY_DELAY_S)
+                try:
+                    payload = await _load_outlook_once(p, symbol, use_new_headless=True)
+                except Exception as exc:  # noqa: BLE001 — 1 回だけ再試行
+                    last_exc = exc
+                    attempts.append(f"{attempt}:例外 {type(exc).__name__}")
+                    continue
+                bids, asks, method = _extract_from_payload(payload)
+                state = "challenge" if payload["challenge"] else (method or "データなし")
+                attempts.append(f"{attempt}:{state} ({payload['launch']}, {payload['elapsed_s']}s)")
+                if method:
+                    break
+    except Exception as exc:  # noqa: BLE001
+        last_exc = exc
 
-            await page.goto(url, timeout=BROWSER_TIMEOUT, wait_until="domcontentloaded")
-            # Order Book canvas の描画完了を待つ
-            await page.wait_for_timeout(10000)
+    notes: List[str] = []
+    if attempts:
+        notes.append("試行 " + " / ".join(attempts))
 
-            body_text = await page.inner_text("body")
-            await browser.close()
-    except Exception as exc:
-        result["error"] = f"ページ取得失敗: {exc}"
+    if payload is None:
+        result["error"] = f"ページ取得失敗: {last_exc}"
+        result["note"] = "; ".join(notes) or None
         return result
 
-    bids, asks = _parse_orderbook_pairs(body_text)
     result["bid_count"] = len(bids)
     result["ask_count"] = len(asks)
     result["summary"] = {"bid": len(bids), "ask": len(asks)}
 
     if not bids and not asks:
-        result["error"] = "Order Book ペアを抽出できず (DOM 変更の可能性)"
+        result["error"] = ERR_CHALLENGE if payload.get("challenge") else ERR_NO_PAIRS
+        result["note"] = "; ".join(notes) or None
         return result
 
-    current_price = _extract_current_price(body_text, symbol)
+    notes.insert(0, f"取得方法: {method}")
 
-    # クロスチェック: ページ由来の推定値と hint が 2% 以上乖離したら hint を採用
+    current_price = _parse_market_depth_actual(payload.get("market_depth_head"))
+    if current_price is not None:
+        notes.append("現在価格: market-depth-data.json の actual")
+    else:
+        current_price = _extract_current_price(payload.get("body_text") or "", symbol)
+        if current_price is not None:
+            notes.append("現在価格: Market Depth 表示の価格中央値")
+
+    # クロスチェック: ページ由来の値と hint が 2% 以上乖離したら hint を採用
     if current_price_hint is not None:
         if current_price is None:
             current_price = current_price_hint
-            result["note"] = "現在価格はページから抽出できず、外部ヒント値を使用"
+            notes.append("現在価格はページから抽出できず、外部ヒント値を使用")
         elif abs(current_price / current_price_hint - 1.0) > 0.02:
-            result["note"] = (
+            notes.append(
                 f"ページ推定価格 {current_price} が外部ヒント {current_price_hint} と "
                 f"2% 以上乖離 → ヒント値を採用"
             )
             current_price = current_price_hint
 
     result["current_price"] = current_price
+    result["note"] = "; ".join(notes)
 
     if current_price is None:
         result["error"] = "現在価格を抽出できず、BSL/SSL 分類スキップ"
@@ -287,7 +595,8 @@ async def scrape_myfxbook_open_orders(symbol: str, current_price_hint: Optional[
     result["bsl_candidates"] = cls["bsl_candidates"]
     result["ssl_candidates"] = cls["ssl_candidates"]
 
-    # 旧スキーマ互換 (top-1 を bsl_concentration / ssl_concentration に格納、type は便宜上のラベル)
+    # 旧スキーマ互換 (top-1 を bsl_concentration / ssl_concentration に格納)。
+    # type は従来の便宜上のラベルで、クラスタは Asks と Bids を合算した価格帯（Ask / Bid 由来ではない）。
     if cls["bsl_candidates"]:
         b = cls["bsl_candidates"][0]
         result["bsl_concentration"] = {

@@ -1,0 +1,419 @@
+Earn Points
+Sign In
+Sign Up
+Home
+Portfolio
+Backtest New
+Strategy AI
+Market
+Systems
+Community
+News
+Reviews
+Brokers
+Prop Firms
+Calendar
+Calculators
+Sentiment
+Correlation
+Heat Map
+Market Hours
+Spreads
+Interest Rates
+Education
+Contests
+
+
+Home  Community  Sentiment  XAUUSD
+ Share
+Advertisement
+XAUUSD Forex Sentiment
+
+39% of the forex traders are currently going short with XAU/USD, with an average price of 3994.9921, meanwhile 61% of the forex traders are going long with XAU/USD, with an average price of 4378.9708.
+
+Current Metrics
+Symbol	Action	Percentage	Volume	Positions
+XAUUSD
+Short	39 %	782.19 lots	3,940
+Long	61 %	1,226.23 lots	9,403
+Market Depth (Lots)
+
+Chart
+
+Bar chart with 2 data series.
+The chart has 1 X axis displaying categories.
+The chart has 1 Y axis displaying values. Data ranges from -11.03 to 1.15.
+0
+12
+10
+8
+6
+4
+2
+2
+4,151.03
+4,151.33
+4,151.63
+4,151.93
+4,152.23
+4,152.53
+4,150.78
+4,150.83
+4,150.88
+4,150.93
+4,150.98
+4,151.08
+4,151.13
+4,151.18
+4,151.23
+4,151.28
+4,151.38
+4,151.43
+4,151.48
+4,151.53
+4,151.58
+4,151.68
+4,151.73
+4,151.78
+4,151.83
+4,151.88
+4,151.98
+4,152.03
+4,152.08
+4,152.13
+4,152.18
+4,152.28
+4,152.33
+4,152.38
+4,152.43
+4,152.48
+4,152.58
+4,152.63
+4,152.68
+Mid-Market price
+End of interactive chart.
+Order Book (Positions)
+
+Chart
+
+Bar chart with 2 data series.
+The chart has 2 X axes displaying Bid orders, and Ask orders.
+The chart has 2 Y axes displaying Amount of ask orders, and Amount of bid orders.
+83
+4,151.49
+34
+4,167.38
+32
+4,170.01
+9
+4,151.46
+9
+4,154.34
+8
+4,108.95
+8
+4,154.73
+7
+4,190.00
+6
+4,103.99
+6
+4,150.54
+5
+4,116.14
+5
+4,140.14
+5
+4,148.35
+5
+4,148.51
+5
+4,150.72
+16
+5,175.77
+11
+4,186.89
+11
+5,175.78
+10
+4,159.68
+9
+4,162.28
+9
+4,173.26
+9
+4,174.44
+9
+4,429.00
+9
+4,434.56
+8
+4,174.51
+7
+4,160.23
+6
+3,458.12
+6
+4,147.24
+6
+4,153.15
+6
+4,160.00
+Asks
+Price
+Bids
+End of interactive chart.
+Forex Sentiment
+All
+By Country
+Chart Type
+Lots
+Positions
+Lots
+M1
+M5
+M15
+M30
+H1
+H4
+D1
+4,120.0000
+4,140.0000
+4,160.0000
+4,180.0000
+4,200.0000
+4,220.0000
+Oct 13
+Oct 14
+12
+12
+XAUUSD O: H: L: C:
+600
+750
+900
+1050
+1200
+1350
+Short Lots
+Long Lots
+2026 Sep
+2026 Oct
+27
+11
+Oct 14, 2026 15:30
+Save image
+Top Forex Brokers
+Min. Deposit:
+$10
+Commission:
+$0.0
+EUR/USD Spread:
+-
+Open Live Account
+Min. Deposit:
+$10
+Commission:
+$0.0
+EUR/USD Spread:
+-
+Open Live Account
+Min. Deposit:
+$100
+Commission:
+$2.5
+EUR/USD Spread:
+-
+Open Live Account
+Min. Deposit:
+$100
+Commission:
+$0.0
+EUR/USD Spread:
+-
+Open Live Account
+
+
+Tools
+Economic Calendar
+Market Hours
+Interest Rates
+Holidays Calendar
+Forex Market
+Forex Volatility
+Forex Correlation
+Forex News
+Forex Analysis
+COT Data
+Liquidity
+Forex Calculators
+Forex Heat Map
+
+Economic Indicators
+Currency Converter
+Community
+Community
+Systems
+Most Popular Systems
+Strategies
+Contests
+Forex Charts
+Forex Sentiment
+Sentiment Indicator
+Reviews
+Brokers
+Prop Trading Firms
+VPS Services
+Signal Providers
+EA Programming Services
+Affiliate Programs
+PAMM Broker Services
+Rebate Program Services
+Trading Platforms
+Expert Advisors
+Crypto Exchanges
+Trading courses
+Stock Portfolio Trackers
+
+Brokers
+Forex Spreads
+Forex Broker Quotes
+Forex Broker Swaps
+Forex Broker Volume
+Forex Broker Promotions
+Press Release
+Prop Firms
+Prop Firms
+Prop Challenge Comparison
+Prop Firms Spreads
+Prop Firms Demo Accounts
+Comparison
+Platform
+Widgets
+Features
+API
+RSS
+Stock Portfolio
+Affiliate Software
+Advanced Charts
+Support
+FAQ
+Help
+Contact Us
+Report a Bug!
+About
+Blog
+Terms
+|
+Privacy
+|
+Site Map
+|
+Site Map Calendar
+© 2026 Myfxbook Ltd. All Rights Reserved.
+HIGH RISK WARNING: Foreign exchange trading carries a high level of risk that may not be suitable for all investors. Leverage creates additional risk and loss exposure. Before you decide to trade foreign exchange, carefully consider your investment objectives, experience level, and risk tolerance. You could lose some or all of your initial investment. Do not invest money that you cannot afford to lose. Educate yourself on the risks associated with foreign exchange trading, and seek advice from an independent financial or tax advisor if you have any questions. Any data and information is provided 'as is' solely for informational purposes, and is not intended for trading purposes or advice. Past performance is not indicative of future results.
+Data is based on verified and real accounts only and is delayed by 60 minutes.
+Upgrade to the Sentiment Indicator to view live data
+Upgrade Now
+EURUSD	
+1.1124
+	GBPUSD	
+1.31947
+
+USDJPY	
+158.887
+	USDCAD	
+1.42755
+Events
+News
+Fed Barkin Speech
+4h 13min
+Monthly Budget Statement
+4h 43min
+Fed Beige Book
+4h 43min
+API Crude Oil Stock Change
+7h 13min
+Machinery Orders YoY
+10h 33min
+Machinery Orders MoM
+10h 33min
+Full Time Employment Chg
+11h 13min
+Unemployment Rate
+11h 13min
+Employment Change
+11h 13min
+BoJ Koeda Speech
+12h 13min
+Fed Barkin Speech
+4h 13min
+Monthly Budget Statement
+4h 43min
+Fed Beige Book
+4h 43min
+API Crude Oil Stock Change
+7h 13min
+Machinery Orders YoY
+10h 33min
+Machinery Orders MoM
+10h 33min
+Full Time Employment Chg
+11h 13min
+Unemployment Rate
+11h 13min
+Employment Change
+11h 13min
+BoJ Koeda Speech
+12h 13min
+Bay Street Likely To Open With Slightly Positive Bias
+|
+Bank Of America Q3 Profit Drops On $1.2 Bln Treasury Fine; Shares Hit
+|
+U.S. Consumer Prices Increase In Line With Estimates In September
+|
+Pound Rises As UK Chancellor Assures Fiscal Discipline
+|
+China Inflation Rises Marginally; PPI Inflation Strongest Since 2022
+|
+FTSE 100 Modestly Higher In Cautious Trade
+|
+Pound Rises Against Majors
+|
+CAC 40 Climbs Higher As Technology, Luxury Stocks Move Up
+|
+DAX Climbs Higher Despite Acceleration In German WPI
+|
+Australian Dollar Rises Amid RBA Rate Hike Speculation
+|
+Bay Street Likely To Open With Slightly Positive Bias
+|
+Bank Of America Q3 Profit Drops On $1.2 Bln Treasury Fine; Shares Hit
+|
+U.S. Consumer Prices Increase In Line With Estimates In September
+|
+Pound Rises As UK Chancellor Assures Fiscal Discipline
+|
+China Inflation Rises Marginally; PPI Inflation Strongest Since 2022
+|
+FTSE 100 Modestly Higher In Cautious Trade
+|
+Pound Rises Against Majors
+|
+CAC 40 Climbs Higher As Technology, Luxury Stocks Move Up
+|
+DAX Climbs Higher Despite Acceleration In German WPI
+|
+Australian Dollar Rises Amid RBA Rate Hike Speculation
+|
+Oct 12
+<span>XAUUSD</span><span style="color: #808080;"> O: <span style="color: var(--txt-color, #000000); margin-right: 5px;"></span> H: <span style="color: var(--txt-color, #000000); margin-right: 5px;"></span> L: <span style="color: var(--txt-color, #000000); margin-right: 5px;"></span> C: <span style="color: var(--txt-color, #000000); margin-right: 5px;"></span></span>
+0 / 0
+0 / 0
+0 / 0
+0 / 0
+<span>Short Lots<span style="color: var(--txt-color, #000000);"> </span></span>
+<span>Long Lots<span style="color: var(--txt-color, #000000);"> </span></span>
+0 / 0
+0 / 0
+0 / 0
+0 / 0

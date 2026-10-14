@@ -248,7 +248,7 @@ def test_orderbook_pair_extractor_parses_volume_price_pairs():
         "Top Forex Brokers\n"
     )
     bids, asks = myfxbook_open_orders._parse_orderbook_pairs(body)
-    # 3 ペアが取れて、半分で割って前半=bids, 後半=asks
+    # 3 ペアが取れて、半分で割って前半=asks, 後半=bids（実ページの並び順、2026-10-14 確認）
     assert len(bids) + len(asks) == 3
     all_pairs = bids + asks
     prices = sorted([p["price"] for p in all_pairs])
