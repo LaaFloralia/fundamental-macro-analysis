@@ -450,8 +450,10 @@ def liquidity_section(figure):
     lower, upper = band.get('lower'), band.get('upper')
     price = next((i['position'] for i in figure['items'] if i.get('kind') == 'current'), None)
     rows, upper_done, lower_done = [], False, False
+    # The edge's price sits in the price column and its label right of the trunk (a full-width line crossed it).
     edge = lambda word, value: (f'<li class="band-edge {"side-above" if word == "上限" else "side-below"}">'
-                                f'{e(band["label"])} {word} {value:,.2f}</li>')
+                                f'<span class="be-value">{word} {value:,.2f}</span> '
+                                f'<span class="be-label">{e(band["label"])}</span></li>')
     for i in [i for i in figure['items'] if not i.get('offscale')]:
         if upper is not None and not upper_done and i['position'] <= upper:
             rows.append(edge('上限', upper))
@@ -599,8 +601,10 @@ font-weight:700;color:var(--ink)}
 .kind-reference{color:var(--muted);font-size:.82rem}
 .kind-draw,.is-target{outline:2px solid var(--accent);outline-offset:-2px}
 .target{display:inline-block;max-width:100%;margin-left:6px;font-size:.72rem;font-weight:700;color:var(--accent);overflow-wrap:anywhere}
-.band-edge{list-style:none;font-size:.72rem;color:#55709c;border-bottom:1px dashed var(--band-mark);padding:2px 12px;text-align:right;
+.band-edge{list-style:none;display:grid;grid-template-columns:var(--px) var(--node) minmax(0,1fr);column-gap:var(--gap);
+align-items:baseline;font-size:.72rem;color:#55709c;border-bottom:1px dashed var(--band-mark);padding:2px 10px 2px 0;
 --trunk:var(--line);background:linear-gradient(var(--trunk),var(--trunk)) calc(var(--px) + var(--gap) + var(--node) / 2 - 1.5px) 0/3px 100% no-repeat}
+.be-value{grid-column:1;text-align:right;white-space:nowrap}.be-label{grid-column:3;min-width:0;overflow-wrap:anywhere}
 .band-edge.side-above{--trunk:var(--above)}.band-edge.side-below{--trunk:var(--below)}
 .offscale{margin-top:20px}.offscale>span{display:block;font-size:.78rem;font-weight:700;color:var(--muted);padding:0 10px 2px;
 border-bottom:1px solid var(--ink)}

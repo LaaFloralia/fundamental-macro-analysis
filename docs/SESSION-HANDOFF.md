@@ -183,6 +183,14 @@ Owner feedback on the preview of the readability pass: 「中立（偏りなし�
 - Bias rows: 中立 alone. US table: no 「発表15分足 高 …／安 …」 memo.
 - Manifest schemaVersion 8; `tests/test_edition_v7_compat.py` keeps a v7 edition (made with `cb85a56` from the 10/14 18:00 collection) passing the stored-edition checks and drawn as a tree.
 
-Open: the owner asked to call 「建値とか」 TP/SL. MyFXBook does not say whether an Order Book count is a pending order, a position or a TP/SL (its pages return 403 to tools; no first-party description found on 2026-10-15), so the zone label still reads 個人の注文・建玉 until the owner confirms the wording.
+The owner asked to call 「建値とか」 TP/SL. MyFXBook does not say whether an Order Book count is a pending order, a position or a TP/SL (its pages return 403 to tools; no first-party description found on 2026-10-15), so the zone label reads 個人の注文・建玉; after that explanation the owner found the rest fine (「それ以外は問題ない」).
 
 Verification: repo `tests/` 1216 passed; job tests 171 passed against a scratch runtime of `b206d44`; the real render path (`render_package`, validation, browser acceptance) passed for the 10/14 22:35 Daily and the 10/14 13:07 Weekly with their Sol-written drafts (frozen clock). No independent model review this round (speed requested by the owner).
+
+## 2026-10-15 (09:00 check): band edges beside the trunk
+
+The 09:00 Daily, the first on `67a1e37`, passed: the conclusion took the new form in the first draft, the MyFXBook order book was fetched (09:03, 60-minute delay), and the Journal row holds the r2 HTML (same SHA-256). One parent_render refusal, also seen at 10/14 18:00: the parent wrote 「金・銀・ドル・米10年の…1時間足は今回未取得」, because the TradingView MCP has been down since 10/13 09:00 (OAuth refresh token rejected; the owner must log in again), while the gold hourly bars behind the levels are held. The job (outside this repo) now quotes the refused claim with a wording that passes, and its PARENT-WORKFLOW.md says how to write that gap.
+
+- Liquidity band edges: 上限/下限 and the price in the price column, the band label right of the trunk. The full-width, right-aligned line crossed the trunk on a phone (found while comparing the Studio trial). Rendering only: figures, appendix and bindings are unchanged, so schemaVersion stays 8.
+
+Verification: repo `tests/` 1216 passed; the 10/15 09:00 edition redrawn with this code at 390 px and PC width.

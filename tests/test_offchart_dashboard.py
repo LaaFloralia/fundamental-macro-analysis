@@ -83,7 +83,8 @@ def test_build_renders_one_page_with_collapsed_explanations_and_the_markdown_dow
     assert '<colgroup><col class="c-lbl">' in page and 'class="cell-text" colspan="2"' in page
     assert 'class="lv kind-level state-resting side-above in-band is-target"' in page and '◎ 目的地の仮説' in page
     assert 'class="jump"' not in page and 'href="#bias"' not in page and 'ページ内の移動' not in page
-    assert '表示範囲の外' in page and 'class="band-edge side-above">想定変動 ±1σ（1日・±60.0ドル） 上限 4,237.47' in page
+    assert '表示範囲の外' in page and ('class="band-edge side-above"><span class="be-value">上限 4,237.47</span> '
+                                     '<span class="be-label">想定変動 ±1σ（1日・±60.0ドル）</span>') in page
     assert 'class="prox"' not in page and 'band-note' not in page and '<th scope="col">推移</th>' not in page
     assert '全文' not in page and '条件と取り消し' not in page and 'キリ' not in page
     assert audit == {'source_sha256': hashlib.sha256(source.encode('utf-8')).hexdigest(),
@@ -106,8 +107,10 @@ def test_band_edges_bracket_the_levels_inside_the_band():
                          'state_word': '未到達', 'icon': '●', 'distance_text': '', 'pool': 'BSL'}
                         for name, price in (('上', 110.0), ('中', 100.0), ('下', 90.0))]}
     html = dash.liquidity_section(figure)
-    order = [html.index(x) for x in ('>上<', '想定変動 ±1σ 上限 105.00', '>中<', '想定変動 ±1σ 下限 95.00', '>下<')]
+    order = [html.index(x) for x in ('>上<', '>上限 105.00<', '>中<', '>下限 95.00<', '>下<')]
     assert order == sorted(order) and html.count(' in-band') == 1
+    # The price goes in the price column, the label right of the trunk (the full-width line crossed it).
+    assert html.count('<span class="be-label">想定変動 ±1σ</span>') == 2
 
 
 def test_the_trend_line_is_a_decorative_svg_and_other_diagrams_are_gone():
