@@ -176,9 +176,13 @@ Article bodies are fetched only for each feed's fixed host (`btc.news.BODY_HOSTS
 | RSS feeds (5 crypto media, 2 Investing.com macro/geopolitics feeds, SEC, CFTC, Fed) | constants |
 | Article bodies | RSS item link; fetched only if the host equals the feed's allowed host (otherwise `url_not_allowed`, not requested). Investing.com items are headlines only (`not_used_by_terms`) |
 | Binance 1-minute klines (news reaction) | constant URL; `startTime` from a parsed timestamp |
+| CNBC quotes (`US2Y`, `.DXY`, `.IXIC`), Kraken OHLC (1h and 1d), Deribit futures summary, ForexFactory weekly calendar (`nfs.faireconomy.media`) | constants plus constant parameters; ForexFactory titles and values are pattern-checked and kept only for US High/Medium events |
 
 The code fetches nothing from iShares or EDGAR and follows no next-page tokens or in-page links. BLS comes from the
 committed cache.
+
+Never fetched: CME Group (cmegroup.com). Its terms forbid automated access, and on 2026-10-15 a single scripted
+request for the terms PDF got this Mac's IP blocked. CME futures data stays out of the BTC report.
 
 ## Storage per run (measured 2026-10-08)
 
