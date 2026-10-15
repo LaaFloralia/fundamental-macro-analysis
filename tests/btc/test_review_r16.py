@@ -57,7 +57,7 @@ def test_basis_row_uses_the_reference_copy():
     annual = fact('ann', 5.5, '年率 +5.5%（BTC-25DEC26・71日）')
     item = {'instrument': 'BTC-25DEC26', 'annual_fact_id': 'ann', 'basis_fact_id': 'b', 'days': 70.8}
     rows = dashboard.crowd_rows(page(annual), {'basis': {'items': [item], 'reference': dict(item)}}, [])
-    assert any(r['label'] == '先物ベーシス（年率）' and r['display'] == annual['display'] for r in rows)
+    assert any(r['label'] == '先物ベーシス' and r['display'] == annual['display'] for r in rows)
 
 
 def test_manual_release_shows_without_news():

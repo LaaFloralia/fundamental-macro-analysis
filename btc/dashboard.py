@@ -279,7 +279,7 @@ def crowd_rows(page, st: dict, facts: list) -> list:
     basis = st.get('basis', {})
     annual = page.fact((basis.get('reference') or {}).get('annual_fact_id'))
     if annual:
-        rows.append(_row(page, g, '先物ベーシス（年率）', annual['display'], baseline='Deribit先物と指数の差', mark=REF, fact=annual,
+        rows.append(_row(page, g, '先物ベーシス', annual['display'], baseline='Deribit先物と指数の差', mark=REF, fact=annual,
                          rule='高いほどレバレッジの買い需要が強い。急低下は手仕舞いのしるし（方向の判定には数えない）'))
     ratios = st.get('ratios', {})
     hi, lo = EXTREME_PCT
