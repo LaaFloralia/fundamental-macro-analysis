@@ -145,7 +145,7 @@ After the allow block, so that nothing can reopen them:
 Python stays inside these paths. Measured on 2026-10-08 with a full chain under an audit hook (collect, finish,
 prepare and package workers): no read or exec under `/Users/laa` outside the table. The worker's cwd is the runtime
 snapshot; a process whose cwd or `sys.path` entry is outside these paths fails at import. Fonts come from
-`/System/Library/Fonts` (Hiragino Sans is first in the CSS); `~/Library/Fonts` is not readable.
+`/System/Library/Fonts` (Hiragino Sans is first in the CSS) and, read-only, `~/Library/Fonts` (symbol fallback).
 
 In-sandbox probes in the tests print fixed labels only; nothing touches the Keychain outside the sandbox. All of
 these return EPERM: exec of `security list-keychains` and of `op --version`, listing `~/Library/Keychains` and
