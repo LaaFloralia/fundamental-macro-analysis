@@ -195,3 +195,16 @@ The 09:00 Daily, the first on `67a1e37`, passed: the conclusion took the new for
 - News feeds: Investing.com's two RSS feeds (commodities, economy) dated items without a zone (「2026-10-14 23:35:35」, UTC), and `news_triage._stamp` dropped every such time, so both gave 0 items since at least 10/02 and the headline pool was FXStreet plus the ECB and the Fed. They are now read as UTC (`NAIVE_UTC`): a live fetch at 12:4x JST gave 53 candidates instead of 33, with Middle East (Houthi-Saudi clashes, Iranian attacks on ships) and Russia/Ukraine stories. Investing.com's World News feed (news_287) stopped in 2024-11 and is not used.
 
 Verification: repo `tests/` 1217 passed; the 10/15 09:00 edition redrawn with the band-edge code at 390 px and PC width; the live feeds fetched with the zone fix.
+
+## 2026-10-15: BTC macro and geopolitics headlines
+
+Owner request: give BTC the same geopolitics coverage as XAU. The BTC pool was the crypto media plus the SEC, CFTC and Fed (10/15 09:00: 109 candidates, none on the Middle East or Russia/Ukraine), and crypto headlines alone filled all 25 places (every kept item scored 0.8 or more).
+
+- Feeds: Investing.com commodities (news_11: oil and the Middle East) and economy (news_14: sanctions, war, trade) as `btc.news.MACRO_FEEDS`, with zone-less times read as UTC like XAU. Headlines only: article pages are never requested (empty `BODY_HOSTS`, body `not_used_by_terms`, no body place used). Each feed holds its latest 10 items (6-14 h), so older stories are missed at collection time. news_95 (data releases) is left to the crypto media and the Fed feed.
+- Selection: up to `MACRO_KEEP` = 5 of the 25 places go to these feeds in ranked order and the other feeds fill the rest, in both the Jev and the keyword path. The Jev question and the keyword rule name geopolitical conflicts, sanctions and tariffs. Threshold, keep limits and budget stay equal to XAU.
+- Report: the feed line counts the configured feeds (一般RSS n/7); older collections still read n/5.
+- The job's PARENT-WORKFLOW.md (outside this repo) says how the parent assesses these headlines.
+
+Live check (10/15 about 13:20 JST): 120 candidates, general 7/7 and official 3/3. Jev kept 5 macro headlines (dollar and Nasdaq on the hot CPI, Russia/Ukraine peace talks, and Houthi-Saudi clashes with Iranian attacks on ships at 0.51) beside 20 crypto items. In the first run the best macro headline scored 0.83 and the lowest kept crypto item 0.84, so without the places none would have been kept. A question naming military attacks did not change the scores beyond the run-to-run spread (about 0.02).
+
+Verification: repo `tests/` 1221 passed.

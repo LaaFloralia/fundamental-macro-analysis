@@ -53,7 +53,8 @@ SOURCE_CATALOG = (
     ('fred', 'https://api.stlouisfed.org/fred/series/observations'),
     ('fed_calendar', 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm'),
     ('bea_calendar', 'https://www.bea.gov/news/schedule'), ('bls_schedule_cache', 'https://www.bls.gov/schedule/'),
-    ('news', 'rss: coindesk, theblock, cointelegraph, decrypt, bitcoinmagazine, sec, cftc, federalreserve'),
+    ('news', 'rss: coindesk, theblock, cointelegraph, decrypt, bitcoinmagazine, investing (headlines only), '
+             'sec, cftc, federalreserve'),
     ('binance_klines', 'https://api.binance.com/api/v3/klines'),
     ('kraken_ticker', 'https://api.kraken.com/0/public/'), ('bitstamp_ticker', 'https://www.bitstamp.net/api/v2/'),
     ('binance_spot', 'https://api.binance.com/api/v3/'), ('kraken_usdt', 'https://api.kraken.com/0/public/'),

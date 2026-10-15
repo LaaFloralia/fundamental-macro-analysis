@@ -154,8 +154,8 @@ Article bodies are fetched only for each feed's fixed host (`btc.news.BODY_HOSTS
 | Deribit `ticker` | `instrument_name` comes from Deribit's own list: pattern-checked (`BTC-<d><MON><yy>-<strike>-<C\|P>`), params-encoded |
 | Farside, Alternative.me FGI, CFTC Socrata, DefiLlama, mempool.space, CoinGecko, Treasury XML, FRED | constants plus constant or validated parameters (month string, series id from code) |
 | Fed FOMC calendar, BEA schedule | constants; page links are not followed |
-| RSS feeds (5 media, SEC, CFTC, Fed) | constants |
-| Article bodies | RSS item link; fetched only if the host equals the feed's allowed host (otherwise `url_not_allowed`, not requested) |
+| RSS feeds (5 crypto media, 2 Investing.com macro/geopolitics feeds, SEC, CFTC, Fed) | constants |
+| Article bodies | RSS item link; fetched only if the host equals the feed's allowed host (otherwise `url_not_allowed`, not requested). Investing.com items are headlines only (`not_used_by_terms`) |
 | Binance 1-minute klines (news reaction) | constant URL; `startTime` from a parsed timestamp |
 
 The code fetches nothing from iShares or EDGAR and follows no next-page tokens or in-page links. BLS comes from the

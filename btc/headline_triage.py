@@ -41,7 +41,8 @@ TIMEOUT_SECONDS = 25
 QUESTION = ('Does this headline specifically report news that can move the Bitcoin (BTC/USD) price: Bitcoin itself, '
             'spot Bitcoin ETFs or their flows, crypto regulation or enforcement, exchange incidents or hacks, '
             'stablecoins, large corporate or government Bitcoin purchases or sales, Federal Reserve policy, '
-            'US inflation or jobs data, or the US dollar and interest rates?')
+            'US inflation or jobs data, the US dollar and interest rates, or geopolitical conflicts, sanctions or '
+            'tariffs that shift risk appetite?')
 
 CANDIDATES_NAME = 'news-candidates.json'
 TRIAGE_NAME = 'news-triage.json'

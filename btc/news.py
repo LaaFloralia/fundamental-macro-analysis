@@ -1,7 +1,9 @@
 """BTC news: public RSS headlines, Jev triage (optional, degrades to rules), body checks, price reaction.
 
-- Feeds: five crypto media RSS + SEC / CFTC / Fed official feeds (design 6.1);
-  the feed parser is reused from XAU ``scrapers.news_triage``.
+- Feeds: five crypto media RSS + SEC / CFTC / Fed official feeds (design 6.1),
+  plus two Investing.com feeds for macro and geopolitics (``MACRO_FEEDS``:
+  headlines only, at most ``MACRO_KEEP`` kept); the feed parser is reused from
+  XAU ``scrapers.news_triage``.
 - Three steps across the process boundary (btc.headline_triage):
   the sandboxed collect worker gathers headlines (``collect_headline_source``);
   the entry, outside the sandbox, runs the Jev triage on public headlines only
@@ -34,13 +36,21 @@ from btc.fetch import FetchError, Fetcher, SourceResult, checked_url
 from btc.sources.base import z
 
 UTC = timezone.utc
+# Macro and geopolitics headlines (Middle East and oil, sanctions, war, trade), which the crypto media rarely carry.
+# Same public Investing.com RSS as XAU: commodities (news_11) and economy (news_14; XAU's news_95 is data releases,
+# which the crypto media and the Fed feed already cover). Each feed holds only its latest 10 items (about 6-14 h).
+# Headlines only: article pages are not fetched (terms, bot protection). pubDate has no zone and is UTC.
+MACRO_FEEDS = (
+    ('investing_commodities_rss', 'Investing.com', 'https://www.investing.com/rss/news_11.rss'),
+    ('investing_economy_rss', 'Investing.com', 'https://www.investing.com/rss/news_14.rss'),
+)
 GENERAL_FEEDS = (
     ('coindesk_rss', 'CoinDesk', 'https://www.coindesk.com/arc/outboundfeeds/rss/'),
     ('theblock_rss', 'The Block', 'https://www.theblock.co/rss.xml'),
     ('cointelegraph_rss', 'Cointelegraph', 'https://cointelegraph.com/rss'),
     ('decrypt_rss', 'Decrypt', 'https://decrypt.co/feed'),
     ('bitcoinmagazine_rss', 'Bitcoin Magazine', 'https://bitcoinmagazine.com/feed'),
-)
+) + MACRO_FEEDS
 OFFICIAL_FEEDS = (
     ('sec_rss', 'SEC', 'https://www.sec.gov/news/pressreleases.rss'),
     ('cftc_rss', 'CFTC', 'https://www.cftc.gov/RSS/RSSGP/rssgp.xml'),
@@ -48,11 +58,15 @@ OFFICIAL_FEEDS = (
 )
 FALLBACK = re.compile(r'\bbitcoin\b|\bBTC\b|\bETF\b|crypto|stablecoin|tether|USDT|USDC|\bSEC\b|\bCFTC\b|'
                       r'\bFed\b|FOMC|Powell|inflation|CPI|payroll|jobs report|Treasur|yield|dollar|hack|exploit|'
-                      r'MicroStrategy|\bStrategy\b|Saylor|BlackRock|IBIT|Binance|Coinbase|Kraken', re.I)
+                      r'MicroStrategy|\bStrategy\b|Saylor|BlackRock|IBIT|Binance|Coinbase|Kraken|'
+                      r'geopolit|\bwars?\b|missile|airstrike|sanction|ceasefire|tariff|Middle East|\bIran|\bIsrael|'
+                      r'Ukraine|Russia', re.I)
 MAX_BODIES = 8
 BODY_BUDGET_SECONDS = 90
 MAX_REACTIONS = 8
 OFFICIAL_IDS = {fid for fid, _, _ in OFFICIAL_FEEDS}
+MACRO_IDS = {fid for fid, _, _ in MACRO_FEEDS}
+MACRO_KEEP = 5  # places of KEEP_MAX: macro headlines and crypto news cannot crowd each other out
 # Article bodies: only these hosts, per feed (exact match; add a subdomain here explicitly to allow it).
 BODY_HOSTS = {
     'coindesk_rss': ('www.coindesk.com',),
@@ -63,6 +77,8 @@ BODY_HOSTS = {
     'sec_rss': ('www.sec.gov',),
     'cftc_rss': ('www.cftc.gov',),
     'fed_rss': ('www.federalreserve.gov',),
+    'investing_commodities_rss': (),  # headlines only (MACRO_FEEDS)
+    'investing_economy_rss': (),
 }
 
 
@@ -89,7 +105,7 @@ def collect_headlines(f: Fetcher, start: datetime, now: datetime) -> tuple[list[
                       'items': 0, 'error_kind': None, 'retrieved_at': None}
             try:
                 r = f.get(url, timeout=15)
-                items = xau.parse_feed(r.body, publisher, start, now)
+                items = xau.parse_feed(r.body, publisher, start, now, UTC if source_id in MACRO_IDS else None)
                 record.update(status='ok', retrieved_at=z(datetime.fromisoformat(r.retrieved_at)), raw_sha256=r.raw_sha256)
             except FetchError as error:
                 record['error_kind'] = error.kind
@@ -123,13 +139,24 @@ def collect_headlines(f: Fetcher, start: datetime, now: datetime) -> tuple[list[
 def select(candidates: list[dict], scores: dict | None) -> list[dict]:
     if scores is None:
         pool = [dict(c, p=None) for c in candidates if FALLBACK.search(c['title'] + ' ' + c.get('excerpt', ''))]
-        return sorted(pool, key=lambda c: c['published_at'], reverse=True)[:triage.KEEP_MAX]
+        return _share(sorted(pool, key=lambda c: c['published_at'], reverse=True))
     ranked = sorted((dict(c, p=scores.get(c['id'])) for c in candidates),
                     key=lambda c: (c['p'] or 0, c['published_at']), reverse=True)
     kept = [c for c in ranked if (c['p'] or 0) >= triage.THRESHOLD]
     if len(kept) < triage.KEEP_MIN:
         kept = ranked[:triage.KEEP_MIN]
-    return kept[:triage.KEEP_MAX]
+    return _share(kept)
+
+
+def _share(ranked: list[dict]) -> list[dict]:
+    """In ranked order: up to MACRO_KEEP macro headlines, the other feeds fill the rest of KEEP_MAX.
+
+    Crypto headlines alone fill all 25 places (10/15: every kept item scored 0.8 or more), so a shared cap would
+    drop geopolitics; macro headlines must not push out BTC news either."""
+    macro = [c for c in ranked if c['source_id'] in MACRO_IDS][:MACRO_KEEP]
+    rest = [c for c in ranked if c['source_id'] not in MACRO_IDS][:triage.KEEP_MAX - len(macro)]
+    chosen = {c['id'] for c in macro + rest}
+    return [c for c in ranked if c['id'] in chosen]
 
 
 class _ArticleText(HTMLParser):
@@ -292,6 +319,9 @@ def finish_news(f: Fetcher, record: dict, scores: dict | None, selection: dict, 
     checked = 0
     body_started = time.monotonic()
     for item in order:
+        if item['source_id'] in MACRO_IDS:  # headlines only; uses no body place
+            item['body'] = {'status': 'not_attempted', 'error_kind': 'not_used_by_terms'}
+            continue
         if checked >= MAX_BODIES or time.monotonic() - body_started > BODY_BUDGET_SECONDS or f.deadline.remaining() < 20:
             item['body'] = {'status': 'not_attempted', 'error_kind': 'budget_exhausted'}
             continue
@@ -310,7 +340,7 @@ def finish_news(f: Fetcher, record: dict, scores: dict | None, selection: dict, 
                                      else 'headline_only')
     values.update(selection=selection, kept=kept,
                   selection_rule={'threshold': triage.THRESHOLD, 'keep_min': triage.KEEP_MIN,
-                                  'keep_max': triage.KEEP_MAX},
+                                  'keep_max': triage.KEEP_MAX, 'macro_keep_max': MACRO_KEEP},
                   elapsed_ms=headline_ms + round((time.monotonic() - started) * 1000))
     return SourceResult('news', status=record['status'], retrieved_at=record['retrieved_at'],
                         source_url=record.get('source_url'), values=values, raw_sha256=list(record.get('raw_sha256') or []))

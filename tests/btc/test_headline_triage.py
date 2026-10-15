@@ -244,7 +244,7 @@ def test_finish_news_selects_with_entry_scores_and_drops_candidates(monkeypatch)
     assert 'candidates' not in values and 'headline_elapsed_ms' not in values
     assert [k['id'] for k in values['kept']] == ['n001', 'n002', 'n004', 'n005', 'n007']
     assert values['selection'] == selection and values['selection_rule'] == {'threshold': 0.5, 'keep_min': 5,
-                                                                             'keep_max': 25}
+                                                                             'keep_max': 25, 'macro_keep_max': 5}
     assert all(k['code_verification'] == 'secondary_body_retrieved' for k in values['kept'])
     fallback = news.finish_news(F(), headline_record(rows), None, {'mode': 'fallback', 'reason': 'disabled'},
                                 now=datetime(2026, 10, 7, 22, tzinfo=timezone.utc)).to_dict()

@@ -611,7 +611,9 @@ def section_news(doc: Doc, facts: dict, analysis: dict, ev: dict, index: dict, f
                   'triage_unreadable': '応答を読めず', 'no_candidates': '候補なし'}.get(sel.get('reason'), '利用不可')
         method = f'キーワード規則（Jev: {reason}）'
     model = ''
-    line = doc.item(f'ニュースの取得: 一般RSS {news["feeds_ok"]["general"]}/5・公式RSS {news["feeds_ok"]["official"]}/3が成功。'
+    feeds = lambda official: sum(1 for x in news.get('feeds') or [] if bool(x.get('official')) is official)
+    line = doc.item(f'ニュースの取得: 一般RSS {news["feeds_ok"]["general"]}/{feeds(False)}・'
+                    f'公式RSS {news["feeds_ok"]["official"]}/{feeds(True)}が成功。'
                     f'候補{news["candidate_count"]}件から{len(news["items"])}件を選別（{method}{model}）。'
                     f'期間 {jst(news["window_start"])}〜{jst(news["window_end"])}（{news["lookback_hours"]:g}時間）')
     doc.item('見出しは未確認の手掛かり。本文を取得できたものだけ「本文取得済み」。価格反応は公表時刻付近の動きで因果ではない'
