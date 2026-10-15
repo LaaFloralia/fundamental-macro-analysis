@@ -70,19 +70,17 @@ class FakeStages:
             *[x + '\n' for x in lines], '## 2. 長い表', '',
             '| ' + ' | '.join(f'列{i}' for i in range(14)) + ' |', '|' + '---|' * 14,
             '| ' + ' | '.join(f'値{i}の説明文' for i in range(14)) + ' |', ''])
-        figures = [{'id': 'flows', 'type': 'diverging_bars', 'title': 'TEST フロー', 'unit': 'USD m',
-                    'subtitle': 'USD m / 合成値', 'caption': '合成値による表示検証です。',
-                    'source_label': 'TEST', 'source_url': 'https://example.invalid/',
-                    'items': [{'label': ident, 'value': rows[ident]['value'], 'display': rows[ident]['display'],
-                               'source_quote': line, 'tone': 'negative' if rows[ident]['value'] < 0 else 'neutral'}
+        figures = [{'id': 'flows', 'type': 'bias_board', 'title': 'TEST フロー', 'groups': ['TEST'],
+                    'items': [{'group': 'TEST', 'label': ident, 'value': rows[ident]['value'], 'display': rows[ident]['display'],
+                               'baseline': '', 'change': '', 'direction': '', 'symbol': '', 'asof': '',
+                               'kind': 'text', 'source_quote': line,
+                               'tone': 'negative' if rows[ident]['value'] < 0 else 'neutral'}
                               for ident, line in zip(rows, lines)]}]
         bindings = [{'figure': 'flows', 'label': ident, 'fact_id': ident, 'value': rows[ident]['value'],
                      'display': rows[ident]['display']} for ident in rows]
         summary = {'eyebrow': 'BTCUSD TEST', 'short_title': 'チャート外分析 TEST', 'report_date': stamp[:10],
-                   'status': '合成データによる検証',
-                   'conclusion': {'title': '今回の見立て', 'text': analysis['conclusion'], 'source_quote': conclusion},
-                   'conditions': [{'title': '反証・無効化条件', 'text': 'TEST の合成条件が崩れた場合',
-                                   'source_quote': condition}]}
+                   'conclusion': {'text': analysis['conclusion'], 'source_quote': conclusion},
+                   'chips': [{'text': condition, 'source_quote': condition}]}
         core = {'bias': analysis['bias'], 'no_trade': False, 'no_trade_reason': None,
                 'risk_events_next_24h': [], 'positioning_summary': 'TEST', 'confidence': analysis['confidence']}
         return ReportParts(markdown=md, summary=summary, figures=figures, bindings=bindings, machine_core=core,

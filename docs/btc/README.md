@@ -15,6 +15,25 @@ fixture is a trimmed live collection whose news text and article URLs are synthe
   bundled Chromium (`python -m playwright install chromium`). The runner strips `BTC_PLAYWRIGHT_CHANNEL`; that
   variable is for dev tests only.
 
+## Page (HTML)
+
+The HTML is the one-page dashboard shared with XAUUSD (`scripts/offchart_dashboard.py`), fed by `btc/dashboard.py`,
+which writes MD section 11 「画面に表示した値」 so every shown string and number quotes one of its lines. Order: tiles
+(マクロ・現物需要・BTC固有・総合 with confidence), conclusion (理由・反対材料), lead facts (next US release, stop reason,
+nearest unreached levels), then the bias table by group, the liquidity ladder, the news section and the US
+releases with Deribit expiries. Explanations are folded; the Markdown is a download link.
+
+What the page shows only conditionally (the MD keeps the values):
+
+- Fear & Greed (about half price-derived), Binance account and top-trader ratios: only at extremes (FGI 75 or more /
+  25 or less, percentile 90 or more / 10 or less), as weak contrarian marks.
+- Book walls: as zones with their share and how many of 3 snapshots showed them (spoofing risk).
+- Max Pain: only for expiries holding 10% or more of open interest; strikes only for expiries of 2% or more.
+- BTC dominance, mempool fees and CFTC COT: MD only (no direction for the day).
+
+Evidence images for the parent review: overviews, every figure, `desktop-page-*`, `mobile-page-*` and
+`mobile-open-*` (details opened).
+
 ## Operations: manual incident release (owner instruction only)
 
 A critical incident recorded on parent acceptance (`history/btc-incidents.json`) keeps `incident_hold` until an
@@ -52,8 +71,8 @@ it. Protection is by operating rule plus visibility:
 
 - Operating rule: only the owner (or an operator acting on the owner's explicit instruction) runs `release`; the
   parent workflow must never call the CLI, and `PARENT-WORKFLOW.md` never mentions it.
-- Visibility: for 14 days after a manual release, every edition shows it in the MD/HTML incident lines (section 7)
-  and in the parent briefing: `incident_id`, title, `released_at` in JST, reason and `released_by`
+- Visibility: for 14 days after a manual release, every edition shows it in the MD incident lines (section 7), as a
+  caution in the page's news section, and in the parent briefing: `incident_id`, title, `released_at` in JST, reason and `released_by`
   (`state.incidents.recently_released`). A `released_manually` record without a matching audit entry needs no other
   check; the visible line is the control.
 

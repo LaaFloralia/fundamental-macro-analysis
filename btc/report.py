@@ -6,10 +6,10 @@ and the parent's validated analysis. Parent text arrives already checked
 External strings (headlines, excerpts, provider labels, parsed calendar
 names) were neutralised when they entered the facts (btc.text.md_safe).
 
-Figure items quote the Markdown line that prints the same number; each
-numeric item is bound to one fact (value == display_value, display ==
-display). Figures without data are omitted and the reason is written in the
-same section.
+The page (summary, figures, bindings) is built by btc.dashboard, which writes
+section 11 「画面に表示した値」: every shown string quotes one of its lines and
+each numeric item is bound to one fact (value == display_value, display ==
+display). Figures without data are omitted.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import hashlib
 import json
 import re
 
-from btc import SYMBOL, scoring
+from btc import SYMBOL, dashboard, scoring
 from btc.analysis import RULES
 from btc.common import JST, parse_time, read_json
 from btc.facts import fact_text
@@ -36,7 +36,7 @@ YAML_KEYS = ('schema_version', 'asset', 'mode', 'session_slot', 'edition', 'as_o
 HEADINGS = ('## 0. 判断', '## 1. データ範囲と欠測', '## 2. バイアスと固定8項目スコア', '## 3. 比率・ポジショニング',
             '## 4. 流動性の観測と仮説', '## 5. ETF・現物需要・オンチェーン', '## 6. マクロ・イベント',
             '## 7. ニュースと価格反応', '## 8. シナリオ・反証・再評価条件',
-            '## 9. 前回との差分（Weeklyは週次振り返りを追加）', '## 10. ファクト一覧と来歴')
+            '## 9. 前回との差分（Weeklyは週次振り返りを追加）', '## 10. ファクト一覧と来歴', '## 11. 画面に表示した値')
 USABLE = ('ok', 'provisional', 'partial', 'stale')
 KIND_LABEL = {'fact_interpretation': '解釈', 'hypothesis': '仮説', 'limitation': '制約'}
 VENUE_LABEL = {'binance': 'Binance', 'bybit': 'Bybit', 'okx': 'OKX', 'kraken': 'Kraken', 'bitstamp': 'Bitstamp',
@@ -45,12 +45,6 @@ MARKET_LABEL = {'spot': '現物', 'linear_perp': '無期限'}
 STATUS_LABEL = {'ok': '確認済み', 'provisional': '速報', 'partial': '一部', 'stale': '古い', 'missing': '欠測',
                 'invalid': '不正', 'conflict': '矛盾', 'warming_up': '履歴不足', 'not_applicable': '対象外',
                 'terms_restricted': '規約により未使用'}
-ETF_STATE_LABEL = {'ok': '全銘柄の数値がそろい合計の照合も成立（採点に使う）',
-                   'incomplete': '全銘柄の値が未確定（採点にも正常な充足にも数えない）',
-                   'conflict': '提供元の合計と銘柄の合計が一致しない（両方を残し採点しない・データ保留）',
-                   'lagged': '期待日の行がなく1営業日遅れ（正常な充足に数えない）',
-                   'stale': '期待日から2営業日以上遅れ（古い）',
-                   'unknown': '米取引日の暦が収録範囲外（未確認）', 'missing': '欠測'}
 CODE_VERIFICATION = {'primary_body_retrieved': '公式の本文取得済み', 'secondary_body_retrieved': '本文取得済み',
                      'headline_only': '見出しのみ'}
 VERIFICATION = {'primary_confirmed': '一次本文で確認', 'secondary_body_confirmed': '報道本文で確認',
@@ -111,32 +105,6 @@ class Doc:
 
     def text(self) -> str:
         return '\n'.join(self.lines).rstrip('\n') + '\n'
-
-
-class Figures:
-    def __init__(self, index: dict):
-        self.index = index
-        self.figures: list[dict] = []
-        self.bindings: list[dict] = []
-        self.omitted: list[str] = []
-
-    def add(self, figure: dict, items: list[tuple]) -> bool:
-        """items: (label, fact or None, quote, extra dict). Numeric items need a usable fact."""
-        out = []
-        for label, fact, quote, extra in items:
-            item = {'label': label, 'source_quote': quote, **(extra or {})}
-            if fact is not None:
-                if fact['status'] not in USABLE or fact['display_value'] is None:
-                    continue
-                item.update(value=fact['display_value'], display=fact['display'])
-                item.setdefault('tone', 'negative' if fact['display_value'] < 0 else 'neutral')
-                self.bindings.append({'figure': figure['id'], 'label': label, 'fact_id': fact['fact_id'],
-                                      'value': fact['display_value'], 'display': fact['display']})
-            out.append(item)
-        if not out:
-            return False
-        self.figures.append({**figure, 'items': out})
-        return True
 
 
 def _claim_text(analysis: dict, where: str, claim: dict) -> str:
@@ -283,22 +251,18 @@ def section_score(doc: Doc, facts: dict, ev: dict, index: dict) -> dict:
     return lines
 
 
-def section_positioning(doc: Doc, facts: dict, analysis: dict, index: dict, figs: Figures) -> dict:
+def section_positioning(doc: Doc, facts: dict, analysis: dict, index: dict) -> dict:
     st = facts['state']
     F = facts['facts']
     doc.add(HEADINGS[3], '')
     summary = doc.item('ポジショニング要約: ' + _claim_text(analysis, 'positioning_summary', analysis['positioning_summary']))
     domain = doc.item('比率の解釈: ' + _claim_text(analysis, 'three_domains.positioning', analysis['three_domains']['positioning']))
-    funding_items, oi_items, dist = [], [], []
     for v in st.get('derivatives', {}).get('venues', []):
         name = VENUE_LABEL[v['venue']]
         f8 = _pick(F, category='derivatives', provider=v['venue'], metric='funding_equiv_8h')
         perc = index.get(v.get('funding_percentile_fact_id') or '')
         if f8:
             line = doc.item(f'{name} 確定Funding（8h換算）: {f8["display"]}' + (f'（過去の順位: {fact_text(perc)}）' if perc else ''))
-            funding_items.append((f'{name} 確定Funding（8h換算）', f8, line, None))
-            if perc and perc['value'] is not None:
-                dist.append((f'{name} Funding', perc, line, None))
         realized = _pick(F, category='derivatives', provider=v['venue'], metric='funding_realized_24h')
         if realized:
             doc.item(f'{name} 確定Funding 24時間合計: {realized["display"]}（{STATUS_LABEL[realized["status"]]}）')
@@ -308,9 +272,7 @@ def section_positioning(doc: Doc, facts: dict, analysis: dict, index: dict, figs
         oi = index.get(v['oi_fact_id'])
         chg = index.get(v.get('oi_change_fact_id') or '')
         if oi:
-            line = doc.item(f'{name} OI（片側）: {oi["display"]}、OI 24時間変化: {chg["display"] if chg else "—"}')
-            if chg:
-                oi_items.append((f'{name} OI 24時間変化', chg, line, None))
+            doc.item(f'{name} OI（片側）: {oi["display"]}、OI 24時間変化: {chg["display"] if chg else "—"}')
     weighted = _pick(F, category='derivatives', provider='composite', metric='funding_weighted_8h')
     if weighted:
         doc.item(f'建玉加重Funding（8h換算、{weighted["population"]}）: {weighted["display"]}')
@@ -321,8 +283,6 @@ def section_positioning(doc: Doc, facts: dict, analysis: dict, index: dict, figs
         perc = index.get(ratios.get(f'{key}_percentile') or '')
         if fact:
             line = doc.item(f'{label}: {fact["display"]}' + (f'（{fact_text(perc)}）' if perc else ''))
-            if perc and perc['value'] is not None:
-                dist.append((short, perc, line, None))
     taker = index.get(ratios.get('taker') or '')
     if taker:
         doc.item(f'Binance無期限のテイカー売買（24時間）: {taker["display"]}')
@@ -331,8 +291,6 @@ def section_positioning(doc: Doc, facts: dict, analysis: dict, index: dict, figs
         perc = index.get(st.get('cot', {}).get(f'{prefix}_percentile') or '')
         if fact:
             line = doc.item(f'CME BTC先物 {label} ネット/建玉: {fact["display"]}' + (f'（{fact_text(perc)}）' if perc else ''))
-            if perc and perc['value'] is not None and prefix in ('am', 'lf'):
-                dist.append((f'CME {prefix.upper()}', perc, line, None))
     fgi = st.get('fgi', {})
     fgi_fact = index.get(fgi.get('fact_id') or '')
     if fgi_fact:
@@ -345,41 +303,16 @@ def section_positioning(doc: Doc, facts: dict, analysis: dict, index: dict, figs
     if dvol:
         perc = _pick(F, category='options', provider='deribit', metric='dvol_percentile')
         line = doc.item(f'Deribit DVOL: {dvol["display"]}' + (f'（{fact_text(perc)}）' if perc else ''))
-        if perc and perc['value'] is not None:
-            dist.append(('DVOL', perc, line, None))
     for tenor in ('7d', '30d'):
         fact = index.get(st.get('options', {}).get('skew', {}).get(f'skew_25d_{tenor}') or '')
         if fact:
             perc = index.get(st['options']['skew'].get(f'skew_25d_{tenor}_percentile') or '')
             doc.item(f'25Δスキュー（{tenor}目標、put−call）: {fact["display"]}' + (f'（{fact_text(perc)}）' if perc else ''))
     doc.add('')
-    note = []
-    if not figs.add({'id': 'derivatives_bias_funding', 'type': 'diverging_bars', 'title': '確定Funding（8h換算）',
-                     'unit': '%', 'subtitle': '% / venue別・直近の確定値（予定値ではない）',
-                     'caption': '線形BTC無期限の直近確定Fundingを8時間あたりに換算。市場全体の値ではない。',
-                     'source_label': 'Binance・Bybit・OKX 公開API', 'source_url': 'https://www.binance.com/en/futures/funding-history/perpetual/funding-fee-history'},
-                    funding_items):
-        note.append('図なし（確定Funding）: 2市場以上の確定値がない')
-    if not figs.add({'id': 'derivatives_bias_oi', 'type': 'bars', 'title': 'OIの24時間変化', 'unit': '%',
-                     'subtitle': '% / venue別・片側OI', 'caption': 'OIの増減は新規建てと決済の差で、売買の向きを示さない。',
-                     'source_label': 'Binance・Bybit・OKX 公開API', 'source_url': 'https://www.bybit.com/'},
-                    oi_items):
-        note.append('図なし（OI 24時間変化）: 比較できる24時間前の観測がない（履歴不足）')
-    if not figs.add({'id': 'positioning_distribution', 'type': 'bars', 'title': '比率・建玉・心理の履歴順位',
-                     'unit': 'パーセンタイル', 'subtitle': '0〜100 / 母集団と比較窓は項目ごとに異なる',
-                     'caption': '各項目は別の母集団・別の比較窓での順位（窓と件数は本文）。同じ軸で強弱を比べない。'
-                                '履歴不足の項目は出さない。AMはAsset Manager、LFはLeveraged Funds。FGIは本文に出典付きで記載。',
-                     'source_label': 'Binance・CFTC・Deribit', 'source_url': 'https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm'},
-                    dist):
-        note.append('図なし（履歴順位）: 比較に必要な件数の履歴がまだない')
-    for line in note:
-        doc.item(line)
-    if note:
-        doc.add('')
     return {'summary': summary, 'domain': domain}
 
 
-def section_liquidity(doc: Doc, facts: dict, analysis: dict, index: dict, figs: Figures, dest: dict,
+def section_liquidity(doc: Doc, facts: dict, analysis: dict, index: dict, dest: dict,
                       finalize_at: datetime) -> dict:
     st = facts['state']
     doc.add(HEADINGS[4], '')
@@ -442,19 +375,10 @@ def section_liquidity(doc: Doc, facts: dict, analysis: dict, index: dict, figs: 
     if choice['invalidation_rule_ids']:
         doc.item('目的地の無効化: ' + '、'.join(f'{r}（{RULES[r]}）' for r in choice['invalidation_rule_ids']))
     doc.add('')
-    drawn = figs.add({'id': 'observed_depth', 'type': 'price_map', 'title': '観測板・オプション建玉の価格帯',
-                      'unit': 'USD（板はUSDT建てを含む）', 'subtitle': '観測板・推定ではない／清算ヒートマップではない',
-                      'caption': '観測時点の板の厚い帯とオプション建玉の集中。価格が引き寄せられる保証はなく、清算位置の推定でもない。'
-                                 'Max Painは参考線。',
-                      'source_label': '各取引所の公開板・Deribit', 'source_url': 'https://www.deribit.com/'},
-                     items if len(items) >= 2 else [])
-    if not drawn:
-        doc.item('図なし（価格帯）: 参照価格と比較できる観測帯・建玉がない')
-        doc.add('')
     return {'fixed': fixed, 'domain': domain, 'destination': dline}
 
 
-def section_spot(doc: Doc, facts: dict, analysis: dict, index: dict, figs: Figures) -> dict:
+def section_spot(doc: Doc, facts: dict, analysis: dict, index: dict) -> dict:
     st = facts['state']
     F = facts['facts']
     doc.add(HEADINGS[5], '')
@@ -468,15 +392,7 @@ def section_spot(doc: Doc, facts: dict, analysis: dict, index: dict, figs: Figur
         arrival = etf.get('arrival', {})
         doc.item(f'ETF到着記録（{etf["expected_trade_date"]}）: 行あり={arrival.get("row_present")}・全銘柄数値={arrival.get("full_numeric")}・'
                  f'前回から変化={arrival.get("changed_since_previous")}')
-        fallback = etf.get('lagged_fallback')
-        if fallback:
-            five_window = etf.get('five_day_window') or []
-            state_text = (f'期待日 {fallback["expected_trade_date"]} の行は全銘柄の値が未確定。5営業日合計は前営業日 '
-                          f'{fallback["used_trade_date"]} までの窓（{five_window[0]}〜{five_window[-1]}）で算出'
-                          '（1営業日遅れ・正常な充足に数えない）')
-        else:
-            state_text = ETF_STATE_LABEL.get(etf.get('status'), etf.get('status'))
-        lines['etf_state'] = doc.item(f'ETFの状態（{etf["expected_trade_date"]}）: {state_text}')
+        lines['etf_state'] = doc.item(f'ETFの状態（{etf["expected_trade_date"]}）: {dashboard.etf_state_text(etf)}')
         for fact in F:
             if fact['metric'] in ('etf_reported_total_usd', 'etf_known_partial_sum_usd') and fact['status'] == 'conflict':
                 label = '提供元の合計' if fact['metric'] == 'etf_reported_total_usd' else '銘柄の合計（既知分）'
@@ -514,16 +430,10 @@ def section_spot(doc: Doc, facts: dict, analysis: dict, index: dict, figs: Figur
             doc.item(f'BTC送金手数料の目安（{label}、mempool.space）: {fact["display"]}')
     doc.item('取引所の入出金・主体ラベル: 未取得（無料で継続取得できる提供元がない）')
     doc.add('')
-    if not figs.add({'id': 'etf_flows', 'type': 'diverging_bars', 'title': '米現物BTC ETFの日次フロー', 'unit': '百万USD',
-                     'subtitle': f'百万USD / 米営業日・Farside速報（対象日 {etf.get("trade_date") or "欠測"}）',
-                     'caption': '全銘柄合計の検算が通った日だけ。未公表日は出さず0にしない。速報値で後から訂正されうる。',
-                     'source_label': 'Farside Investors', 'source_url': 'https://farside.co.uk/btc/'}, items):
-        doc.item('図なし（ETFフロー）: 検算済みの日次合計がない')
-        doc.add('')
     return lines
 
 
-def section_macro(doc: Doc, facts: dict, ev: dict, index: dict, figs: Figures) -> dict:
+def section_macro(doc: Doc, facts: dict, ev: dict, index: dict) -> dict:
     st = facts['state']
     doc.add(HEADINGS[6], '')
     macro = st.get('macro', {})
@@ -568,12 +478,6 @@ def section_macro(doc: Doc, facts: dict, ev: dict, index: dict, figs: Figures) -
     risk = ev['risk_events_next_24h']
     doc.item('次24時間の高重要イベント: ' + ('、'.join(risk) if risk else 'なし（確認範囲内）'))
     doc.add('')
-    if not figs.add({'id': 'event_timeline', 'type': 'timeline', 'title': '今後の高重要イベントと停止時間',
-                     'subtitle': 'JST / 公式予定（FOMCの時刻は慣例）', 'caption': '停止時間は研究用の初期案。発表直前に公式予定を再確認する。',
-                     'source_label': 'Fed・BEA・BLS（親確認キャッシュ）・Deribit',
-                     'source_url': 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm'}, items):
-        doc.item('図なし（イベント）: 今後8日に高重要の公式予定が見つからない、または予定が未確認')
-        doc.add('')
     return {'group': group, 'calendar': cal_line}
 
 
@@ -594,7 +498,7 @@ def incident_lines(doc: Doc, st: dict, ev: dict) -> None:
                  f'記録者: {md_safe(r.get("released_by") or "")}（実行者の申告で、認証ではない）')
 
 
-def section_news(doc: Doc, facts: dict, analysis: dict, ev: dict, index: dict, figs: Figures) -> dict:
+def section_news(doc: Doc, facts: dict, analysis: dict, ev: dict, index: dict) -> dict:
     st = facts['state']
     news = st.get('news', {})
     doc.add(HEADINGS[7], '')
@@ -641,13 +545,6 @@ def section_news(doc: Doc, facts: dict, analysis: dict, ev: dict, index: dict, f
                 candidates.append((priority, n['published_at'], (label, after5, rline, None)))
     doc.item('BTC固有イベント群に算入したニュース: ' + ('、'.join(sorted(counted)) or 'なし'))
     doc.add('')
-    chosen = sorted(candidates, key=lambda c: (c[0], -parse_time(c[1]).timestamp()))[:3]
-    if not figs.add({'id': 'news_reaction', 'type': 'diverging_bars', 'title': 'ニュース公表後5分の価格反応', 'unit': 'bp',
-                     'subtitle': 'bp / Binance BTCUSDT 1分足', 'caption': '公表時刻付近の値動きで、ニュースが原因とは限らない。',
-                     'source_label': 'Binance 公開API', 'source_url': 'https://www.binance.com/en/trade/BTC_USDT'},
-                    [c[2] for c in chosen]):
-        doc.item('図なし（価格反応）: 公表後5分の確定足がそろったニュースがない')
-        doc.add('')
     return {'news': line}
 
 
@@ -946,61 +843,29 @@ def build(analysis: dict, facts: dict, collection: dict, ctx) -> ReportParts:
     collected_jst = parse_time(facts['collected_at']).astimezone(JST)
     doc = Doc()
     doc.add(f'# BTCUSD チャート外分析 {ctx.mode.capitalize()} — {collected_jst.strftime("%Y-%m-%d %H:%M")} JST', '')
-    figs = Figures(index)
     s0 = section_decision(doc, ev, analysis, yaml_values)
     s1 = section_coverage(doc, facts, ev, fresh, index)
     s2 = section_score(doc, facts, ev, index)
-    s3 = section_positioning(doc, facts, analysis, index, figs)
-    s4 = section_liquidity(doc, facts, analysis, index, figs, dest, finalize_at)
-    s5 = section_spot(doc, facts, analysis, index, figs)
-    s6 = section_macro(doc, facts, ev, index, figs)
-    section_news(doc, facts, analysis, ev, index, figs)
+    s3 = section_positioning(doc, facts, analysis, index)
+    s4 = section_liquidity(doc, facts, analysis, index, dest, finalize_at)
+    s5 = section_spot(doc, facts, analysis, index)
+    s6 = section_macro(doc, facts, ev, index)
+    section_news(doc, facts, analysis, ev, index)
     s8 = section_scenarios(doc, analysis, ev)
     machine_preview = {**core, **extensions, 'no_trade': ev['no_trade']}
     section_previous(doc, ctx, machine_preview, finalize_at)
     section_facts(doc, facts, extensions['btc']['provenance'])
+    st = facts['state']['collection']
+    label = (f'{dashboard._day(st["started_at"])} {dashboard._hm(st["started_at"])}〜{dashboard._hm(st["completed_at"])} JST 収集')
+    page = dashboard.build(doc, facts, analysis, ev, index, dest, mode=ctx.mode, finalize_at=finalize_at, s8=s8,
+                           title=f'BTCUSD チャート外分析 {ctx.mode.capitalize()}', as_of_label=label)
     markdown = doc.text()
-    # Figures appear in reading order: ETF, derivatives, depth, distribution, events, news.
-    order = ['etf_flows', 'derivatives_bias_funding', 'derivatives_bias_oi', 'observed_depth',
-             'positioning_distribution', 'event_timeline', 'news_reaction']
-    figures = sorted(figs.figures, key=lambda f: order.index(f['id']))
+    figures = page['figures']
     ids = [f['id'] for f in figures]
-    missing_figures = [x for x in order if x not in ids]
-    metrics = []
-    ref = index.get(facts['state'].get('reference_price', {}).get('fact_id') or '')
-    if ref and ref['value'] is not None:
-        metrics.append({'label': '参照価格', 'value': ref['display'], 'context': s1['reference'].split('（', 1)[1].rstrip('）'),
-                        'source_quote': s1['reference']})
-    if s5.get('etf_5d'):
-        five = index[facts['state']['etf']['five_day_fact_id']]
-        metrics.append({'label': 'ETF 5営業日合計', 'value': five['display'], 'context': 'Farside速報・全銘柄合計',
-                        'source_quote': s5['etf_5d']})
-    metrics.append({'label': '採点入力の充足', 'value': f'{ev["coverage_present"]}/8',
-                    'context': '入力の有無で、内容の信頼度ではない', 'source_quote': s1['coverage']})
-    metrics.append({'label': '整合度', 'value': f'{ev["total"]}点・{ev["band"]}', 'context': '未校正の序数で的中率ではない',
-                    'source_quote': s0['score']})
-    status = (('方向付与保留' if ev['direction_status'] == 'withheld' else direction_label(ev).removeprefix('BTCは'))
-              + ('・NO-TRADE' if ev['no_trade'] else '・停止条件なし'))
-    summary = {
-        'eyebrow': f'BTCUSD {ctx.mode.upper()}', 'short_title': f'BTCUSD チャート外分析 {ctx.mode.capitalize()}',
-        'report_date': collected_jst.strftime('%Y-%m-%d'), 'status': status,
-        'conclusion': {'title': s0['label'], 'text': s0['verdict'], 'source_quote': s0['verdict']},
-        'metrics': metrics,
-        'conditions': [{'title': '停止時間', 'text': s0['stop'], 'source_quote': s0['stop']},
-                       {'title': '次に確認すること', 'text': s0['recheck'], 'source_quote': s0['recheck']}]
-        + [{'title': '再評価の条件', 'text': x, 'source_quote': x} for x in s8['reevaluate'][:2]],
-        'evidence': [{'title': scoring.GROUP_LABELS[k], 'text': s2[k], 'source_quote': s2[k]} for k in scoring.GROUPS]
-        + [{'title': '流動性', 'text': s4['domain'], 'source_quote': s4['domain']},
-           {'title': '比率・ポジショニング', 'text': s3['domain'], 'source_quote': s3['domain']},
-           {'title': '目的地', 'text': s4['destination'], 'source_quote': s4['destination']},
-           {'title': '金利・ドル', 'text': s6['group'], 'source_quote': s6['group']}],
-        'limitations': [{'title': '清算ヒートマップ', 'text': s4['fixed'], 'source_quote': s4['fixed']}]
-        + [{'title': '制約', 'text': x, 'source_quote': x} for x in s8['limitations'][:4]],
-        'source_note': '数値はコードが収集したファクトから展開。出典・観測時刻・欠測は全文の第1章と第10章を参照。',
-    }
-    return ReportParts(markdown=markdown, summary=summary, figures=figures, bindings=figs.bindings, machine_core=core,
+    summary = {**page['summary'], 'report_date': collected_jst.strftime('%Y-%m-%d')}
+    return ReportParts(markdown=markdown, summary=summary, figures=figures, bindings=page['bindings'], machine_core=core,
                        machine_extensions=extensions, required_figures=ids,
-                       missing=[f'figure:{x}' for x in missing_figures] + [f'bundle:{k}' for k, v in ev['bundles'].items() if not v],
+                       missing=[f'bundle:{k}' for k, v in ev['bundles'].items() if not v],
                        limitations=list(CODE_LIMITATIONS))
 
 

@@ -3,7 +3,7 @@
 Same discipline as XAU chart-intel/report_review.review_report (P1):
 reviewer "parent-ciel", independentProcess false, every CHECKS criterion with
 a boolean and concrete evidence, imagesReviewed bound to the render record by
-sha256 (both overviews, every figure, PC and mobile source samples), and the
+sha256 (the overviews, every figure, PC and mobile page samples collapsed and open), and the
 review bound to the current bytes of HTML, bundle, render record, machine.json
 and the BTC fact file. Passing also requires ``issues == []``.
 """
@@ -72,9 +72,9 @@ def review_report(html_path, bundle_path, render_path, *, evidence_path, now=Non
             raise ReviewError('Inspected image not bound to render')
     names = {Path(x['path']).name for x in reviewed}
     required = {Path(p).name for p in images if 'overview' in Path(p).name or '-figure-' in Path(p).name}
-    if (not required <= names or not any(n.startswith('desktop-source-') for n in names)
-            or not any(n.startswith('mobile-source-') for n in names)):
-        raise ReviewError('All overviews, every figure and PC/mobile source samples required')
+    samples = ('desktop-page-', 'mobile-page-', 'mobile-open-')
+    if not required <= names or not all(any(n.startswith(s) for n in names) for s in samples):
+        raise ReviewError('All overviews, every figure and PC/mobile page samples (collapsed and open) required')
     checks = evidence.get('checks')
     if (not isinstance(checks, dict) or set(checks) != set(CHECKS)
             or any(not isinstance(v, dict) or not isinstance(v.get('evidence'), str) or not v['evidence'].strip()

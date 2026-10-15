@@ -273,14 +273,13 @@ def test_report_structure_and_machine_schema(built):
     md = parts.markdown
     assert re.match(r'^# BTCUSD チャート外分析 Daily — \d{4}-\d{2}-\d{2} \d{2}:\d{2} JST\n', md)
     headings = re.findall(r'^## (\d+)\.', md, re.M)
-    assert headings == [str(i) for i in range(11)]
+    assert headings == [str(i) for i in range(12)]
     assert report.LIQUIDITY_NOTE in md and '出典: Alternative.me' in md
     assert machine['research_only'] is True and machine['execution_enabled'] is False
     assert machine['btc']['confidence_kind'] == 'uncalibrated_ordinal'
     assert len(machine['btc']['analysis']['scenarios']) == 1  # B6: scenarios come from the parent
     figure_ids = {f['id'] for f in parts.figures}
-    assert figure_ids <= {'etf_flows', 'derivatives_bias_funding', 'derivatives_bias_oi', 'observed_depth',
-                          'positioning_distribution', 'event_timeline', 'news_reaction'}
+    assert {'bias', 'calendar'} <= figure_ids <= {'bias', 'liquidity', 'news', 'calendar'}
 
 
 def test_markdown_and_machine_must_agree(built):

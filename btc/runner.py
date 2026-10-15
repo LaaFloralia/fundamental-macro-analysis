@@ -65,8 +65,9 @@ DEFAULT_PYTHON = DEFAULT_SOURCE / '.venv/bin/python'
 # Tests replace the wrapper with a fake (never resolves secrets); production uses op-run-batch.sh.
 SECRETS_WRAPPER = Path(os.environ.get('BTC_SECRETS_WRAPPER') or '/Users/laa/.config/laa/op-run-batch.sh')
 SANDBOX = Path('/usr/bin/sandbox-exec')
-# Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage.
-SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py')
+# Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage,
+# btc.presentation -> scripts.offchart_dashboard (the page shared with XAU), btc.dashboard -> scripts.report_bundle.
+SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scripts/offchart_dashboard.py', 'scripts/report_bundle.py')
 SNAPSHOT_SUFFIXES = ('.py', '.json', '.md')
 STRIPPED_ENV = ('PYTHONPATH', 'PYTHONHOME', 'FRED_API_KEY', 'TWELVEDATA_API_KEY', 'OP_SERVICE_ACCOUNT_TOKEN',
                 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL', 'MYFXBOOK_EMAIL', 'MYFXBOOK_PASSWORD',

@@ -82,14 +82,14 @@ XAU との違いは次のとおりです。
    - **成功時:** 状態が `awaiting_parent_review` になります。
 
 5. **見て確かめる。** 生成された MD・machine.json と、`render-evidence` の画像を実際に見ます。
-   - 見る画像は、少なくとも PC/スマホの overview、全ての図、PC/スマホの本文画像です。機械のはみ出し検査を目視とは呼びません。
+   - 見る画像は、少なくとも PC/スマホの overview、全ての図、PC/スマホのページ画像（説明を閉じた `-page-`、スマホは開いた `-open-` も）です。機械のはみ出し検査を目視とは呼びません。
    - 結論が「データ不足・保留」と「下向き」を取り違えていないか。向きと停止時間・NO-TRADE が一目で区別できるか。
    - 数値がファクト一覧（第10章）と一致するか。単位・時点・母集団（venue、Deribit のみ等）が読めるか。あわせて次も確かめます。
      - ETF の対象日と速報の別、期待日の状態（全銘柄数値・合計の照合。未確定や照合不一致は採点も正常な充足にも数えない）
-     - FGI の隣の「出典: Alternative.me」
+     - FGI は MD に「出典: Alternative.me」付きで載り、ページには極端なとき（75以上・25以下）だけ出ること
      - Funding の確定/予定の別
      - 満期時刻
-   - 板・Max Pain・建玉・Funding を、到達保証・逆張りシグナル・清算位置として書いていないか。「清算ヒートマップは未使用（有料・推定モデル）…」の一文があるか。
+   - 板・Max Pain・建玉・Funding を、到達保証・逆張りシグナル・清算位置として書いていないか。MD に「清算ヒートマップは未使用（有料・推定モデル）…」の一文があるか。
    - 見出しのみのニュースを事実として断定していないか。同じニュースを2票に数えていないか。
 
 6. **レビューを書く。** 作業フォルダに `review.json` を書きます。
@@ -98,7 +98,7 @@ XAU との違いは次のとおりです。
    - `checks`: 次の8項目それぞれに `{"passed": true/false, "evidence": "今回確認した具体的な内容"}` を書きます。項目は XAU の `scripts.report_acceptance.CHECKS` と同じです。
      - `facts_match_sources`, `numbers_and_units`, `summary_preserves_conditions`, `no_unverified_trading_claims`
      - `desktop_readable`, `mobile_readable`, `figures_meaning_and_labels`, `no_content_loss`
-   - `imagesReviewed`: 実際に見た画像の `{"path", "sha256"}`（`shasum -a 256 <file>`）。PC/スマホの overview、全図、PC/スマホの本文画像を含めます。
+   - `imagesReviewed`: 実際に見た画像の `{"path", "sha256"}`（`shasum -a 256 <file>`）。PC/スマホの overview、全図、PC/スマホのページ画像（`desktop-page-`・`mobile-page-`・`mobile-open-`）を含めます。
    - `htmlSha256`, `bundleSha256`, `renderSha256`（`.render.json`）, `machineSha256`, `factsSha256` を、今回の実体から計算します。
    - 未確認の項目を true にしません。
 

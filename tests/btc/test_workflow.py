@@ -202,7 +202,7 @@ def test_full_flow_reaches_journal_contract(edition):
     names = {Path(x['path']).name for x in render['images']}
     assert {'desktop-overview.png', 'wide-overview.png', 'mobile-overview.png', 'desktop-figure-1.png',
             'mobile-figure-1.png'} <= names
-    assert any(n.startswith('mobile-table-right-') for n in names)
+    assert all(any(n.startswith(p) for n in names) for p in ('desktop-page-', 'mobile-page-', 'mobile-open-'))
     review_path = write_json(job.work / 'review.json', full_review(edition_path))
     assert workflow.accept_review(job, review_path, 'daily') == 0
     journal_contract(job, 'daily')

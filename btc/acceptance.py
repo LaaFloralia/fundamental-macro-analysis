@@ -1,13 +1,14 @@
 """Static-edition checks and real-browser evidence for one BTCUSD edition.
 
 Equivalent to XAU scripts/report_acceptance.py (validate_bundle +
-browser_check): desktop 1365 / wide 1800 / mobile 390, no script/iframe/
-object/embed/form or inline handlers, no external request, every Markdown
-block present in the rendered body, embedded source bytes identical, no
-horizontal page overflow, no element escaping the viewport outside scroll
-containers, no overlapping SVG labels; images (overview, every figure,
-full-report tiles, mobile table right edges, full page) with sha256 go to the
-render record. A browser measurement is evidence, not semantic approval.
+browser_check) for the same one-page dashboard: desktop 1365 / wide 1800 /
+mobile 390, no script/iframe/object/embed/form or inline handlers, no external
+request, explanations collapsed at first and their labels at least 44 px tall,
+every shown summary and figure text present with the explanations open,
+embedded source bytes identical, no horizontal page overflow and no element
+escaping the viewport outside scroll containers; images (overview, every
+figure, page tiles collapsed and open, mobile table right edges) with sha256
+go to the render record. A browser measurement is evidence, not semantic approval.
 """
 from __future__ import annotations
 
@@ -29,14 +30,13 @@ CHECKS = ('facts_match_sources', 'numbers_and_units', 'summary_preserves_conditi
 VIEWPORTS = ((1365, 'desktop'), (1800, 'wide'), (390, 'mobile'))
 HEIGHT = 950
 TILE_STEP = 850
-# Allow-list of what the shared renderer (render_report.py + visual_blocks.py),
-# Python-Markdown (tables/fenced_code/sane_lists/nl2br/footnotes) and
-# btc.presentation actually emit. Anything else fails closed.
+# Allow-list of what the dashboard (scripts/offchart_dashboard.py) and btc.presentation
+# actually emit. Anything else fails closed.
 ALLOWED_ELEMENTS = frozenset({
     'html', 'head', 'meta', 'title', 'style', 'body', 'a', 'nav', 'div', 'main', 'section', 'header', 'footer',
     'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'ol', 'ul', 'li', 'aside', 'article', 'details', 'summary',
     'table', 'thead', 'tbody', 'tr', 'th', 'td', 'code', 'pre', 'strong', 'em', 'b', 'i', 'br', 'hr',
-    'blockquote', 'sup', 'small', 'figure', 'figcaption',
+    'blockquote', 'sup', 'small', 'figure', 'figcaption', 'dl', 'dt', 'dd', 'colgroup', 'col', 'wbr',
     'svg', 'g', 'desc', 'line', 'text', 'rect', 'circle', 'polyline',
 })
 GLOBAL_ATTRIBUTES = frozenset({'class', 'id', 'title', 'role', 'tabindex', 'aria-label', 'aria-labelledby',
@@ -45,14 +45,14 @@ ELEMENT_ATTRIBUTES = {
     'meta': {'charset', 'name', 'content'},
     'a': {'href', 'download', 'target', 'rel'},
     'ol': {'start'},
-    'th': {'align', 'colspan', 'rowspan'},
-    'td': {'align', 'colspan', 'rowspan'},
-    'svg': {'viewbox', 'xmlns'},
-    'line': {'x1', 'y1', 'x2', 'y2'},
+    'th': {'align', 'colspan', 'rowspan', 'scope'},
+    'td': {'align', 'colspan', 'rowspan', 'data-k'},
+    'svg': {'viewbox', 'xmlns', 'width', 'height', 'focusable'},
+    'line': {'x1', 'y1', 'x2', 'y2', 'class'},
     'text': {'x', 'y', 'text-anchor'},
     'rect': {'x', 'y', 'width', 'height', 'rx'},
     'circle': {'cx', 'cy', 'r'},
-    'polyline': {'points', 'fill'},
+    'polyline': {'points', 'fill', 'stroke', 'stroke-width', 'stroke-linejoin'},
 }
 URL_ATTRIBUTES = frozenset({'href', 'src', 'xlink:href', 'action', 'formaction', 'poster', 'data', 'background',
                             'srcset', 'ping', 'cite', 'longdesc', 'manifest', 'codebase'})
@@ -195,32 +195,41 @@ def validate_edition(html_path, bundle_path, now=None) -> dict:
     return b
 
 
-class SourceBlocks(HTMLParser):
-    TAGS = {'p', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'li'}
-
-    def __init__(self):
-        super().__init__()
-        self.level, self.current, self.blocks = 0, [], []
-
-    def handle_starttag(self, tag, attrs):
-        if tag in self.TAGS:
-            if not self.level:
-                self.current = []
-            self.level += 1
-
-    def handle_endtag(self, tag):
-        if tag in self.TAGS and self.level:
-            self.level -= 1
-            if not self.level:
-                self.blocks.append(''.join(self.current))
-
-    def handle_data(self, data):
-        if self.level:
-            self.current.append(data)
-
-
 def compact(text: str) -> str:
-    return re.sub(r'\s+', '', text).replace('↩', '')
+    return re.sub(r'\s+', '', str(text or '')).replace('−', '-')
+
+
+# Every cell the page shows (explanations open), so a dropped cell fails the browser check.
+FIGURE_TEXT = {'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'asof', 'note'),
+               'liquidity_map': ('label', 'price_text', 'pool', 'state_word', 'touched', 'distance_text', 'target'),
+               'event_table': ('label', 'time', 'previous', 'forecast', 'actual', 'diff', 'direction', 'memo'),
+               'news_list': ('time', 'publisher', 'title', 'verification', 'reaction', 'direction', 'importance',
+                             'interpretation')}
+NUMBER_CELLS = ('previous', 'forecast', 'actual', 'diff')
+
+
+def shown_texts(summary: dict, figures: list) -> list:
+    """Strings the page must show: conclusion rows, lead facts, confidence, every figure cell and tile, limitations."""
+    from scripts.offchart_dashboard import chip_texts
+    conclusion = summary.get('conclusion') or {}
+    texts = [r.get('text') for r in conclusion.get('rows') or []] or [conclusion.get('text')]
+    texts += [piece for x in summary.get('chips') or [] for piece in chip_texts(x.get('text'))]
+    texts.append((summary.get('confidence') or {}).get('text'))
+    texts += [x.get('text') for x in summary.get('limitations') or []]
+    for figure in figures:
+        texts.append(figure.get('title'))
+        for item in figure.get('items') or []:
+            keys = FIGURE_TEXT.get(figure.get('type'), ())
+            if item.get('kind') == 'text':  # a judgement in words: one wide cell, no baseline or change
+                keys = tuple(k for k in keys if k not in ('baseline', 'change'))
+            if all(item.get(k) in (None, '', '—') for k in NUMBER_CELLS):  # hidden on mobile when none is known
+                keys = tuple(k for k in keys if k not in NUMBER_CELLS)
+            texts += [item.get(key) for key in keys]
+        texts += [c.get('text') for key in ('cautions', 'notices', 'missing') for c in figure.get(key) or []]
+        texts += [tile.get(key) for tile in figure.get('verdicts') or [] for key in ('label', 'direction', 'detail')]
+        if figure.get('band'):
+            texts.append(figure['band'].get('label'))
+    return [t for t in dict.fromkeys(texts) if t not in (None, '') and compact(t)]
 
 
 DOM_ATTRIBUTES_JS = r'''() => {
@@ -249,7 +258,7 @@ DOM_ATTRIBUTES_JS = r'''() => {
 
 ESCAPING_ELEMENTS_JS = '''() => {
   const limit = window.innerWidth + 1;
-  const scrollers = '.table-wrap, .data-figure, pre, #source-markdown, .source-markdown';
+  const scrollers = '.board-wrap, .data-figure, pre, #source-markdown';
   let count = 0;
   for (const el of document.querySelectorAll('main *, nav *, body > a')) {
     if (el.closest(scrollers)) continue;
@@ -259,22 +268,6 @@ ESCAPING_ELEMENTS_JS = '''() => {
   return count;
 }'''
 
-SVG_OVERLAP_JS = '''() => {
-  let overlaps = 0;
-  for (const svg of document.querySelectorAll('svg.data-svg')) {
-    const boxes = [...svg.querySelectorAll('text')].map(t => t.getBoundingClientRect())
-      .filter(r => r.width > 0 && r.height > 0);
-    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i], b = boxes[j];
-      const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
-      const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
-      if (w > 1 && h > 2) overlaps += 1;
-    }
-  }
-  return overlaps;
-}'''
-
-
 def _launch(playwright):
     channel = os.environ.get('BTC_PLAYWRIGHT_CHANNEL')  # dev verification only, e.g. "chrome"
     if channel:
@@ -283,23 +276,39 @@ def _launch(playwright):
 
 
 def browser_check(html_path, bundle_path, *, now=None) -> str:
-    import markdown
+    """Real-browser evidence for one edition: content present, no overflow, readable captures.
+
+    Captures the page as the reader first sees it (explanations collapsed): the first screen, every
+    figure, consecutive page tiles and, on mobile, the right side of any table wider than the screen;
+    then every <details> open, as page tiles again (`-open-NN`). Text presence is checked with every
+    <details> open.
+    """
     from playwright.sync_api import sync_playwright
     b = validate_edition(html_path, bundle_path, now)
     html_path = Path(html_path).absolute()
     out = html_path.with_suffix('.render-evidence')
     out.mkdir(mode=0o700, exist_ok=True)
     source_bytes = Path(b['sourcePath']).read_bytes()
-    source = source_bytes.decode('utf-8')
-    expected = SourceBlocks()
-    expected.feed(markdown.markdown(source, extensions=['tables', 'footnotes', 'fenced_code']))
-    record = {'schemaVersion': 1, 'symbol': SYMBOL, 'htmlSha256': digest(html_path),
+    expected = shown_texts(read_json(b['summaryPath']), read_json(b['figuresPath']))
+    record = {'schemaVersion': 2, 'symbol': SYMBOL, 'htmlSha256': digest(html_path),
               'bundleSha256': digest(bundle_path), 'status': 'failed', 'viewports': [], 'images': [],
-              'sourceBlocks': len(expected.blocks)}
+              'expectedTexts': len(expected)}
 
     def shot(path, viewport, **extra):
         os.chmod(path, 0o600)
         record['images'].append({'path': str(path), 'sha256': digest(path), 'viewport': viewport, **extra})
+
+    def tiles(page, width, label, section):
+        page.evaluate('document.documentElement.style.scrollBehavior = "auto"; window.scrollTo(0, 0)')
+        height = page.evaluate('document.documentElement.scrollHeight')
+        y, index = 0, 0
+        while y < height:
+            index += 1
+            clip = {'x': 0, 'y': y, 'width': width, 'height': min(HEIGHT, height - y)}
+            path = out / f'{label}-{section}-{index:02}.png'
+            page.screenshot(path=str(path), full_page=True, clip=clip)
+            shot(path, label, section=section, clip=clip)
+            y += TILE_STEP
 
     with sync_playwright() as p:
         browser, record['browser'] = _launch(p)
@@ -325,17 +334,9 @@ def browser_check(html_path, bundle_path, *, now=None) -> str:
                     raise AcceptanceError(f'Unsafe DOM attributes: {unsafe}')
                 if blocked:
                     raise AcceptanceError('External resource request is prohibited')
-                page.locator('details.chapter').evaluate_all('(nodes) => nodes.forEach(n => n.open = true)')
-                body = compact(page.locator('.markdown-body').inner_text())
-                blocks = expected.blocks
-                if source.lstrip().startswith('# ') and blocks:
-                    if compact(blocks[0]) not in compact(page.locator('footer').inner_text()):
-                        raise AcceptanceError('Original report title is missing')
-                    blocks = blocks[1:]
-                missing = [x for x in blocks if compact(x) and compact(x) not in body]
-                if missing:
-                    raise AcceptanceError(f'Rendered source has missing blocks: {len(missing)}')
-                encoded = page.locator('#source-markdown a[download]').get_attribute('href').split(',', 1)[1]
+                if page.locator('details[open]').count():
+                    raise AcceptanceError('Explanations must start collapsed')
+                encoded = page.locator('#source-markdown').get_attribute('href').split(',', 1)[1]
                 if base64.b64decode(encoded) != source_bytes:
                     raise AcceptanceError('Embedded original source bytes differ')
                 if page.evaluate('document.documentElement.scrollWidth > innerWidth + 1'):
@@ -343,10 +344,10 @@ def browser_check(html_path, bundle_path, *, now=None) -> str:
                 escaping = page.evaluate(ESCAPING_ELEMENTS_JS)
                 if escaping:
                     raise AcceptanceError(f'{label} has elements beyond the viewport: {escaping}')
-                overlaps = page.evaluate(SVG_OVERLAP_JS)
-                if overlaps:
-                    raise AcceptanceError(f'{label} figure labels overlap: {overlaps}')
-                figure_count = page.locator('.data-figure').count()
+                small = page.locator('details > summary').evaluate_all(
+                    '(nodes) => nodes.filter(n => n.getBoundingClientRect().height < 44).length')
+                if small:
+                    raise AcceptanceError(f'{label} has {small} expandable labels under 44px')
                 top = out / f'{label}-overview.png'
                 page.screenshot(path=str(top), full_page=False)
                 shot(top, label)
@@ -355,36 +356,27 @@ def browser_check(html_path, bundle_path, *, now=None) -> str:
                         path = out / f'{label}-figure-{i + 1}.png'
                         figure.screenshot(path=str(path))
                         shot(path, label)
-                    rect = page.locator('.full-report').evaluate('''(element) => {
-                        const r = element.getBoundingClientRect();
-                        return {x: r.left + window.scrollX, y: r.top + window.scrollY, width: r.width, height: r.height};
-                    }''')
-                    top_y, bottom_y, index = rect['y'], rect['y'] + rect['height'], 0
-                    while top_y < bottom_y:
-                        index += 1
-                        tile = out / f'{label}-source-{index:02}.png'
-                        clip = {'x': rect['x'], 'y': top_y, 'width': rect['width'],
-                                'height': min(HEIGHT, bottom_y - top_y)}
-                        page.screenshot(path=str(tile), full_page=True, clip=clip)
-                        shot(tile, label, section='full-report', clip=clip)
-                        top_y += TILE_STEP
+                    tiles(page, width, label, 'page')
                 if label == 'mobile':
-                    for index, table in enumerate(page.locator('.table-wrap').all()):
-                        if table.evaluate('(e)=>e.scrollWidth > e.clientWidth + 1'):
-                            table.evaluate('(e)=>e.scrollLeft=e.scrollWidth')
-                            tile = out / f'mobile-table-right-{index + 1}.png'
-                            table.screenshot(path=str(tile))
-                            shot(tile, label)
-                            table.evaluate('(e)=>e.scrollLeft=0')
-                full = out / f'{label}-full.png'
-                page.evaluate('document.documentElement.style.scrollBehavior = "auto"; window.scrollTo({top:0,left:0,behavior:"instant"})')
-                page.wait_for_function('window.scrollY === 0')
-                page.screenshot(path=str(full), full_page=True)
-                shot(full, label)
+                    for index, table in enumerate(page.locator('.board-wrap').all()):
+                        if table.evaluate('(e) => e.scrollWidth > e.clientWidth + 1'):
+                            table.evaluate('(e) => e.scrollLeft = e.scrollWidth')
+                            path = out / f'mobile-table-right-{index + 1}.png'
+                            table.screenshot(path=str(path))
+                            shot(path, label)
+                            table.evaluate('(e) => e.scrollLeft = 0')
+                page.locator('details').evaluate_all('(nodes) => nodes.forEach(n => n.open = true)')
+                body = compact(page.locator('main').inner_text())
+                missing = [t for t in expected if compact(t) not in body]
+                if missing:
+                    raise AcceptanceError(f'{label} page is missing {len(missing)} figure or summary texts')
+                if page.evaluate('document.documentElement.scrollWidth > innerWidth + 1'):
+                    raise AcceptanceError(f'{label} body overflows viewport with explanations open')
+                if label != 'wide':
+                    tiles(page, width, label, 'open')
                 record['viewports'].append({'width': width, 'height': HEIGHT, 'label': label,
-                                            'bodyOverflow': False, 'elementsBeyondViewport': 0,
-                                            'svgLabelOverlaps': 0, 'externalRequests': 0,
-                                            'figureCount': figure_count, 'sourceBlocksMissing': 0})
+                                            'bodyOverflow': False, 'elementsBeyondViewport': 0, 'externalRequests': 0,
+                                            'figureCount': page.locator('.data-figure').count(), 'textsMissing': 0})
                 page.close()
         finally:
             browser.close()
