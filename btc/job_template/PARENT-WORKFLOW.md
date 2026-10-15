@@ -44,6 +44,7 @@ XAU との違いは次のとおりです。
      - `source_quote` は見出しか抜粋の原文の一部です。
      - 見出しのみの材料に方向（supportive/adverse）を付けるなら、`interpretation` は `hypothesis` にします。
      - BTC固有イベント群に数えるかはコードが判定します。対象は一次本文確認済み・high/critical・supportive/adverse・期間内のものだけです。
+     - **地政学・マクロ:** 発行元が Investing.com の見出し（中東・ロシアなどの紛争、制裁、関税、原油、ドル・株）は、本文を取得しない見出しのみの材料です（25件のうち最大5件）。BTCへの効き方（株と同じリスク回避の売り、ドル高、原油高を通じた物価と利下げ観測）を考えて `group_id: "macro"` で評価し、`three_domains.bias` の判断に含めます。地政学の見出しの影響が小さいと見た場合も、`context_only`・`low` で評価し、`interpretation` に理由を1文で書きます。
      - **既知イベント:** 入力資料の「既知イベント」表は、親レビューを通過した過去の版（Daily・Weekly とも）で評価済みの出来事です。同じ出来事の再報道（URL違い・見出しの更新を含む）には `known_event_ids` にその `known_id` を書きます。URL・コードのcluster・一次本文が一致するものはコードが自動で結びつけます。既知の出来事は初出時刻から期間を数えるので、再報道で加点期間は延びません。表は直近14日に初出のものだけですが、コードは180日以内の既知の出来事すべてと照合し、それより古い `known_id` も書けます。
      - **続報:** 新しい一次事実を伴う続報だけ `follow_up_new_facts: true` を付けます（`known_event_ids` が必要）。新規に数えるのは、コードが既知と異なる一次本文と初出より後の公表を確認できた場合だけです。採用された続報は別の `known_id` になり、続報自身の公表時刻から期間を数えます。
      - **重大障害:** 一次本文で確認した重大な侵害・主要 venue の停止（`importance: critical`、`impact: adverse`/`mixed`）には、`affected_source_ids` に影響を受ける source_id（例 `binance_derivatives`）を書きます。`affected_source_ids` は任意ですが、書かずに記録された障害は親の `incident_recoveries` では解除できません（拒否理由 `recovery_affected_sources_unspecified`）。影響を受ける source が分かるときは必ず書きます。
