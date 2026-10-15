@@ -505,9 +505,10 @@ def event_section(figure):
         memo = f'<span class="memo">{e(i["memo"])}</span>' if i.get('memo') else ''
         same = i.get('group_start') is False  # a release at the same time as the row above
         bare = all(i.get(k) in (None, '', '—') for k in ('previous', 'forecast', 'actual', 'diff'))  # no numbers to show
+        pending = not bare and all(i.get(k) in (None, '', '—') for k in ('actual', 'diff'))  # previous/forecast only
         rows.append(
             f'<tr class="{"released" if i.get("released") else "upcoming"} tone-{e(i["tone"])}{" same-time" if same else ""}'
-            f'{" no-nums" if bare else ""}">'
+            f'{" no-nums" if bare else ""}{" no-result" if pending else ""}">'
             f'<td class="ev-time">{"" if same else e(i["time"])}</td>'
             f'<th scope="row" class="ev-name">{tier}<span>{e(i["label"])}</span>{memo}</th>'
             f'<td class="ev-num" data-k="前回">{e(i["previous"])}</td><td class="ev-num" data-k="予想">{e(i["forecast"])}</td>'
@@ -699,6 +700,7 @@ gap:2px 8px;padding:10px 4px;border-bottom:1px solid var(--line)}.events tr.day{
 .events tr>.ev-num:nth-of-type(2){grid-column:2/4;grid-row:2}.events tr>.ev-num:nth-of-type(3){grid-column:2/4;grid-row:2;margin-left:6.5em}
 .events tr>.ev-num:nth-of-type(4){grid-column:2/4;grid-row:2;margin-left:13em}.ev-diff{grid-area:diff}
 .events tr.no-nums .ev-num,.events tr.no-nums .ev-diff{display:none}
+.events tr.no-result>.ev-num:nth-of-type(4),.events tr.no-result .ev-diff{display:none}
 }
 @media print{.reports-back,details{display:none}main.dash{border:0}.ladder>.kind-current{position:static}}
 """
