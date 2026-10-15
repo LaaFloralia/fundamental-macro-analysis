@@ -422,7 +422,8 @@ def test_levels_facts_state_and_valid_until():
 
 def futures_payload(at=datetime(2026, 10, 15, 11, 59, tzinfo=UTC)):
     ts = int(at.timestamp() * 1000)
-    row = lambda name, mark, index: {'instrument_name': name, 'mark_price': mark, 'underlying_price': index,  # noqa: E731
+    # The live futures summary (2026-10-15) carries the index as estimated_delivery_price, no underlying_price.
+    row = lambda name, mark, index: {'instrument_name': name, 'mark_price': mark, 'estimated_delivery_price': index,  # noqa: E731
                                      'creation_timestamp': ts}
     return {'result': [row('BTC-PERPETUAL', 100050.0, 100000.0), row('BTC-17OCT26', 100020.0, 100000.0),
                        row('BTC-26MAR27', 102500.0, 100000.0), row('BTC-25DEC26', 101070.0, 100000.0),

@@ -147,7 +147,9 @@ def deribit_futures(f: Fetcher) -> SourceResult:
         if expiry is None:
             continue
         mark = num(row.get('mark_price'), allow_none=True)
-        index = num(row.get('underlying_price'), allow_none=True)  # the BTC index for dated futures
+        # The futures summary carries the BTC index as estimated_delivery_price (live 2026-10-15: equal to
+        # get_index_price btc_usd); underlying_price is kept for a response that has it.
+        index = num(row.get('underlying_price', row.get('estimated_delivery_price')), allow_none=True)
         if mark is None or index is None or mark <= 0 or index <= 0:
             continue
         stamp = int(row.get('creation_timestamp') or 0)

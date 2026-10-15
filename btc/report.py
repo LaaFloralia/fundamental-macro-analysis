@@ -439,9 +439,22 @@ def section_macro(doc: Doc, facts: dict, ev: dict, index: dict) -> dict:
     macro = st.get('macro', {})
     if macro.get('status') not in (None, 'unknown') and macro.get('change_fact_ids'):
         dy, du = (index[f] for f in macro['change_fact_ids'])
-        group = doc.item(f'金利・ドル群: {scoring.STATE_TEXT[macro["status"]]}（米2年利回り {dy["display"]}、米ドル広義指数（FRED） {du["display"]}）')
+        if macro.get('rule') == 'same_day_quotes':
+            group = doc.item(f'金利・ドル群: {scoring.STATE_TEXT[macro["status"]]}（当日の気配、NY取引日 {macro["trading_date"]}: '
+                             f'米2年利回り {dy["display"]}、ドル指数DXY {du["display"]}）')
+        else:
+            group = doc.item(f'金利・ドル群: {scoring.STATE_TEXT[macro["status"]]}（共通の米営業日: 米2年利回り {dy["display"]}、'
+                             f'米ドル広義指数（FRED） {du["display"]}）')
     else:
         group = doc.item(f'金利・ドル群: データ不足（{macro.get("reason", "inputs_missing")}）')
+    same = macro.get('same_day') or {}
+    for key, change, label in (('ust_2y', 'ust_2y_change', '米2年利回り'), ('dxy', 'dxy_change', 'ドル指数DXY'),
+                               ('nasdaq', 'nasdaq_change', 'Nasdaq総合')):
+        if same.get(key):
+            moved = index.get(same.get(change) or '')
+            doc.item(f'{label}（CNBC気配）: {index[same[key]]["display"]}' + (f'、前日終値比 {moved["display"]}' if moved else ''))
+    if same and same.get('status') != 'ok':
+        doc.item('当日の気配: 2年利回りとDXYがそろわない（米財務省とFREDの共通日で判定）')
     for key, label in (('ust_2y', '米2年国債利回り'), ('ust_10y', '米10年国債利回り'), ('ust_real_10y', '米10年実質利回り')):
         if macro.get(key):
             doc.item(f'{label}（米財務省）: {index[macro[key]]["display"]}')

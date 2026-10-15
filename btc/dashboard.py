@@ -462,7 +462,7 @@ def liquidity_figure(page, facts: dict, dest: dict, mode: str, finalize_at) -> d
         text = '目的地の候補は根拠の観測が完成前に失効したため出していない'
         notices.append({'text': text, 'source_quote': page.line(f'流動性｜表示の注記: {text}')})
     gaps = [{'text': t, 'source_quote': page.line(f'流動性｜欠測: {t}')} for t in missing]
-    cautions = [{'text': t, 'source_quote': page.line(f'流動性｜注意: {t}')} for t in levels.get('cautions') or []]
+    cautions = [{'text': c['text'], 'source_quote': page.line(f'流動性｜注意: {c["text"]}')} for c in levels.get('cautions') or []]
     legend = ('名前付きの高値・安値、観測した厚い板、オプション建玉の集まる行使価格を価格順に並べています。価格の右の縦線は現在値より上が赤、'
               '下が緑で、濃い行が現在値です（画面を動かしても上端か下端に残ります）。「差」は現在値との差（ドル）です。'
               '高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、注文そのものは観測していません。'
