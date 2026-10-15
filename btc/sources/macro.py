@@ -5,12 +5,15 @@ as a query parameter and removed from every recorded URL. ``DTWEXBGS`` is the
 FRED broad US dollar index, never "DXY"; equity series are cash index closes.
 ``cnbc_quotes`` is the same-day complement: the US 2-year yield, the ICE US
 Dollar Index (DXY) and the Nasdaq Composite with their previous closes.
+``forexfactory_week`` is this week's US calendar with previous and forecast values
+(no actuals in the feed); it is display only.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import os
+import re
 import xml.etree.ElementTree as ET
 
 from btc.fetch import FetchError, Fetcher, SourceResult
@@ -33,6 +36,10 @@ CNBC_URL = 'https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/sy
 CNBC_SYMBOLS = ('US2Y', '.DXY', '.IXIC')
 CNBC_REQUIRED = ('US2Y', '.DXY')
 CNBC_FUTURE_TOLERANCE = timedelta(seconds=60)
+FF_URL = 'https://nfs.faireconomy.media/ff_calendar_thisweek.json'
+FF_IMPACT = {'High': 'high', 'Medium': 'medium'}
+FF_VALUE = re.compile(r'^[-+]?\d[\d,]*(?:\.\d+)?[%KMBT]?$')
+FF_TITLE = re.compile(r"^[A-Za-z0-9 /.,'&()\-]{3,80}$")
 
 
 def defillama(f: Fetcher) -> SourceResult:
@@ -166,6 +173,32 @@ def _quote_time(text):
         return date.fromisoformat(text) if len(text) == 10 else None
     except ValueError:
         return None
+
+
+def forexfactory_week(f: Fetcher) -> SourceResult:
+    """US events of impact High/Medium this week. Values are kept only when they look like a number."""
+    r = f.get(FF_URL)
+    data = json_of(r)
+    if not isinstance(data, list):
+        raise FetchError('invalid_payload')
+    events = []
+    for row in data:
+        if not isinstance(row, dict) or row.get('country') != 'USD' or row.get('impact') not in FF_IMPACT:
+            continue
+        title = str(row.get('title') or '').strip()
+        try:
+            when = datetime.fromisoformat(str(row.get('date')))
+        except ValueError:
+            continue
+        if when.tzinfo is None or not FF_TITLE.match(title):
+            continue
+        value = lambda key: (lambda v: v if FF_VALUE.match(v) else '')(str(row.get(key) or '').strip())  # noqa: E731
+        events.append({'title': title, 'start_at': z(when), 'importance': FF_IMPACT[row['impact']],
+                       'previous': value('previous'), 'forecast': value('forecast')})
+    if not events:
+        raise FetchError('empty_payload')
+    events.sort(key=lambda e: (e['start_at'], e['title']))
+    return ok('forexfactory_week', [r], {'provider': 'ForexFactory (faireconomy.media)', 'events': events})
 
 
 def cnbc_quotes(f: Fetcher) -> SourceResult:

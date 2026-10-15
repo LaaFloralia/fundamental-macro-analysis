@@ -556,6 +556,28 @@ def _short_name(name: str) -> str:
     return re.sub(r'\s*\d{4}年', ' ', name).strip()
 
 
+# ForexFactory titles of releases the official calendars do not list (others keep the English title).
+FF_JA = {'Retail Sales m/m': '小売売上高（前月比）', 'Core Retail Sales m/m': 'コア小売売上高（前月比）',
+         'Unemployment Claims': '新規失業保険申請件数', 'Philly Fed Manufacturing Index': 'フィラデルフィア連銀製造業指数',
+         'Empire State Manufacturing Index': 'NY連銀製造業景況指数', 'ISM Manufacturing PMI': 'ISM製造業景況指数',
+         'ISM Services PMI': 'ISM非製造業景況指数', 'JOLTS Job Openings': 'JOLTS求人件数',
+         'ADP Non-Farm Employment Change': 'ADP雇用統計', 'CB Consumer Confidence': '消費者信頼感指数（CB）',
+         'Prelim UoM Consumer Sentiment': 'ミシガン大消費者信頼感（速報）',
+         'Revised UoM Consumer Sentiment': 'ミシガン大消費者信頼感（確報）',
+         'Durable Goods Orders m/m': '耐久財受注（前月比）', 'Core Durable Goods Orders m/m': 'コア耐久財受注（前月比）',
+         'FOMC Meeting Minutes': 'FOMC議事要旨', 'Building Permits': '住宅着工許可件数', 'Housing Starts': '住宅着工件数',
+         'Existing Home Sales': '中古住宅販売件数', 'New Home Sales': '新築住宅販売件数',
+         'Pending Home Sales m/m': '住宅販売保留指数（前月比）', 'Trade Balance': '貿易収支',
+         'Industrial Production m/m': '鉱工業生産（前月比）', 'Prelim UoM Inflation Expectations': 'ミシガン大期待インフレ率（速報）'}
+
+
+def _ff_name(title: str) -> str:
+    speaker = re.match(r'^Fed Chair(?:man)? (\w+) Speaks$', title)
+    if speaker:
+        return f'FRB議長（{speaker.group(1)}）の発言'
+    return FF_JA.get(title, title)
+
+
 def event_figure(page, facts: dict, ev: dict, mode: str) -> dict:
     st = facts['state']
     as_of = ev['as_of']
@@ -565,6 +587,10 @@ def event_figure(page, facts: dict, ev: dict, mode: str) -> dict:
         when = parse_time(e['start_at'])
         if start <= when <= end and e['importance'] in ('critical', 'high', 'medium'):
             rows.append((when, e))
+    for e in st.get('calendar_extra', []):
+        when = parse_time(e['start_at'])
+        if start <= when <= end:
+            rows.append((when, dict(e, extra=True)))
     for e in st.get('options', {}).get('expiries', []):
         when = parse_time(e['expiry'])
         if as_of <= when <= end:
@@ -585,13 +611,20 @@ def event_figure(page, facts: dict, ev: dict, mode: str) -> dict:
         released = when <= as_of
         window = e.get('stop_window')
         memo = f'停止 {_hm(window["start_at"])}〜{_hm(window["end_at"])}' if window else ''
+        if e.get('extra'):
+            memo = '停止なし（ForexFactoryの予定）'
         status = '発表済み' if released else '予定'
         symbol, direction = '—', '結果は未収集' if released else '発表前'
         tier = 'A' if e['importance'] in ('critical', 'high') else 'B'
-        quote = page.line(f'指標｜{date} {time} JST', f'Tier {tier}', _short_name(e['name']), status, '前回 —', '予想 —', '結果 —',
-                          '差 —', f'向き: {symbol} {direction}', memo)
-        items.append({'date': date, 'time': time, 'tier': tier, 'label': _short_name(e['name']), 'status': status,
-                      'previous': '—', 'forecast': '—', 'actual': '—', 'diff': '—', 'direction': direction, 'symbol': symbol,
+        cons = e.get('consensus') or e
+        previous, forecast = cons.get('previous') or '—', cons.get('forecast') or '—'
+        label = _ff_name(e['name']) if e.get('extra') else _short_name(e['name'])
+        if e.get('consensus') and previous + forecast != '——':
+            label = f'{label}（{e["consensus"]["label"]}）'
+        quote = page.line(f'指標｜{date} {time} JST', f'Tier {tier}', label, status, f'前回 {previous}', f'予想 {forecast}',
+                          '結果 —', '差 —', f'向き: {symbol} {direction}', memo)
+        items.append({'date': date, 'time': time, 'tier': tier, 'label': label, 'status': status,
+                      'previous': previous, 'forecast': forecast, 'actual': '—', 'diff': '—', 'direction': direction, 'symbol': symbol,
                       'tone': 'neutral', 'memo': memo, 'released': released, 'group_start': (date, time) != last_time,
                       'source_quote': quote})
         last_time = (date, time)
@@ -607,7 +640,9 @@ def event_figure(page, facts: dict, ev: dict, mode: str) -> dict:
     legend = ('時刻はJST。BLS・BEA・FRBの公式予定から、米国の重要指標（Tier A＝CPI・雇用統計・FOMCなど重要度high、'
               'Tier B＝PPI・小売・PCEなど重要度medium）と、Deribitのオプション満期を載せています。期間は24時間前の発表から'
               f'{7 if mode == "daily" else 14}日先まで。BTCは米指標そのものより、指標で動く金利・ドル・株を通じて動きやすく、'
-              '発表の前後は値動きと損切りの連鎖が起きやすい時間帯です。予想と結果は今の収集にないため「—」です。'
+              '発表の前後は値動きと損切りの連鎖が起きやすい時間帯です。前回と予想はForexFactoryの週間予定から載せ、'
+              '公式予定にない米国の発表（小売売上高・失業保険申請・FRB議長の発言など）も「停止なし」で加えています。'
+              '結果は今の収集にないため「—」です。'
               '停止はこのレポートの規則で新規の判断を止める時間（発表15分前〜30分後、FOMCは声明30分前〜90分後）。'
               '満期は日次・週次・月次とも17:00 JSTで、全建玉の10%以上を「大きな満期」としています。')
     page.line('指標の読み方: ' + legend)
@@ -615,6 +650,7 @@ def event_figure(page, facts: dict, ev: dict, mode: str) -> dict:
             'items': items, 'cautions': cautions, 'legend': legend,
             'sources': [{'label': 'BLS', 'url': 'https://www.bls.gov/schedule/'},
                         {'label': 'Fed', 'url': 'https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm'},
+                        {'label': 'ForexFactory', 'url': 'https://www.forexfactory.com/calendar'},
                         {'label': 'Deribit', 'url': 'https://www.deribit.com/'}]}
 
 # ------------------------------------------------------------------ lead and assembly

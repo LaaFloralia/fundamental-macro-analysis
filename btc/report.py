@@ -318,20 +318,15 @@ def section_liquidity(doc: Doc, facts: dict, analysis: dict, index: dict, dest: 
     doc.add(HEADINGS[4], '')
     fixed = doc.item(LIQUIDITY_NOTE)
     domain = doc.item('流動性の解釈: ' + _claim_text(analysis, 'three_domains.liquidity', analysis['three_domains']['liquidity']))
-    items = []
     ref = index.get(st.get('reference_price', {}).get('fact_id') or '')
     if ref and ref['value'] is not None:
-        line = doc.item(f'参照価格（観測）: {ref["display"]}')
-        items.append(('参照価格', ref, line, {'tone': 'reference'}))
+        doc.item(f'参照価格（観測）: {ref["display"]}')
     walls = st.get('liquidity', {}).get('walls', [])
     for n, w in enumerate(walls, 1):
         price, share = index[w['price_fact_id']], index[w['share_fact_id']]
         side = '買い板' if w['side'] == 'bid' else '売り板'
         venue = f'{VENUE_LABEL.get(w["venue"], w["venue"])}{MARKET_LABEL.get(w["market"], "")}'
-        line = doc.item(f'観測板{n} {venue}{side}: {fact_text(price)}、帯の量は片側100bp量の{share["display"]}')
-        if n <= 3:
-            short = f'{VENUE_LABEL.get(w["venue"], w["venue"])}{"買" if w["side"] == "bid" else "売"}{n}'
-            items.append((short, price, line, {'tone': 'caution'}))
+        doc.item(f'観測板{n} {venue}{side}: {fact_text(price)}、帯の量は片側100bp量の{share["display"]}')
     if not walls:
         doc.item('観測板の厚い価格帯: 条件（同じ25bp帯が3回中2回以上、片側100bp量の20%以上）を満たす帯なし')
     book_ids = st.get('liquidity', {}).get('book_fact_ids', [])
@@ -344,18 +339,13 @@ def section_liquidity(doc: Doc, facts: dict, analysis: dict, index: dict, dest: 
         tot, pcr = index[opt['total_fact_id']], index[opt['pcr_fact_id']]
         doc.item(f'オプション建玉合計: {tot["display"]}（{opt["scope"]}）、PCR（建玉）: {pcr["display"]}')
         expiries = opt.get('expiries', [])
-        drawn = max(expiries, key=lambda e: e['share_pct'] or 0) if expiries else None  # largest within 7 days
         for e in expiries:
             share, epcr, mp = index[e['share_fact_id']], index[e['pcr_fact_id']], index[e['max_pain_fact_id']]
             doc.item(f'満期 {e["label"]}: 建玉シェア{share["display"]}、PCR {epcr["display"]}')
             day = md_day(e['expiry'])
-            line = doc.item(f'Max Pain {day}満期（参考）: {mp["display"]}')
-            if e is drawn:
-                items.append((f'MaxPain {day}', mp, line, {'tone': 'reference'}))
+            doc.item(f'Max Pain {day}満期（参考）: {mp["display"]}')
             for rank, c in enumerate(e['top_strikes'], 1):
-                line = doc.item(f'建玉{rank}位 {day}満期: {fact_text(index[c["fact_id"]])}')
-                if e is drawn:
-                    items.append((f'建玉{rank}位 {day}', index[c['fact_id']], line, None))
+                doc.item(f'建玉{rank}位 {day}満期: {fact_text(index[c["fact_id"]])}')
     else:
         doc.item('オプション建玉: 欠測（Deribitを取得できず）')
     choice = dest['choice']
@@ -384,7 +374,6 @@ def section_spot(doc: Doc, facts: dict, analysis: dict, index: dict) -> dict:
     doc.add(HEADINGS[5], '')
     etf = st.get('etf', {})
     lines = {}
-    items = []
     if etf.get('trade_date'):
         lines['etf_date'] = doc.item(
             f'ETF対象日: {etf["trade_date"]}（期待される最新の米営業日 {etf["expected_trade_date"]}、遅れ{etf["lag_business_days"]}営業日）。'
@@ -400,13 +389,10 @@ def section_spot(doc: Doc, facts: dict, analysis: dict, index: dict) -> dict:
         flows = [index[f] for f in etf['flow_fact_ids']][-10:]
         for fact in flows:
             day = fact['observation_date']
-            line = doc.item(f'ETF日次フロー {day}: {fact["display"]}（{STATUS_LABEL[fact["status"]]}）')
-            items.append((day, fact, line, None))
+            doc.item(f'ETF日次フロー {day}: {fact["display"]}（{STATUS_LABEL[fact["status"]]}）')
         five = index.get(etf.get('five_day_fact_id') or '')
         if five:
-            line = doc.item(f'ETF 5営業日合計（{five["coverage"]["note"] or "—"}）: {five["display"]}')
-            lines['etf_5d'] = line
-            items.append(('5営業日合計', five, line, None))
+            lines['etf_5d'] = doc.item(f'ETF 5営業日合計（{five["coverage"]["note"] or "—"}）: {five["display"]}')
     else:
         lines['etf_date'] = doc.item('ETF: 欠測（Farsideを取得できず）')
     stable = st.get('stable', {})
@@ -473,19 +459,18 @@ def section_macro(doc: Doc, facts: dict, ev: dict, index: dict) -> dict:
     ok = lambda key: '確認済み' if cal.get(key) == 'ok' else '未確認'  # noqa: E731
     cal_line = doc.item(f'公式予定の確認: BLS（親が確認したキャッシュ、{cal.get("coverage_end")}まで）・Fed {ok("fed")}・BEA {ok("bea")}'
                         + (f'。{"、".join(cal.get("reasons") or [])}' if cal.get('reasons') else ''))
-    items = []
     events = [e for e in st.get('events', []) if parse_time(e['start_at']) >= ev['as_of']]
     for e in events[:12]:
         window = e.get('stop_window')
         stop = f'、停止{hm(window["start_at"])}〜{hm(window["end_at"])} JST' if window else ''
         source = scoring.SOURCE_LABELS.get(e['source_id'], e['source_id'])
         status = scoring.STATUS_LABELS.get(e['status'], e['status'])
-        line = doc.item(f'{jst(e["start_at"])} {e["name"]}（{source}、{status}、重要度{e["importance"]}{stop}）')
-        if e['importance'] in ('high', 'critical') and len(items) < 8:
-            detail = f'停止 {hm(window["start_at"])}〜{hm(window["end_at"])} JST' if window else '停止時間なし（表示のみ）'
-            items.append((e['name'], None, line, {'date': parse_time(e['start_at']).astimezone(JST).strftime('%Y-%m-%d'),
-                                                   'time': f'{hm(e["start_at"])} JST', 'detail': detail,
-                                                   'tone': 'caution' if window else 'neutral'}))
+        cons = e.get('consensus')
+        cons = f'、{cons["label"]} 前回 {cons["previous"] or "—"}・予想 {cons["forecast"] or "—"}（ForexFactory）' if cons else ''
+        doc.item(f'{jst(e["start_at"])} {e["name"]}（{source}、{status}、重要度{e["importance"]}{stop}{cons}）')
+    for e in st.get('calendar_extra', []):
+        doc.item(f'{jst(e["start_at"])} {e["name"]}（ForexFactoryの予定、重要度{e["importance"]}、停止なし、'
+                 f'前回 {e["previous"] or "—"}・予想 {e["forecast"] or "—"}）')
     if not events:
         doc.item('今後8日の公式予定: 取得範囲内に掲載なし' if cal.get('next_24h') == 'ok' else '今後8日の公式予定: 未確認')
     risk = ev['risk_events_next_24h']

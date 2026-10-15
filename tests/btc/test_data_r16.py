@@ -519,3 +519,51 @@ def test_end_to_end_facts_schema_and_machine_with_new_sources(tmp_path):
     assert st['basis']['status'] == 'ok'
     assert {h['source_id'] for h in st['source_health']} >= {'cnbc_quotes', 'kraken_ohlc', 'deribit_futures'}
     assert machine['btc']['macro']['window'] == 'same_day' and machine['btc']['macro']['proxy_labels'] == ['ice_dxy']
+
+
+# ------------------------------------------------------------------ ForexFactory consensus (display only)
+
+def ff_payload():
+    row = lambda title, when, impact='High', forecast='0.3%', previous='0.2%', country='USD': {  # noqa: E731
+        'title': title, 'country': country, 'date': when, 'impact': impact, 'forecast': forecast, 'previous': previous}
+    return [row('Core CPI m/m', '2026-10-14T08:30:00-04:00'), row('CPI m/m', '2026-10-14T08:30:00-04:00', forecast='0.6%', previous='0.4%'),
+            row('PPI m/m', '2026-10-15T08:30:00-04:00'), row('Core PPI m/m', '2026-10-15T08:30:00-04:00'),
+            row('Retail Sales m/m', '2026-10-15T08:30:00-04:00'), row('Core Retail Sales m/m', '2026-10-15T08:30:00-04:00'),
+            row('Unemployment Claims', '2026-10-15T08:30:00-04:00', impact='Medium', forecast='199K', previous='197K'),
+            row('Fed Chairman Warsh Speaks', '2026-10-15T23:30:00-04:00', forecast='', previous=''),
+            row('German ZEW', '2026-10-14T05:00:00-04:00', country='EUR'),
+            row('Bad <b>title</b>', '2026-10-15T10:00:00-04:00'),
+            row('Odd value', '2026-10-15T10:00:00-04:00', forecast='<script>', previous='1.0%'),
+            row('Low thing', '2026-10-15T10:00:00-04:00', impact='Low')]
+
+
+def test_forexfactory_source_keeps_us_high_medium_and_numeric_values():
+    fetcher = FakeFetcher(ff_payload(), datetime(2026, 10, 15, 9, 0, tzinfo=UTC))
+    rec = record(macro.forexfactory_week(fetcher))
+    events = rec['values']['events']
+    titles = [e['title'] for e in events]
+    assert 'German ZEW' not in titles and 'Low thing' not in titles and 'Bad <b>title</b>' not in titles
+    odd = next(e for e in events if e['title'] == 'Odd value')
+    assert odd['forecast'] == '' and odd['previous'] == '1.0%'
+    cpi = next(e for e in events if e['title'] == 'CPI m/m')
+    assert cpi['start_at'] == '2026-10-14T12:30:00Z' and cpi['importance'] == 'high'
+
+
+def test_consensus_attaches_to_official_events_and_lists_the_rest():
+    from btc.facts import consensus_state
+    fetcher = FakeFetcher(ff_payload(), datetime(2026, 10, 15, 9, 0, tzinfo=UTC))
+    rec = record(macro.forexfactory_week(fetcher))
+    state = {'calendar': {}, 'events': [
+        {'id': 'bls.cpi.2026-10-14', 'start_at': '2026-10-14T12:30:00Z', 'source_id': 'bls_schedule_cache'},
+        {'id': 'bls.ppi.2026-10-15', 'start_at': '2026-10-15T12:30:00Z', 'source_id': 'bls_schedule_cache'}]}
+    consensus_state({'forexfactory_week': rec}, state, datetime(2026, 10, 15, 10, 0, tzinfo=UTC))
+    assert state['events'][0]['consensus'] == {'label': 'CPI m/m', 'previous': '0.4%', 'forecast': '0.6%',
+                                               'source_id': 'forexfactory_week'}
+    assert state['events'][1]['consensus']['label'] == 'PPI m/m'
+    names = [e['name'] for e in state['calendar_extra']]
+    # Core siblings and the matched CPI/PPI lines are not repeated; a medium release at an official time is dropped.
+    assert names == ['Retail Sales m/m', 'Odd value', 'Fed Chairman Warsh Speaks']
+    assert state['calendar']['consensus'] == 'ok'
+    missing = {'calendar': {}, 'events': []}
+    consensus_state({}, missing, datetime(2026, 10, 15, 10, 0, tzinfo=UTC))
+    assert missing['calendar_extra'] == [] and missing['calendar']['consensus'] == 'missing'

@@ -1519,6 +1519,53 @@ def stop_window(event: dict) -> dict | None:
     return None
 
 
+# Official event id prefix -> ForexFactory titles in priority order (the first present is shown).
+FF_MATCH = {
+    'bls.cpi': ('CPI m/m', 'CPI y/y', 'Core CPI m/m'), 'bls.ppi': ('PPI m/m', 'Core PPI m/m'),
+    'bls.empsit': ('Non-Farm Employment Change', 'Unemployment Rate'),
+    'bea.pce': ('Core PCE Price Index m/m', 'PCE Price Index m/m'),
+    'bea.gdp': ('Advance GDP q/q', 'Prelim GDP q/q', 'Final GDP q/q'),
+    'fomc.statement': ('Federal Funds Rate',),
+}
+
+
+def consensus_state(S: dict, state: dict, as_of: datetime):
+    """Previous/forecast from ForexFactory on the official events (same start time and title), and the US releases
+    of the same window that no official calendar lists. Display only: never a stop window, a risk event or a score."""
+    rec = S.get('forexfactory_week')
+    ff = ((rec or {}).get('values') or {}).get('events') or [] if _usable(rec) else []
+    state['calendar']['consensus'] = 'ok' if ff else ((rec or {}).get('status') or 'missing')
+    used = set()
+    for event in state.get('events', []):
+        prefix = next((p for p in FF_MATCH if event['id'].startswith(p)), None)
+        if not prefix:
+            continue
+        same = {e['title']: i for i, e in enumerate(ff) if e['start_at'] == event['start_at']}
+        title = next((t for t in FF_MATCH[prefix] if t in same), None)
+        if title:
+            row = ff[same[title]]
+            event['consensus'] = {'label': md_safe(title), 'previous': row['previous'], 'forecast': row['forecast'],
+                                  'source_id': 'forexfactory_week'}
+            used.update(i for i, e in enumerate(ff) if e['start_at'] == event['start_at']
+                        and any(e['title'] == t or e['title'] == 'Core ' + t for t in FF_MATCH[prefix]))
+    official = {e['start_at'] for e in state.get('events', []) if e['source_id'] != 'deribit_options'}
+    extra = []
+    for i, e in enumerate(ff):
+        t = parse_time(e['start_at'])
+        if i in used or not (as_of - timedelta(days=1) <= t <= as_of + timedelta(days=8)):
+            continue
+        # 「Core X」 beside 「X」 at the same time is the same release; an official event at the same time already
+        # has its own row (its other ForexFactory lines are not repeated).
+        if e['title'].startswith('Core ') and any(x['title'] == e['title'][5:] and x['start_at'] == e['start_at'] for x in ff):
+            continue
+        if e['start_at'] in official and e['importance'] != 'high':
+            continue
+        extra.append({'id': f'ff.{re.sub(r"[^a-z0-9]+", "-", e["title"].lower()).strip("-")}.{e["start_at"][:16]}',
+                      'name': md_safe(e['title']), 'start_at': e['start_at'], 'importance': e['importance'],
+                      'previous': e['previous'], 'forecast': e['forecast'], 'source_id': 'forexfactory_week'})
+    state['calendar_extra'] = extra
+
+
 def events_state(F: Facts, S: dict, state: dict, as_of: datetime):
     from btc.sources.calendar import load_cache
     cache = load_cache()
@@ -1664,6 +1711,7 @@ def build(collection: dict, *, mode: str, session_slot: str, collection_path, hi
     misc_onchain_facts(F, S, state)
     macro_facts(F, S, state, as_of)
     events_state(F, S, state, as_of)
+    consensus_state(S, state, as_of)
     news_state(F, S, state)
     carry_state(state, history_dir, as_of)
     state['source_health'] = source_health(S, as_of)
