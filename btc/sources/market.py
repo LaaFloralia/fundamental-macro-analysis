@@ -1,15 +1,17 @@
-"""Spot quotes (reference price inputs) and observed order books.
+"""Spot quotes (reference price inputs), Kraken BTC/USD bars and observed order books.
 
 Books: three snapshots per venue (0/30/60 s). Only aggregates are kept (P8):
 mid, best bid/ask, depth within 25/50/100/200 bp, reach, and 25 bp buckets on
 a fixed absolute grid anchored at the first snapshot's mid (±200 bp).
+Bars: closed 1 h and 1 d Kraken XBTUSD bars (USD venue) for the named levels
+(btc/levels.py); the newest bar is still forming and is dropped.
 """
 from __future__ import annotations
 
 import time
 
 from btc.fetch import FetchError, Fetcher, SourceResult
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from btc.sources.base import from_s, json_of, num, ok, z
 
@@ -17,6 +19,7 @@ BUCKET_BPS = 25
 RANGE_BPS = 200
 DEPTH_BANDS = (25, 50, 100, 200)
 SNAPSHOT_OFFSETS = (0, 30, 60)
+OHLC_INTERVALS = (('h1', 60), ('d1', 1440))  # (part, minutes): about 720 bars each
 
 
 # ------------------------------------------------------------------ quotes
@@ -64,6 +67,52 @@ def binance_spot(f: Fetcher) -> SourceResult:
     return ok('binance_spot', [r], {'bid': bid, 'ask': ask, 'mid': (bid + ask) / 2, 'venue': 'binance',
                                     'pair': 'BTCUSDT', 'quote_currency': 'USDT'},
               timestamp_quality='receipt_interval')
+
+
+# -------------------------------------------------------------------- bars
+
+def _kraken_bars(f: Fetcher, interval: int):
+    r = f.get('https://api.kraken.com/0/public/OHLC', params={'pair': 'XBTUSD', 'interval': interval})
+    data = json_of(r)
+    if not isinstance(data, dict) or data.get('error'):
+        raise FetchError('invalid_payload')
+    result = data.get('result') or {}
+    series = [v for k, v in result.items() if k != 'last']  # keyed by the pair name, e.g. 'XXBTZUSD'
+    if len(series) != 1 or not isinstance(series[0], list):
+        raise FetchError('missing_field')
+    # 'last' is the start of the newest bar, which is still open: keep bars that closed before retrieval.
+    received = datetime.fromisoformat(r.retrieved_at).timestamp()
+    bars, invalid = {}, 0
+    for row in series[0]:
+        start = int(num(row[0]))
+        if start + interval * 60 > received:
+            continue
+        o, h, l, c = (num(x) for x in row[1:5])
+        if not 0 < l <= min(o, c) <= max(o, c) <= h:
+            invalid += 1  # dropped, never repaired: the hole shows up as a gap caution in btc/levels.py
+            continue
+        bars[start] = {'t': from_s(start), 'o': o, 'h': h, 'l': l, 'c': c, 'v': num(row[6])}
+    if not bars:
+        raise FetchError('empty_payload')
+    return r, [bars[k] for k in sorted(bars)], invalid
+
+
+def kraken_ohlc(f: Fetcher) -> SourceResult:
+    responses, values, failures, invalid = {}, {}, [], {}
+    for part, interval in OHLC_INTERVALS:
+        try:
+            responses[part], values[part], invalid[part] = _kraken_bars(f, interval)
+        except (FetchError, KeyError, IndexError, TypeError) as error:
+            failures.append({'part': part, 'error_kind': error.kind if isinstance(error, FetchError) else 'missing_field'})
+            values[part] = []
+    if 'h1' not in responses:
+        raise FetchError(failures[0]['error_kind'])
+    last = values['h1'][-1]['t']
+    return ok('kraken_ohlc', responses, {'venue': 'kraken', 'pair': 'XBTUSD', 'quote_currency': 'USD',
+                                         'h1': values['h1'], 'd1': values['d1'], 'failures': failures,
+                                         'invalid_bars': invalid},
+              observed_at=z(datetime.fromisoformat(last.replace('Z', '+00:00')) + timedelta(hours=1)),
+              status='ok' if not failures else 'partial')
 
 
 # ------------------------------------------------------------------- books
