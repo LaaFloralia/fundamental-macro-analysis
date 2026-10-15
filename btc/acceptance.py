@@ -202,7 +202,7 @@ def compact(text: str) -> str:
 # Every cell the page shows (explanations open), so a dropped cell fails the browser check.
 FIGURE_TEXT = {'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'asof', 'note'),
                'liquidity_map': ('label', 'price_text', 'pool', 'state_word', 'touched', 'distance_text', 'target'),
-               'event_table': ('label', 'time', 'previous', 'forecast', 'actual', 'diff', 'direction', 'memo'),
+               'event_table': ('date', 'label', 'time', 'previous', 'forecast', 'actual', 'diff', 'direction', 'memo'),
                'news_list': ('time', 'publisher', 'title', 'verification', 'reaction', 'direction', 'importance',
                              'interpretation')}
 NUMBER_CELLS = ('previous', 'forecast', 'actual', 'diff')

@@ -83,6 +83,15 @@ def _usable(fact) -> bool:
     return bool(fact) and fact['status'] in USABLE and fact['value'] is not None
 
 
+def _fresh(fact) -> bool:
+    """Current enough to carry a direction (as btc.facts._fresh): not stale and ok/provisional."""
+    return _usable(fact) and fact['status'] in ('ok', 'provisional') and not fact.get('stale')
+
+
+def _when(fact) -> str:
+    return _hm(fact['observed_at']) if fact.get('observed_at') else _date_md(fact.get('observation_date') or '')
+
+
 class Page:
     """Writes the section's lines and keeps each figure's fact bindings."""
 
@@ -252,9 +261,12 @@ def crowd_rows(page, st: dict, facts: list) -> list:
     weighted = pick('funding_weighted_8h')
     cut = scoring.FUNDING_CROWDED
     if weighted:
+        fresh = _fresh(weighted)
         mark = FLAT if abs(weighted['value']) < cut else WEAK_DOWN if weighted['value'] > 0 else WEAK_UP
-        rows.append(_row(page, g, 'Funding（3市場・8時間）', weighted['display'], baseline=f'過密の目安 ±{cut * 100:.2f}%', mark=mark,
-                         note='ロングが過密' if weighted['value'] >= cut else 'ショートが過密' if weighted['value'] <= -cut else '',
+        crowd = 'ロングが過密' if weighted['value'] >= cut else 'ショートが過密' if weighted['value'] <= -cut else ''
+        rows.append(_row(page, g, 'Funding（3市場・8時間）', weighted['display'], baseline=f'過密の目安 ±{cut * 100:.2f}%',
+                         mark=mark if fresh else NODATA, asof='' if fresh else _when(weighted),
+                         note=crowd if fresh else '古い値（判定外）',
                          fact=weighted, rule='建玉で加重した確定Funding。過密な側の逆（弱）。Binance・Bybit・OKXの線形無期限だけ'))
     parts = []
     for v in st.get('derivatives', {}).get('venues', []):
@@ -265,8 +277,7 @@ def crowd_rows(page, st: dict, facts: list) -> list:
         rows.append(_row(page, g, '建玉（OI）', '・'.join(parts), baseline='24時間前から', mark=REF,
                          rule=f'建玉の増加は新規の建て。Fundingの過密と同時に{scoring.OI_CROWDED_PCT:g}%以上増えると急変に注意'))
     basis = st.get('basis', {})
-    ref = next((b for b in basis.get('items', []) if b.get('instrument') == basis.get('reference')), None)
-    annual = page.fact((ref or {}).get('annual_fact_id'))
+    annual = page.fact((basis.get('reference') or {}).get('annual_fact_id'))
     if annual:
         rows.append(_row(page, g, '先物ベーシス（年率）', annual['display'], baseline='Deribit先物と指数の差', mark=REF, fact=annual,
                          rule='高いほどレバレッジの買い需要が強い。急低下は手仕舞いのしるし（方向の判定には数えない）'))
@@ -278,6 +289,8 @@ def crowd_rows(page, st: dict, facts: list) -> list:
             continue
         crowd = key == 'account_long_share'
         mark = (WEAK_DOWN if perc['value'] >= hi else WEAK_UP) if crowd else REF
+        if crowd and not (_fresh(fact) and _fresh(perc)):
+            mark, crowd = NODATA, False  # an old ratio is not a contrarian signal now
         rows.append(_row(page, g, label, fact['display'], baseline=f'過去30日の{perc["display"]}', mark=mark, fact=fact,
                          note='多数派の逆' if crowd else '',
                          rule=(f'口座数の比率。百分位{hi}以上は多数派の逆で下向き、{lo}以下は上向き（弱）' if crowd else
@@ -288,8 +301,10 @@ def crowd_rows(page, st: dict, facts: list) -> list:
     if f and not low < f['value'] < high:
         d7 = page.fact(fgi.get('diff_7d'))
         rows.append(_row(page, g, 'Fear & Greed', f'{f["value"]:g}', baseline='7日前から' if d7 else '',
-                         change=f'{d7["value"]:+g}' if d7 else '', mark=WEAK_DOWN if f['value'] >= high else WEAK_UP,
-                         note='極端な強気' if f['value'] >= high else '極端な恐怖',
+                         change=f'{d7["value"]:+g}' if d7 else '',
+                         mark=(WEAK_DOWN if f['value'] >= high else WEAK_UP) if _fresh(f) else NODATA,
+                         asof='' if _fresh(f) else _when(f),
+                         note=('極端な強気' if f['value'] >= high else '極端な恐怖') if _fresh(f) else '古い値（判定外）',
                          rule=f'{high}以上は極端な強気で下向き、{low}以下は極端な恐怖で上向き（弱）。指数の約半分は価格の動きから作られる'))
     skew = st.get('options', {}).get('skew', {})
     for tenor in ('7d', '30d'):
@@ -488,6 +503,15 @@ def liquidity_figure(page, facts: dict, dest: dict, mode: str, finalize_at) -> d
 
 # ------------------------------------------------------------------ news
 
+def incident_notes(st: dict, ev: dict) -> list:
+    """Open incidents and manual releases (14 days). Shown in the news section, or as lead facts without news."""
+    notes = [f'重大障害が継続中: {inc.get("title") or inc["incident_id"]}' for inc in ev.get('incidents_open') or []]
+    for r in st.get('incidents', {}).get('recently_released') or []:
+        notes.append(f'障害の手動解除（解除から14日間表示）: {r["incident_id"]}「{r.get("title") or ""}」・'
+                     f'理由 {r.get("release_reason") or ""}・記録者 {r.get("released_by") or ""}')
+    return notes
+
+
 def news_figure(page, facts: dict, analysis: dict, ev: dict) -> dict | None:
     st = facts['state']
     news = st.get('news', {})
@@ -526,13 +550,7 @@ def news_figure(page, facts: dict, analysis: dict, ev: dict) -> dict | None:
         rows = [i for i in items if i['group'] == g]
         if rows:
             tallies[g] = f'評価 {sum(1 for i in rows if i["assessed"])}件・見出し {len(rows)}件'
-    cautions = [{'text': f'重大障害が継続中: {inc.get("title") or inc["incident_id"]}',
-                 'source_quote': page.line(f'ニュース｜注意: 重大障害が継続中: {inc.get("title") or inc["incident_id"]}')}
-                for inc in ev.get('incidents_open') or []]
-    for r in st.get('incidents', {}).get('recently_released') or []:
-        text = (f'障害の手動解除（解除から14日間表示）: {r["incident_id"]}「{r.get("title") or ""}」・'
-                f'理由 {r.get("release_reason") or ""}・記録者 {r.get("released_by") or ""}')
-        cautions.append({'text': text, 'source_quote': page.line(f'ニュース｜注意: {text}')})
+    cautions = [{'text': t, 'source_quote': page.line(f'ニュース｜注意: {t}')} for t in incident_notes(st, ev)]
     feeds = news.get('feeds') or []
     legend = (f'直近{news.get("lookback_hours", 36):g}時間の暗号資産メディア・公式RSS・Investing.comの見出し{news.get("candidate_count", 0)}件から'
               f'{len(news["items"])}件を選び（マクロ・地政学は最大5件）、親がBTCへの効き方を評価した見出しを先に出しています。'
@@ -715,6 +733,8 @@ def build(doc, facts: dict, analysis: dict, ev: dict, index: dict, dest: dict, *
     news = news_figure(page, facts, analysis, ev)
     if news:
         figures.append(news)
+    else:  # no news section: the incident notices still show, as lead facts
+        head['chips'] += [{'text': t, 'source_quote': page.line(t)} for t in incident_notes(facts['state'], ev)]
     figures.append(event_figure(page, facts, ev, mode))
     doc.add('')
     summary = {'eyebrow': f'BTCUSD {mode.upper()}', 'short_title': 'チャート外分析', 'as_of_label': as_of_label,

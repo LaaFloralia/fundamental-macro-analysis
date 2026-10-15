@@ -101,11 +101,12 @@ def level_state(level: float, side: str, formed_at: datetime, h1: list[dict], d1
     touched = next((b for b in scan if through(b)), None)
     if touched is None:
         return {'state': 'resting', 'touched_at': None, 'hours_outside': 0.0}
-    hours = 0.0
+    hours, after = 0.0, None
     for bar in reversed(scan):
-        if not outside(bar):
-            break
+        if not outside(bar) or (after is not None and bar['end'] != after):
+            break  # back inside, or a missing bar: the run is only what is observed without a gap
         hours += (bar['end'] - bar['start']).total_seconds() / 3600
+        after = bar['start']
     if hours == 0:
         state = 'swept'
     elif hours >= BROKEN_HOURS:

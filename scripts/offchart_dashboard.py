@@ -44,6 +44,9 @@ LEGACY_VIZ_LABELS = {'bars': 'items', 'probs': 'segments'}
 SERIES_TONES = ('positive', 'negative', 'neutral')
 
 
+CONCLUSION_LABELS = ('理由', '反対材料')
+
+
 class DashboardError(ValueError):
     pass
 
@@ -188,6 +191,8 @@ def validate(summary: dict, figures: list, source: str) -> list:
 
     conclusion = summary.get('conclusion')
     for index, row in enumerate((conclusion or {}).get('rows') or []):
+        if row.get('label') not in CONCLUSION_LABELS:
+            raise DashboardError(f'conclusion.rows[{index}]: label "{row.get("label")}" is not one of {CONCLUSION_LABELS}')
         _check_text(f'conclusion.rows[{index}]', quoted(f'conclusion.rows[{index}]', row), [row.get('text')])
     if conclusion and not conclusion.get('rows'):
         quote = quoted('conclusion', conclusion)
@@ -250,6 +255,12 @@ def validate(summary: dict, figures: list, source: str) -> list:
         for rule in figure.get('rules') or []:
             if canonical(rule.get('rule')) not in canon_source:
                 raise DashboardError(f'{figure.get("id")}: rule text is not in the Markdown')
+        for group, tally in (figure.get('tallies') or {}).items():
+            # The tally beside a news group is counted from the group's own rows, never taken as given.
+            members = [i for i in figure.get('items') or [] if i.get('group') == group]
+            expected = f'評価 {sum(1 for i in members if i.get("assessed"))}件・見出し {len(members)}件'
+            if kind != 'news_list' or tally != expected:
+                raise DashboardError(f'{figure.get("id")}: tally of {group} is not "{expected}"')
         for where, item in rows:
             if item.get('url') and not re.match(r'^https://[^\s"<>]+$', str(item['url'])):
                 raise DashboardError(f'{where}: link is not an https URL')
