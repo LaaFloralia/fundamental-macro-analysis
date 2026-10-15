@@ -358,6 +358,30 @@ def test_news_selection_uses_jev_scores_and_falls_back_to_keywords():
         pass
 
 
+def test_investing_feed_times_without_a_zone_are_read_as_utc():
+    # Investing.com の形（2026-10-15に取得）: pubDate にゾーンがなく、UTC。以前は全件捨てて0件だった。
+    from scrapers import news_triage as nt
+    now = datetime(2026, 10, 15, 9, 0, tzinfo=ms.JST)
+    body = b"""<?xml version="1.0" encoding="utf-8"?><rss version="2.0"><channel><title>Economy News</title>
+      <item><title>U.S. proposes unfreezing Russian assets to restart Ukraine peace talks- FT</title>
+        <link>https://www.investing.com/news/economy/a-1</link><pubDate>2026-10-14 23:35:35</pubDate></item>
+      <item><title>Old story</title><link>https://www.investing.com/news/economy/a-2</link>
+        <pubDate>2026-10-12 08:00:00</pubDate></item>
+    </channel></rss>"""
+    start = now - nt.timedelta(hours=36)
+    assert nt.parse_feed(body, "Investing.com 経済", start, now) == []  # without the zone the times are unknown
+    items = nt.parse_feed(body, "Investing.com 経済", start, now, nt.timezone.utc)
+    assert [i["published"] for i in items] == ["2026-10-14T23:35:35+00:00"]  # 08:35 JST, inside the 36 hours
+
+    class Resp:
+        def __init__(self, content):
+            self.status_code, self.content = 200, content
+    empty = b"<rss><channel></channel></rss>"
+    cands, sources = nt.collect_headlines(now, 36, fetch=lambda url: Resp(body if "news_95" in url else empty))
+    assert [c["title"][:13] for c in cands] == ["U.S. proposes"]
+    assert {s["source"]: s["items"] for s in sources}["Investing.com 経済"] == 1
+
+
 def test_offchart_features_are_machine_readable(tmp_path):
     from scrapers import offchart_features as of
     now = datetime(2026, 9, 29, 18, 0, tzinfo=ms.JST)

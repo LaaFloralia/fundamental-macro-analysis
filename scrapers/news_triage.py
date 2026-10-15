@@ -43,9 +43,13 @@ BUDGET_USD = "0.20"  # 共有台帳の UTC 日次上限。1回の選別は約0.0
 FALLBACK = re.compile(r"\bgold\b|\bbullion\b|\bXAU|\bFed\b|FOMC|Powell|yield|Treasur|dollar|\bDXY\b|inflation|CPI|PCE|"
                       r"payroll|jobs|tariff|geopolit|war|missile|sanction|central bank", re.I)
 MAX_BYTES = 1_000_000
+# Investing.com の pubDate は「2026-10-15 02:12:47」とゾーンなしで、UTC（10/14のCPI記事が12:32:07、発表08:30 ETの2分後）。
+# ゾーンなしの時刻は捨てていたため、この2本は少なくとも10/02から0件だった。
+NAIVE_UTC = {"Investing.com 商品", "Investing.com 経済"}
 
 
-def _stamp(text: str) -> Optional[datetime]:
+def _stamp(text: str, naive_tz: Optional[timezone] = None) -> Optional[datetime]:
+    """時刻をUTCにする。ゾーンのない時刻は、取得元のゾーンが分かっている場合（naive_tz）だけ使う。"""
     if not text:
         return None
     try:
@@ -55,10 +59,15 @@ def _stamp(text: str) -> Optional[datetime]:
             dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
             return None
-    return dt.astimezone(timezone.utc) if dt.tzinfo else None
+    if dt.tzinfo is None:
+        if naive_tz is None:
+            return None
+        dt = dt.replace(tzinfo=naive_tz)
+    return dt.astimezone(timezone.utc)
 
 
-def parse_feed(body: bytes, source: str, start: datetime, now: datetime) -> list[dict]:
+def parse_feed(body: bytes, source: str, start: datetime, now: datetime,
+               naive_tz: Optional[timezone] = None) -> list[dict]:
     """RSS/Atom の item を {source,title,url,published} にする。DTD は拒否する。"""
     if b"<!DOCTYPE" in body[:2000].upper() or b"<!ENTITY" in body.upper():
         raise ValueError("DTD not allowed")
@@ -76,7 +85,7 @@ def parse_feed(body: bytes, source: str, start: datetime, now: datetime) -> list
                     return (child.text or child.get("href") or "").strip()
             return ""
 
-        published = _stamp(text("pubDate", "date", "published", "updated"))
+        published = _stamp(text("pubDate", "date", "published", "updated"), naive_tz)
         title = " ".join(html.unescape(text("title")).split())
         url = text("link")
         if not title or not url.startswith("https://") or published is None:
@@ -99,7 +108,7 @@ def collect_headlines(now: datetime, lookback_hours: int, fetch=None) -> tuple[l
             resp = fetch(url)
             record["http_status"] = resp.status_code
             if resp.status_code == 200 and len(resp.content) <= MAX_BYTES:
-                items = parse_feed(resp.content, name, start, now)
+                items = parse_feed(resp.content, name, start, now, timezone.utc if name in NAIVE_UTC else None)
                 fresh = [i for i in items if i["title"].lower() not in seen]
                 seen.update(i["title"].lower() for i in fresh)
                 candidates.extend(fresh)
