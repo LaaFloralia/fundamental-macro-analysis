@@ -573,6 +573,7 @@
       "window": {
        "enum": [
         "daily_common_observation",
+        "same_day",
         "intraday",
         "weekly",
         "unknown"

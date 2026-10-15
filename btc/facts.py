@@ -12,6 +12,7 @@ read; it never contains parent text.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import json
 import math
 import re
@@ -20,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from btc import SYMBOL
 from btc.common import JST, digest, parse_time
-from btc import us_calendar
+from btc import levels as levels_mod, us_calendar
 from btc.history import History, comparison_stats, describe, describe_window
 from btc.text import md_safe
 
@@ -47,6 +48,9 @@ RATIO_MIN_BUCKETS = 336        # design 5.2: 1 h, 14 days
 DAILY_MIN = 60                 # FGI / stable / DVOL daily series
 COT_MIN_WEEKS = 104
 BIG_EXPIRY_SHARE = 20.0
+SAME_DAY_STALE = 6 * 3600      # intraday CNBC quotes (US 2y, DXY)
+LEVEL_VALID_AFTER_BAR = timedelta(hours=2)  # named levels: last closed 1 h bar's close + 2 h
+BASIS_MIN_DAYS = 7
 
 
 # ----------------------------------------------------------------- helpers
@@ -1157,6 +1161,157 @@ def misc_onchain_facts(F: Facts, S: dict, state: dict):
                        population='mempool.space 推奨手数料（混雑の観測）')
 
 
+def levels_facts(F: Facts, S: dict, state: dict, as_of: datetime):
+    """Named levels (前日・前週・前月の高安、セッション高安) on Kraken BTC/USD closed bars (btc/levels.py).
+
+    The bars stay in the collection; state keeps only the levels, their state and the cautions.
+    """
+    rec = S.get('kraken_ohlc')
+    if not _usable(rec):
+        state['levels'] = {'status': 'missing', 'reason': (rec or {}).get('error_kind') or 'source_unavailable',
+                           'last_bar_start': None, 'items': [], 'nearest': {'high': None, 'low': None}, 'cautions': []}
+        return
+    v = rec['values']
+    ref = F.index.get((state.get('reference_price') or {}).get('fact_id'))
+    price, price_basis = (ref['value'], 'reference_price') if ref and ref['value'] is not None else (None, None)
+    if price is None and v['h1']:
+        price, price_basis = v['h1'][-1]['c'], 'kraken_last_h1_close'
+    built = levels_mod.build_levels(v['h1'], v['d1'], as_of, price)
+    valid_until = z(parse_time(built['last_bar_end']) + LEVEL_VALID_AFTER_BAR) if built['last_bar_end'] else None
+    items = []
+    for item in built['items']:
+        fact = F.observed(record=rec, raw=v['raw_parts'][item['bars']], domain='liquidity', provider='kraken',
+                          instrument='btcusd', metric='named_level_price', key=item['key'], value=item['price'],
+                          unit='USD', display=f'{item["price"]:,.1f}', window=item['bars'],
+                          period_start=item['window_start'], period_end=item['formed_at'], valid_until=valid_until,
+                          venue='kraken', timestamp_quality='source_observed', method_id='named_level_bar_extreme',
+                          population=f'{item["name"]}（Kraken BTC/USD、{"日足" if item["bars"] == "d1" else "1時間足"}）')
+        items.append({'key': item['key'], 'name': item['name'], 'side': item['side'], 'pool': item['pool'],
+                      'fact_id': fact['fact_id'], 'price': item['price'], 'state': item['state'],
+                      'state_word': item['state_word'], 'touched_at': item['touched_at'], 'formed_at': item['formed_at']})
+    status = built['status']
+    if items and any(F.index[i['fact_id']]['stale'] for i in items):
+        status = 'stale'
+    state['levels'] = {'status': status, 'last_bar_start': built['last_bar_start'], 'items': items,
+                       'nearest': built['nearest'], 'cautions': built['cautions'], 'price_basis': price_basis}
+
+
+def basis_facts(F: Facts, S: dict, state: dict, as_of: datetime):
+    """Deribit dated futures: basis = mark / index - 1 and its annualised rate (expiries 7 days or more away)."""
+    rec = S.get('deribit_futures')
+    out = {'status': 'missing', 'items': [], 'reference': None}
+    if not _usable(rec):
+        out['reason'] = (rec or {}).get('error_kind') or 'source_unavailable'
+        state['basis'] = out
+        return
+    v = rec['values']
+    for row in v['futures']:
+        days = (parse_time(row['expiry']) - as_of).total_seconds() / 86400
+        if days < BASIS_MIN_DAYS:
+            continue
+        name = row['instrument']
+        basis = 100 * (row['mark_price'] / row['index_price'] - 1)
+        b = F.observed(record=rec, raw=v['raw_parts']['r0'], domain='derivatives', provider='deribit',
+                       instrument=name.lower(), metric='futures_basis', value=round(basis, 4), unit='percent',
+                       display=f'{basis:+.2f}%', observed_at=row['observed_at'], stale_after=OPTIONS_STALE,
+                       venue='deribit', method_id='mark_over_index_minus_one',
+                       population=f'{name} マーク価格 / BTC指数 − 1（Deribit）')
+        annual = basis * 365 / days
+        a = F.derived(sources=[b], domain='derivatives', provider='deribit', instrument=name.lower(),
+                      metric='futures_basis_annualized', value=round(annual, 3), unit='percent',
+                      display=f'年率 {annual:+.1f}%（{name}・{round(days)}日）', observed_at=row['observed_at'],
+                      venue='deribit', method_id='basis_times_365_over_days_to_expiry')
+        out['items'].append({'instrument': name, 'expiry': row['expiry'], 'days': round(days, 2),
+                             'basis_fact_id': b['fact_id'], 'annual_fact_id': a['fact_id']})
+    out['items'].sort(key=lambda x: x['expiry'])
+    if out['items']:
+        out['status'] = 'ok'
+        out['reference'] = dict(min(out['items'], key=lambda x: abs(x['days'] - 90)))  # nearest to 90 days
+    else:
+        out['reason'] = 'no_dated_future_7d_or_more'
+    state['basis'] = out
+
+
+def ny_trading_date(value) -> date:
+    """New York trading date (as scrapers/us_yields.trading_date): from 17:00 New York a quote belongs to the next day."""
+    return (parse_time(value).astimezone(NY) + timedelta(hours=7)).date()
+
+
+def _month_day(day: str) -> str:
+    d = date.fromisoformat(day)
+    return f'{d.month}/{d.day}'
+
+
+def same_day_facts(F: Facts, S: dict, as_of: datetime) -> dict:
+    """US 2y yield, DXY and Nasdaq Composite vs their previous closes (CNBC quotes; Treasury/FRED lag by days).
+
+    A 2y / DXY quote is same-day only on the current New York trading date of as_of; otherwise its facts are
+    'stale' (displayed, not scored). The short stale_after also rejects an old quote of the same date.
+    """
+    today = ny_trading_date(as_of)
+    out = {'status': 'missing', 'trading_date': today.isoformat()}
+    rec = S.get('cnbc_quotes')
+    if not _usable(rec):
+        return out
+    v = rec['values']
+    raw = v['raw_parts']['r0']
+    quotes = v.get('quotes') or {}
+    for symbol, key in (('US2Y', 'ust_2y'), ('.DXY', 'dxy')):
+        q = quotes.get(symbol)
+        if not q or q.get('time_kind') != 'quote_time':
+            continue
+        current = ny_trading_date(q['last_time']) == today
+        status, reason = ('ok', None) if current else ('stale', 'previous_trading_date')
+        common = dict(domain='macro', provider='cnbc', instrument=key, window='intraday', observed_at=q['last_time'],
+                      status=status, missing_reason=reason, stale_after=SAME_DAY_STALE,
+                      freshness_rule_id='ny_trading_date_and_6h')
+        if symbol == 'US2Y':
+            level = F.observed(record=rec, raw=raw, metric='yield', value=q['last'], unit='percent',
+                               display=f'{q["last"]:.2f}%', method_id='cnbc_last_quote',
+                               population='米2年国債利回り（CNBC気配）', **common)
+            bp = float(Decimal(repr(q['change'])) * 100)  # exact last - previous close, unrounded
+            change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument=key,
+                               metric='change_bp_previous_close', value=bp, unit='bp',
+                               display=f'{bp:+.1f}bp（前日終値 {q["previous_close"]:.2f}%）', window='same_day',
+                               observed_at=q['last_time'], status=status, missing_reason=reason,
+                               method_id='last_minus_previous_close_exact')
+        else:
+            level = F.observed(record=rec, raw=raw, metric='level', value=q['last'], unit='index',
+                               display=f'{q["last"]:,.2f}', method_id='cnbc_last_quote',
+                               population='DXY（ICE米ドル指数、CNBC気配。FREDの米ドル広義指数とは別）', **common)
+            pct_change = q['change_pct']
+            change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument=key,
+                               metric='change_pct_previous_close', value=pct_change, unit='percent',
+                               display=f'{pct_change:+.2f}%（前日終値 {q["previous_close"]:,.2f}）', window='same_day',
+                               observed_at=q['last_time'], status=status, missing_reason=reason,
+                               method_id='pct_change_previous_close')
+        out[key], out[f'{key}_change'] = level['fact_id'], change['fact_id']
+    q = quotes.get('.IXIC')
+    if q:
+        if q.get('time_kind') == 'close_date':
+            # Cash session close of that date: a daily observation, valid like FRED's daily closes.
+            label = f'{_month_day(q["last_time"])} 終値'
+            when = dict(observation_date=q['last_time'], timestamp_quality='source_date',
+                        freshness_rule_id='daily_4_calendar_days',
+                        valid_until=z(datetime.fromisoformat(q['last_time'] + 'T23:59:59+00:00') + timedelta(days=4)))
+        else:
+            at = parse_time(q['last_time']).astimezone(NY)
+            label = f'{at.month}/{at.day} {at:%H:%M} NY時点'
+            when = dict(observed_at=q['last_time'], stale_after=SAME_DAY_STALE, freshness_rule_id='ny_trading_date_and_6h')
+        level = F.observed(record=rec, raw=raw, domain='macro', provider='cnbc', instrument='nasdaq_composite',
+                           metric='close', value=q['last'], unit='index', display=f'{q["last"]:,.2f}（{label}）',
+                           window='1d', method_id='cnbc_last_quote', population='Nasdaq総合（現物指数、CNBC）', **when)
+        change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument='nasdaq_composite',
+                           metric='change_pct_previous_close', value=q['change_pct'], unit='percent',
+                           display=f'{q["change_pct"]:+.2f}%（{label}）', window='1d',
+                           observation_date=level['observation_date'], method_id='pct_change_previous_close')
+        out['nasdaq'], out['nasdaq_change'] = level['fact_id'], change['fact_id']
+    if out.get('ust_2y') and out.get('dxy'):
+        pair = (F.index[out['ust_2y_change']], F.index[out['dxy_change']])
+        out['status'] = 'ok' if all(_fresh(f) for f in pair) else 'stale'
+    return out
+
+
 def macro_facts(F: Facts, S: dict, state: dict, as_of: datetime):
     out = {'status': 'unknown', 'reason': 'inputs_missing', 'fact_ids': [], 'proxy_labels': ['broad_usd_proxy']}
     rec = S.get('treasury_yields')
@@ -1225,10 +1380,29 @@ def macro_facts(F: Facts, S: dict, state: dict, as_of: datetime):
                            display=f'{value / 1e12:,.3f}兆USD（{d}水曜、WALCL−TGA−RRP）', display_value=round(value / 1e12, 3),
                            observation_date=d, window='1w', method_id='walcl_minus_tga_minus_rrp_same_wednesday')
             out['net_liquidity'] = nl['fact_id']
-    # Macro group rule (design 7.2): latest common US date of the 2y yield and the broad dollar proxy vs the previous one.
+    same = same_day_facts(F, S, as_of)
+    out['same_day'] = same
+    out['fact_ids'] += [same[k] for k in ('ust_2y', 'dxy', 'nasdaq') if same.get(k)]
+    # Macro group rule (design 7.2). First the same-day quotes (2y change in bp and DXY change in % vs the previous
+    # close) when both are scorable; otherwise the latest common US date of the Treasury 2y yield and the FRED broad
+    # dollar proxy vs the previous one.
     dollar_rows = {r['date']: r['value'] for r in fred_series.get('DTWEXBGS', {}).get('rows', [])}
     common = sorted(set(treasury) & set(dollar_rows))
-    if not treasury:
+    same_pair = [F.index.get(same.get('ust_2y_change')), F.index.get(same.get('dxy_change'))]
+    out['rule'] = 'same_day_quotes' if all(_fresh(f) for f in same_pair) else 'common_date'
+    if out['rule'] == 'same_day_quotes':
+        y, usd = same_pair[0]['value'], same_pair[1]['value']
+        if y <= -5 and usd <= -0.30:
+            status = 'supportive'
+        elif y >= 5 and usd >= 0.30:
+            status = 'adverse'
+        elif (y <= -5 and usd >= 0.30) or (y >= 5 and usd <= -0.30):
+            status = 'mixed'
+        else:
+            status = 'neutral'
+        out.update(status=status, reason='same_day_quotes', window='same_day', trading_date=same['trading_date'],
+                   change_fact_ids=[f['fact_id'] for f in same_pair], proxy_labels=['ice_dxy'])
+    elif not treasury:
         out.update(status='unknown', reason='treasury_missing')
     elif not dollar_rows:
         out.update(status='unknown', reason='dollar_proxy_missing' if fred else 'fred_unavailable')
@@ -1474,9 +1648,11 @@ def build(collection: dict, *, mode: str, session_slot: str, collection_path, hi
     state: dict = {}
     price_facts(F, S, state)
     book_facts(F, S, state)
+    levels_facts(F, S, state, as_of)
     derivatives_facts(F, S, state, history, as_of)
     ratio_facts(F, S, state)
     options_facts(F, S, state, history, as_of)
+    basis_facts(F, S, state, as_of)
     etf_facts(F, S, state, history, as_of)
     fgi_facts(F, S, state)
     cot_facts(F, S, state, as_of)

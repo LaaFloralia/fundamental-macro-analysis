@@ -1,17 +1,20 @@
-"""Stablecoin supply, mempool fees, BTC dominance, US Treasury yields and FRED series.
+"""Stablecoin supply, mempool fees, BTC dominance, US Treasury yields, FRED series and same-day quotes.
 
 FRED is the only credentialed source (FRED_API_KEY, P2/P8). The key is passed
 as a query parameter and removed from every recorded URL. ``DTWEXBGS`` is the
 FRED broad US dollar index, never "DXY"; equity series are cash index closes.
+``cnbc_quotes`` is the same-day complement: the US 2-year yield, the ICE US
+Dollar Index (DXY) and the Nasdaq Composite with their previous closes.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 import os
 import xml.etree.ElementTree as ET
 
 from btc.fetch import FetchError, Fetcher, SourceResult
-from btc.sources.base import from_s, json_of, num, ok
+from btc.sources.base import from_s, json_of, num, ok, z
 
 UTC = timezone.utc
 STABLES = ('USDT', 'USDC')
@@ -26,6 +29,10 @@ FRED_SERIES = {
     'RRPONTSYD': ('翌日物リバースレポ', 'USD billion', 'daily'),
     'M2SL': ('M2（月次）', 'USD billion', 'monthly'),
 }
+CNBC_URL = 'https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol'
+CNBC_SYMBOLS = ('US2Y', '.DXY', '.IXIC')
+CNBC_REQUIRED = ('US2Y', '.DXY')
+CNBC_FUTURE_TOLERANCE = timedelta(seconds=60)
 
 
 def defillama(f: Fetcher) -> SourceResult:
@@ -136,3 +143,61 @@ def fred(f: Fetcher, env=os.environ) -> SourceResult:
         raise FetchError(failed[0]['error_kind'] if failed else 'empty_payload')
     return ok('fred', responses, {'series': series, 'failed': failed},
               status='ok' if not failed else 'partial', timestamp_quality='source_date')
+
+
+def _quote_decimal(text) -> Decimal | None:
+    """'4.734%' / '26,692.868' as an exact decimal; empty, 'N/A' or non-finite text is None."""
+    cleaned = str(text if text is not None else '').replace('%', '').replace(',', '').strip()
+    try:
+        value = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    return value if value.is_finite() else None
+
+
+def _quote_time(text):
+    """Quote time: '2026-10-15T05:37:13.000-0400' -> aware datetime; '2026-10-14' (cash close) -> date."""
+    text = str(text or '').strip()
+    try:
+        return datetime.strptime(text, '%Y-%m-%dT%H:%M:%S.%f%z')
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(text) if len(text) == 10 else None
+    except ValueError:
+        return None
+
+
+def cnbc_quotes(f: Fetcher) -> SourceResult:
+    r = f.get(CNBC_URL, params={'symbols': '|'.join(CNBC_SYMBOLS), 'requestMethod': 'itv', 'noform': '0',
+                                'partnerId': '2', 'fund': '1', 'exthrs': '1', 'output': 'json', 'events': '1'})
+    data = json_of(r)
+    rows = ((data.get('FormattedQuoteResult') or {}).get('FormattedQuote') or []) if isinstance(data, dict) else []
+    received = datetime.fromisoformat(r.retrieved_at)
+    quotes, failed = {}, []
+    for row in rows:
+        symbol = row.get('symbol') if isinstance(row, dict) else None
+        if symbol not in CNBC_SYMBOLS or symbol in quotes:
+            continue
+        last, prev = _quote_decimal(row.get('last')), _quote_decimal(row.get('previous_day_closing'))
+        at = _quote_time(row.get('last_time'))
+        if last is None or prev is None or prev == 0 or at is None:
+            failed.append({'symbol': symbol, 'error_kind': 'missing_field'})
+            continue
+        if isinstance(at, datetime) and at > received + CNBC_FUTURE_TOLERANCE:
+            failed.append({'symbol': symbol, 'error_kind': 'future_observation'})
+            continue
+        # The change is last minus previous close, exact in decimal and not rounded (as scrapers/us_yields.py):
+        # thresholds judge it unrounded and only the display rounds.
+        quotes[symbol] = {'last': float(last), 'previous_close': float(prev), 'change': float(last - prev),
+                          'change_pct': float((last / prev - 1) * 100),
+                          'last_time': z(at) if isinstance(at, datetime) else at.isoformat(),
+                          'time_kind': 'quote_time' if isinstance(at, datetime) else 'close_date'}
+    if not quotes:
+        raise FetchError('missing_field')
+    missing = [s for s in CNBC_SYMBOLS if s not in quotes]
+    stamps = [q['last_time'] for s, q in quotes.items() if s in CNBC_REQUIRED and q['time_kind'] == 'quote_time']
+    return ok('cnbc_quotes', [r], {'provider': 'CNBC', 'quotes': quotes, 'missing': missing, 'failed': failed,
+                                   'unit': {'US2Y': 'percent', '.DXY': 'index', '.IXIC': 'index'}},
+              observed_at=max(stamps) if stamps else None,
+              status='ok' if all(s in quotes for s in CNBC_REQUIRED) else 'partial')

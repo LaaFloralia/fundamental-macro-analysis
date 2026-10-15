@@ -1,7 +1,8 @@
-"""Deribit BTC inverse options: OI by expiry/strike, DVOL and 25-delta skew inputs.
+"""Deribit BTC inverse options (OI by expiry/strike, DVOL, 25-delta skew inputs) and dated futures.
 
 Kept (P8): a normalised table of expiry, strike, type and OI (BTC) plus the
-few ticker quotes used for skew; never the raw instrument list.
+few ticker quotes used for skew; never the raw instrument list. Futures keep
+only the dated contracts' mark and index prices (the basis inputs).
 """
 from __future__ import annotations
 
@@ -11,13 +12,15 @@ import re
 import time
 
 from btc.fetch import FetchError, Fetcher, SourceResult
-from btc.sources.base import from_ms, json_of, num, ok
+from btc.sources.base import from_ms, json_of, num, ok, z
 
 UTC = timezone.utc
 API = 'https://www.deribit.com/api/v2/public'
 INSTRUMENT = re.compile(r'BTC-\d{1,2}[A-Z]{3}\d{2}-\d{1,7}(?:d\d{1,4})?-[CP]')
 SKEW_TARGETS = ((7, 3), (30, 10))  # (target DTE, tolerance) per design 5.3
 MAX_TICKERS = 16
+FUTURE = re.compile(r'BTC-(\d{1,2})([A-Z]{3})(\d{2})')
+MONTHS = {m: i for i, m in enumerate(('JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'), 1)}
 
 
 def _result(data):
@@ -123,3 +126,36 @@ def deribit_options(f: Fetcher, now: datetime | None = None, sleep=time.sleep) -
               'underlying_by_expiry': underlying, 'dvol_daily': daily,
               'dvol_latest': closed[-1] if closed else None, 'skew_quotes': skew_quotes}
     return ok('deribit_options', responses, values, observed_at=observed)
+
+
+def future_expiry(name) -> datetime | None:
+    """Expiry of a dated future from its name (BTC-25DEC26 -> 2026-12-25 08:00 UTC); None for PERPETUAL and others."""
+    match = FUTURE.fullmatch(str(name or ''))
+    if not match or match.group(2) not in MONTHS:
+        return None
+    try:
+        return datetime(2000 + int(match.group(3)), MONTHS[match.group(2)], int(match.group(1)), 8, 0, tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def deribit_futures(f: Fetcher) -> SourceResult:
+    r = f.get(f'{API}/get_book_summary_by_currency', params={'currency': 'BTC', 'kind': 'future'})
+    rows = []
+    for row in _result(json_of(r)):
+        expiry = future_expiry(row.get('instrument_name'))
+        if expiry is None:
+            continue
+        mark = num(row.get('mark_price'), allow_none=True)
+        index = num(row.get('underlying_price'), allow_none=True)  # the BTC index for dated futures
+        if mark is None or index is None or mark <= 0 or index <= 0:
+            continue
+        stamp = int(row.get('creation_timestamp') or 0)
+        rows.append({'instrument': row['instrument_name'], 'expiry': z(expiry), 'mark_price': mark,
+                     'index_price': index, 'observed_at': from_ms(stamp) if stamp > 0 else None})
+    if not rows:
+        raise FetchError('empty_payload')
+    rows.sort(key=lambda x: x['expiry'])
+    stamps = [x['observed_at'] for x in rows if x['observed_at']]
+    return ok('deribit_futures', [r], {'venue': 'deribit', 'scope': 'BTC dated inverse futures (Deribit only)',
+                                       'futures': rows}, observed_at=max(stamps) if stamps else None)

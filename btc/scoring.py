@@ -46,7 +46,8 @@ EVENT_WINDOW_HOURS = {'daily': 36, 'weekly': 168}
 VALIDITY_HOURS = {'daily': 4, 'weekly': 24}
 SIGN = {'supportive': 1, 'adverse': -1}
 POLICY = {
-    'version': POLICY_VERSION, 'macro': {'ust2y_bp': 5, 'usd_pct': 0.30},
+    'version': POLICY_VERSION, 'macro': {'ust2y_bp': 5, 'usd_pct': 0.30,
+                                         'source': 'cnbc_same_day_quotes_else_treasury_fred_common_date'},
     'etf': {'five_day_usd': ETF_THRESHOLD, 'last_day_opposite_usd': ETF_LAST_DAY_OPPOSITE},
     'stable': {'d7_pct': 0.5, 'd30_pct': 1.0}, 'leverage': {'funding_8h': FUNDING_CROWDED, 'percentile': [90, 10],
                                                               'oi_24h_pct': OI_CROWDED_PCT, 'venues': 2},
