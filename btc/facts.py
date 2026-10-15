@@ -1272,7 +1272,7 @@ def same_day_facts(F: Facts, S: dict, as_of: datetime) -> dict:
             bp = float(Decimal(repr(q['change'])) * 100)  # exact last - previous close, unrounded
             change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument=key,
                                metric='change_bp_previous_close', value=bp, unit='bp',
-                               display=f'{bp:+.1f}bp（前日終値 {q["previous_close"]:.2f}%）', window='same_day',
+                               display=f'{bp:+.1f}bp', population=f'前日終値 {q["previous_close"]:.2f}% から', window='same_day',
                                observed_at=q['last_time'], status=status, missing_reason=reason,
                                method_id='last_minus_previous_close_exact')
         else:
@@ -1282,7 +1282,7 @@ def same_day_facts(F: Facts, S: dict, as_of: datetime) -> dict:
             pct_change = q['change_pct']
             change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument=key,
                                metric='change_pct_previous_close', value=pct_change, unit='percent',
-                               display=f'{pct_change:+.2f}%（前日終値 {q["previous_close"]:,.2f}）', window='same_day',
+                               display=f'{pct_change:+.2f}%', population=f'前日終値 {q["previous_close"]:,.2f} から', window='same_day',
                                observed_at=q['last_time'], status=status, missing_reason=reason,
                                method_id='pct_change_previous_close')
         out[key], out[f'{key}_change'] = level['fact_id'], change['fact_id']
@@ -1299,13 +1299,17 @@ def same_day_facts(F: Facts, S: dict, as_of: datetime) -> dict:
             label = f'{at.month}/{at.day} {at:%H:%M} NY時点'
             when = dict(observed_at=q['last_time'], stale_after=SAME_DAY_STALE, freshness_rule_id='ny_trading_date_and_6h')
         level = F.observed(record=rec, raw=raw, domain='macro', provider='cnbc', instrument='nasdaq_composite',
-                           metric='close', value=q['last'], unit='index', display=f'{q["last"]:,.2f}（{label}）',
-                           window='1d', method_id='cnbc_last_quote', population='Nasdaq総合（現物指数、CNBC）', **when)
-        change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument='nasdaq_composite',
-                           metric='change_pct_previous_close', value=q['change_pct'], unit='percent',
-                           display=f'{q["change_pct"]:+.2f}%（{label}）', window='1d',
-                           observation_date=level['observation_date'], method_id='pct_change_previous_close')
-        out['nasdaq'], out['nasdaq_change'] = level['fact_id'], change['fact_id']
+                           metric='close', value=q['last'], unit='index', display=f'{q["last"]:,.2f}',
+                           window='1d', method_id='cnbc_last_quote', population=f'Nasdaq総合（現物指数、CNBC、{label}）', **when)
+        out['nasdaq'] = level['fact_id']
+        # Outside the cash session CNBC returns that close as both last and previous close: no change to show
+        # (the page then uses FRED's NASDAQCOM change between its two latest closes).
+        if not (q.get('time_kind') == 'close_date' and q['previous_close'] == q['last']):
+            change = F.derived(sources=[level], domain='macro', provider='cnbc', instrument='nasdaq_composite',
+                               metric='change_pct_previous_close', value=q['change_pct'], unit='percent',
+                               display=f'{q["change_pct"]:+.2f}%', population=f'{label}、前日終値から', window='1d',
+                               observation_date=level['observation_date'], method_id='pct_change_previous_close')
+            out['nasdaq_change'] = change['fact_id']
     if out.get('ust_2y') and out.get('dxy'):
         pair = (F.index[out['ust_2y_change']], F.index[out['dxy_change']])
         out['status'] = 'ok' if all(_fresh(f) for f in pair) else 'stale'

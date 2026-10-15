@@ -163,8 +163,10 @@ def macro_rows(page, st: dict) -> list:
     n, dn = page.fact(same.get('nasdaq')), page.fact(same.get('nasdaq_change'))
     n_rule = '株と同じリスク資産として動きやすい（方向の判定には数えない）'
     if n and dn:
-        rows.append(_row(page, g, 'Nasdaq総合（終値）', n['display'], baseline='前日終値から', change=f'{dn["value"]:+.2f}%',
-                         asof=_date_md(n['observation_date']) if n.get('observation_date') else '', mark=REF, rule=n_rule, fact=n))
+        closed = bool(n.get('observation_date'))  # a cash close (date) or a session quote (time)
+        rows.append(_row(page, g, 'Nasdaq総合（終値）' if closed else 'Nasdaq総合', n['display'], baseline='前日終値から',
+                         change=f'{dn["value"]:+.2f}%', mark=REF, rule=n_rule, fact=n,
+                         asof=_date_md(n['observation_date']) if closed else _hm(n['observed_at'])))
     elif page.fact(macro.get('NASDAQCOM')) and page.fact(macro.get('NASDAQCOM_change')):
         n, dn = page.fact(macro['NASDAQCOM']), page.fact(macro['NASDAQCOM_change'])
         rows.append(_row(page, g, 'Nasdaq総合（終値）', n['display'].split('（')[0], baseline='前日終値から',

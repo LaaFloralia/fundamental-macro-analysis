@@ -341,13 +341,13 @@ def rule_block(policy: str, head: str) -> list[str]:
 
 
 def test_policy_read_rules_are_exact(installed):
-    """Reads under /Users/laa: python prefixes, bundled Chromium, renderer, job root, TMPDIR; denials last."""
+    """Reads under /Users/laa: python prefixes, bundled Chromium, user fonts, job root, TMPDIR; denials last."""
     _, root = installed
     policy = (root / 'boundary.sb').read_text()
     assert '(deny file-read-data (subpath "/Users/laa"))' in policy
     assert rule_block(policy, '(allow file-read-data') == [
         f'(subpath "{os.path.realpath(sys.prefix)}")', f'(subpath "{os.path.realpath(sys.base_prefix)}")',
-        '(subpath "/Users/laa/Library/Caches/ms-playwright")', '(subpath "/Users/laa/.agents/skills/human-first-docs")',
+        '(subpath "/Users/laa/Library/Caches/ms-playwright")', '(subpath "/Users/laa/Library/Fonts")',
         f'(subpath "{root.resolve()}")', '(subpath (param "TMPDIR"))']
     assert rule_block(policy, '(deny file-read*') == [
         '(subpath "/Users/laa/Brain")', '(subpath "/Users/laa/.codex/jobs/chart-intel")',

@@ -130,7 +130,7 @@ allow-list exactly and probe the denials with `sandbox-exec`.
 |---|---|
 | the worker python's `sys.prefix` and `sys.base_prefix` | interpreter and site-packages. `install_job` derives both from `--python` at install time and refuses home, a parent of a protected tree or odd characters |
 | `/Users/laa/Library/Caches/ms-playwright` | bundled Chromium |
-| `/Users/laa/.agents/skills/human-first-docs` | report renderer |
+| `/Users/laa/Library/Fonts` | user fonts: Chromium falls back to them for symbols (✓ ▭ ▶ in the liquidity ladder); without them the evidence images show missing glyphs |
 | `<root>` | runtime snapshot, work, reports, history |
 | `(param "TMPDIR")` | per-run temp |
 

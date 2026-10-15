@@ -122,9 +122,9 @@ def test_same_day_facts_and_display_formats():
     y, dy = F.index[same['ust_2y']], F.index[same['ust_2y_change']]
     d, dd = F.index[same['dxy']], F.index[same['dxy_change']]
     n, dn = F.index[same['nasdaq']], F.index[same['nasdaq_change']]
-    assert (y['display'], dy['display']) == ('4.73%', '-6.8bp（前日終値 4.80%）')
-    assert (d['display'], dd['display']) == ('101.96', '-0.58%（前日終値 102.55）')
-    assert (n['display'], dn['display']) == ('26,692.87（10/14 終値）', '-1.88%（10/14 終値）')
+    assert (y['display'], dy['display']) == ('4.73%', '-6.8bp')
+    assert (d['display'], dd['display']) == ('101.96', '-0.58%')
+    assert (n['display'], dn['display']) == ('26,692.87', '-1.88%')
     assert dy['value'] == -6.8 and y['category'] == 'macro' and y['fact_id'].startswith('btc.macro.cnbc.ust_2y.')
     assert d['fact_id'].startswith('btc.macro.cnbc.dxy.') and 'ICE' in d['population']
     assert n['observation_date'] == '2026-10-14' and n['status'] == 'ok'
@@ -137,7 +137,8 @@ def test_nasdaq_intraday_quote_is_labelled_with_its_new_york_time():
                       retrieved=datetime(2026, 10, 15, 15, 10, tzinfo=UTC))
     F, m = macro_state(rec, as_of=datetime(2026, 10, 15, 15, 15, tzinfo=UTC))
     n, dn = F.index[m['same_day']['nasdaq']], F.index[m['same_day']['nasdaq_change']]
-    assert (n['display'], dn['display']) == ('26,700.10（10/15 11:05 NY時点）', '+0.03%（10/15 11:05 NY時点）')
+    assert (n['display'], dn['display']) == ('26,700.10', '+0.03%')
+    assert '10/15 11:05 NY時点' in n['population'] and '10/15 11:05 NY時点' in dn['population']
     assert n['observed_at'] == '2026-10-15T15:05:00Z' and n['status'] == 'ok'
 
 
