@@ -889,6 +889,21 @@
   "data_as_of": {
    "type": "string",
    "format": "date"
+  },
+  "d1_bias": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "長期": {
+     "$ref": "#/$defs/d1_entry"
+    },
+    "短期": {
+     "$ref": "#/$defs/d1_entry"
+    },
+    "総合": {
+     "$ref": "#/$defs/d1_entry"
+    }
+   }
   }
  },
  "required": [
@@ -1967,6 +1982,43 @@
     "fact_ids",
     "components"
    ]
+  },
+  "d1_entry": {
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "label",
+    "probs",
+    "provider",
+    "ms"
+   ],
+   "properties": {
+    "label": {
+     "enum": [
+      "上向き・強",
+      "上向き・弱",
+      "中立",
+      "下向き・弱",
+      "下向き・強"
+     ]
+    },
+    "probs": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     }
+    },
+    "provider": {
+     "type": "string",
+     "maxLength": 20
+    },
+    "ms": {
+     "type": "integer",
+     "minimum": 0
+    }
+   }
   }
  },
  "$comment": "P9 overrides: bias in {0, ±0.25, ±0.5, ±0.75}; confidence 0..1; no_trade_reason null when no_trade is false. Facts and machine times are UTC Z. Semantic checks live in btc/scoring.py and btc/report.py.",

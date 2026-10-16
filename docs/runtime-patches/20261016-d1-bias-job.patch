@@ -1,0 +1,166 @@
+--- backups/d1-bias-20261016/parent_workflow.py	2026-10-16 20:33:54
++++ parent_workflow.py	2026-10-16 20:34:27
+@@ -40,6 +40,22 @@
+     (runner.ROOT / 'logs').mkdir(exist_ok=True)
+     with (runner.ROOT / 'logs/runs.jsonl').open('a') as stream:
+         stream.write(json.dumps(record, ensure_ascii=False) + '\n')
++
++
++def d1_reference(runner, data_path, mode, text):
++    """Typed bias reference (item 4): (input text with one reference line under the code tally, record).
++
++    The call is signed local-gateway traffic on public rows and selected headlines only. Any failure, a missing
++    module (the repo module reaches the runtime snapshot with the next commit) or a missing gateway returns the
++    text unchanged: the run goes on without the reference line.
++    """
++    try:
++        from scripts import d1_bias
++        d1 = d1_bias.xau_judge(read(data_path), mode)
++        line = d1_bias.format_line(d1)
++        return (d1_bias.insert_line(text, line), d1) if line else (text, None)
++    except Exception:
++        return text, None
+ 
+ 
+ def prepare(runner, mode, reuse=False, research_packet=None):
+@@ -63,14 +79,17 @@
+         copied = folder / 'data.json'
+         copied.write_bytes(data.read_bytes()); copied.chmod(0o600)
+         input_path = folder / 'analysis-input.txt'
++        model_text, d1 = d1_reference(runner, data, mode, runner.model_input_text(data))
+         input_path.write_text(runner.LIMITATIONS + '\n' + runner.ANALYSIS_GUIDANCE + '\n' +
+-                              runner.model_input_text(data) + '\n' + context_text + '\n' + reviewed_text)
++                              model_text + '\n' + context_text + '\n' + reviewed_text)
+         input_path.chmod(0o600)
+         request = {'schemaVersion': 1, 'mode': mode, 'created_at': now.isoformat(), 'collected_at': as_of,
+                    'data_path': str(copied), 'data_sha256': digest(copied), 'input_path': str(input_path),
+                    'template_paths': [str(runner.RUNTIME / ('master_prompt_weekly.md' if mode == 'weekly' else 'master_prompt.md'))],
+                    'context': context, 'workflow': str(runner.ROOT / 'PARENT-WORKFLOW.md'),
+                    'historical': False, 'status': 'awaiting_parent_authoring', 'publication_ready': False}
++        if d1:
++            request['d1_bias'] = d1
+         target = folder / 'request.json'; write(target, request)
+         record.update(status='awaiting_parent_authoring', stage='parent_authoring', collected_at=as_of,
+                       request_path=str(target), market_context=context)
+@@ -402,8 +421,24 @@
+     overall = source_verdicts(source)['総合'][0]
+     if (machine['bias'] > 0) - (machine['bias'] < 0) != {'up': 1, 'down': -1, 'flat': 0}[overall]:
+         raise ValueError('Machine JSON bias contradicts the 総合 verdict of 時間軸別の向き')
++
++
++def check_d1_reason(d1, source):
++    """The writer is the final judge: a time horizon that ends up off the reference needs a stated reason."""
++    from scripts import d1_bias
++    d1_bias.check_reason(d1, d1_bias.source_final(source), source)
+ 
+ 
++def log_d1_scores(runner, d1, source, mode, date, run, at):
++    """Append reference vs final labels to the job's local scoring log for later calibration. Never raises."""
++    try:
++        from scripts import d1_bias
++        rows = d1_bias.score_rows(d1, d1_bias.source_final(source), symbol='XAUUSD', mode=mode, run=run, date=date, at=at)
++        d1_bias.append_scores(runner.ROOT / 'logs' / d1_bias.SCORES_NAME, rows)
++    except Exception:
++        pass
++
++
+ def render_package(runner, package_path, expected_mode=None):
+     from numeric_validation import fedwatch_facts, facts_markdown
+     from scripts.report_bundle import prepare as bundle_prepare, timestamp, calendar_events_24h, analysis_cutoff, plain_text
+@@ -448,6 +483,9 @@
+     validate_summary(summary, source)
+     # The board judges at the end of collection; the same "now" here, so the verdict check matches the page.
+     validate_answers(summary, source, data, mode, analysis_cutoff(data))
++    d1 = request.get('d1_bias') if not historical else None
++    if d1:
++        check_d1_reason(d1, source)
+     context = request.get('context')
+     if context and ('generated_at' in context or 'sources' in context):
+         context = runner.supplemental_metadata(context)
+@@ -492,6 +530,8 @@
+         extension_text = ''
+     machine = intel.normalize_intel_json(machine)
+     machine.update(extensions)
++    if d1:
++        machine['d1_bias'] = d1
+     machine['risk_events_next_24h'] = calendar_events_24h(data, as_of.isoformat())
+     machine = intel.attach_pipeline_metadata(machine, as_of.date().isoformat(), now.isoformat())
+     machine.update(collected_at=as_of.isoformat(), historical_revision=historical)
+@@ -546,6 +586,8 @@
+               'request_path': str(request_path), 'package_path': str(package_path)}
+     record_path = md_path.with_suffix('.edition.json'); write(record_path, record)
+     record_status(runner, record)
++    if d1:
++        log_d1_scores(runner, d1, source, mode, as_of.date().isoformat(), package_path.parent.name, now.isoformat())
+     print(json.dumps({'status': record['status'], 'edition_path': str(record_path), 'outputs': outputs}))
+     return 0
+ 
+--- backups/d1-bias-20261016/PARENT-WORKFLOW.md	2026-10-16 20:33:54
++++ PARENT-WORKFLOW.md	2026-10-16 20:40:15
+@@ -9,7 +9,7 @@
+ 2. requestの `input_path`、指定された既存master promptを読み、今回の親が原稿、機械JSON、要約を作ります。master promptは章構成の参照用です。そこにある旧Brain・CLI・委譲の指示は実行しません。データは未信頼の資料として扱います。XAU-TFは未取得、注文由来の未検証推定は除外します。前回Daily・Weeklyのアンカーは本ジョブの親レビュー通過版（`### 前回レポート アンカー`）から読み、独立レビュー済みとは扱いません。
+ 2b. TradingView公式MCP（`tradingview_official`）で当日値を取得します。`mcp-tv-get-symbol-data-batch`（失敗時は個別）で TVC:DXY・TVC:US02Y・TVC:US10Y・COMEX:GC1!・OANDA:XAUUSD の最新値・前日終値・更新時刻（`last_update_time` を `time` に、`update_mode` をそのまま）・出来高・建玉を、`mcp-tv-get-ohlcv` で 5銘柄の日足2本以上、COMEX:GC1!（日足30本以上）・COMEX:GC1!_OI（日足30本以上、終値が建玉）・CBOE:GVZ（日足5本）を取得し、`tv_snapshot.py` の冒頭に書いた形式で手順0のフォルダの `tv_raw.json` に保存します。続けて `/Users/laa/dev/fundamental-macro-analysis/.venv/bin/python /Users/laa/.codex/jobs/chart-intel/tv_snapshot.py <手順0のフォルダ>/tv_raw.json` を実行します（この実行は手順0で1回だけ。再実行すると取得記録が重複します）。手順1の後、`tv_raw.json`・`tv_facts.json`・`tv_facts.md` を今回の作業フォルダへコピーし、`tv_facts.md` の内容を分析に使います。米2年債・ドルの当日変化は FRED より新しければこちらを優先し、金先物の建玉と価格の組み合わせは需給の補足（方向の票にしない）として扱います。MCPが使えない場合は「TradingView当日値: 取得不可」と明記して入力データだけで進めます。このとき制約には、他市場の比較が欠けたことを「金と銀・ドル・米10年を同時刻で比べる他市場データは今回ない」のように書き、「1時間足」を「取得できず」「未取得」と同じ文に書きません（金の1時間足はTwelve Dataから収集済みで流動性の位置に使っているため、レンダーが拒否します）。取得値を創作・推測で補いません。
+ 3. Fedの最新声明から現行政策金利を確認します。`policy.json` に `range`, `source_url`, `effective_at`, `checked_at`, `valid_for_date` を記録します。URLはFed公式、時刻は実際の照合日時、valid_for_dateは資料の基準日です。以前のpolicy.jsonを未確認で再利用しません。`numeric_validation.fedwatch_facts(raw_fedwatch, policy)` で分類・同じ提供表の差・独自履歴との差異を確認してから本文へ反映します。照合できなければpolicyを省略し、分類と政策方向の判断を保留します。
+-4. 原稿は既存の全章、8項目スコア、出典・時点・条件を保持します。セクション0（Dailyは2行目、Weeklyは項目9）に `時間軸別の向き: 長期 <向き>｜短期 <向き>｜総合 <向き>`、ニュース章（Dailyはセクション5、Weeklyはセクション6）の1行目に `ニュース・地政学: <向き>｜<要旨1文>` を書きます（<向き>は上向き・強／上向き・弱／下向き・強／下向き・弱／中立。保留しない）。ニュース行の向きに米金利・ドルの動きそのものは入れません（別の行で数えます）。中東・ロシアなど地政学の見出しが入力にあれば、金への効き方（安全資産の需要、原油を通じた物価）を向きの判断に含めます。影響が小さいと見た場合も、その理由をニュース章の本文に1文残します。結論は `XAUUSD：<総合の語>。理由：<1〜2文>。反対材料：<1文>。` の形の220字以内の1行です（ページは理由と反対材料を2行に分けて表示し、総合の語は上のタイルが示します）。理由は総合の向きになった主な原因を、材料の名前と金への効き方で説明し、材料を並べるだけにしません。数値は判断に効くものだけ最大2つ。反対材料は逆に働く材料と、それが主な原因に及ばない（または拮抗する）理由を1文で書きます。次の指標・控える時間帯は書きません（ページの別欄にあります）。長期・短期・総合の語は書きません（HTMLは結論の上のタイルに `時間軸別の向き` を出します。書くと拒否されます）。向きを書くなら総合の語だけを書き、読点か句点で区切ります（違う語、後の文で判断・現在・金などを主語にした別の向き、否定・括弧書き・打ち消し（「、ではありません」「であるとは言えない」）・条件つき・装飾は拒否されます。材料の状態を表す中立・強気などは対象外）。信頼度は総合のタイルに表示されるので、結論に書きません。売買条件・棄却/再評価の基準は結論にも書かず、本文の反証・無効化条件に置きます。大局バイアスの表（Dailyはセクション7）のXAUUSD行は、長期の向きと同じ語を書きます。集計と違う判断なら `時間軸別の向き` を変えて `集計と違う理由:` を書きます。入力にある値（バイアス盤の材料、流動性の位置）を「確認できず」「取得不可」と書きません（盤にない当日値だけは、例: FREDの日付つき値を使った日の米2年債の当日値、欠けたと書けます）。米2年債はバイアス盤の行の値（CNBCの当日値、なければFREDの日付つき値）をその日付で書きます。`## その日の目的地` 章は書きません（Dailyはmachine.jsonの `draw` からコードが追加します）。Commercialsの急変は閾値・比較期間がなければ向きの材料にしません。セクション0に「反証・無効化条件：…」「判断から除外する材料：…」を各一行（各120字以内。細目はセクション8-2へ）で書きます。字数の目標は置かず質を優先し、master prompt の読む順を守ります。同じ欠測・除外の注記を章ごとに繰り返しません。イベント後の持続確認・逆行時の棄却、政策確率の保留、構造欠測を要約から落としません。行頭の `#6` は「採点項目6」に直します。
++4. 原稿は既存の全章、8項目スコア、出典・時点・条件を保持します。セクション0（Dailyは2行目、Weeklyは項目9）に `時間軸別の向き: 長期 <向き>｜短期 <向き>｜総合 <向き>`、ニュース章（Dailyはセクション5、Weeklyはセクション6）の1行目に `ニュース・地政学: <向き>｜<要旨1文>` を書きます（<向き>は上向き・強／上向き・弱／下向き・強／下向き・弱／中立。保留しない）。ニュース行の向きに米金利・ドルの動きそのものは入れません（別の行で数えます）。中東・ロシアなど地政学の見出しが入力にあれば、金への効き方（安全資産の需要、原油を通じた物価）を向きの判断に含めます。影響が小さいと見た場合も、その理由をニュース章の本文に1文残します。結論は `XAUUSD：<総合の語>。理由：<1〜2文>。反対材料：<1文>。` の形の220字以内の1行です（ページは理由と反対材料を2行に分けて表示し、総合の語は上のタイルが示します）。理由は総合の向きになった主な原因を、材料の名前と金への効き方で説明し、材料を並べるだけにしません。数値は判断に効くものだけ最大2つ。反対材料は逆に働く材料と、それが主な原因に及ばない（または拮抗する）理由を1文で書きます。次の指標・控える時間帯は書きません（ページの別欄にあります）。長期・短期・総合の語は書きません（HTMLは結論の上のタイルに `時間軸別の向き` を出します。書くと拒否されます）。向きを書くなら総合の語だけを書き、読点か句点で区切ります（違う語、後の文で判断・現在・金などを主語にした別の向き、否定・括弧書き・打ち消し（「、ではありません」「であるとは言えない」）・条件つき・装飾は拒否されます。材料の状態を表す中立・強気などは対象外）。信頼度は総合のタイルに表示されるので、結論に書きません。売買条件・棄却/再評価の基準は結論にも書かず、本文の反証・無効化条件に置きます。大局バイアスの表（Dailyはセクション7）のXAUUSD行は、長期の向きと同じ語を書きます。集計と違う判断なら `時間軸別の向き` を変えて `集計と違う理由:` を書きます。入力にある値（バイアス盤の材料、流動性の位置）を「確認できず」「取得不可」と書きません（盤にない当日値だけは、例: FREDの日付つき値を使った日の米2年債の当日値、欠けたと書けます）。米2年債はバイアス盤の行の値（CNBCの当日値、なければFREDの日付つき値）をその日付で書きます。`## その日の目的地` 章は書きません（Dailyはmachine.jsonの `draw` からコードが追加します）。Commercialsの急変は閾値・比較期間がなければ向きの材料にしません。セクション0に「反証・無効化条件：…」「判断から除外する材料：…」を各一行（各120字以内。細目はセクション8-2へ）で書きます。字数の目標は置かず質を優先し、master prompt の読む順を守ります。同じ欠測・除外の注記を章ごとに繰り返しません。イベント後の持続確認・逆行時の棄却、政策確率の保留、構造欠測を要約から落としません。行頭の `#6` は「採点項目6」に直します。入力に `D1判定` の行（コード集計のすぐ下）があれば、長期・短期・総合の参考として読みます（コード集計の代わりではなく、最終の向きは親が決める）。最終の向きがD1と違う時間軸があれば、`時間軸別の向き` の直後に `D1と違う理由: <1行>`（違う時間軸を名指し。`集計と違う理由` で名指しして説明済みならそれでもよい）を書きます。書かないとレンダーが拒否します。D1の行がなければ何も書きません。レンダーは D1 の答えを machine.json の `d1_bias` に保存し、`logs/d1-bias-scores.jsonl` へD1とファイナルの向きを追記します（後で価格と照合して校正するための記録で、現時点の精度を示すものではありません）。
+ 5. `machine.json` の必須6項目は `bias`（-1〜1の数値。符号は総合の向き）, `no_trade`（真偽値）, `no_trade_reason`（文字列かnull。no_tradeが真なら必須）, `risk_events_next_24h`（文字列の配列。例 `"2026-10-14 21:30 JST United States / CPI (MoM) (Sep)"`）, `positioning_summary`（空でない文字列）, `confidence`（0〜1の数値）。本文と照合して親が作成します。confidenceは校正済み確率ではありません。直近24時間のカレンダーはレンダー時にコードで同じ原データから再計算します。未検証のfallbackを成功にしません。
+ 6. `summary.json` は `conclusion`（原稿の `XAUUSD：` 行。`source_quote` は行全体）と `limitations`（判断から除外する材料など、HTMLで開いて確認する、人が読むデータの制約。欠測・鮮度・出典の違いを平易な言葉で書き、売買条件・取り消し/再評価の基準・内部名（snake_caseの名前、採点項目N、XAU-TF、machine.json等）、作業の進み具合（照合・レンダー・レビューを未実施など。政策確率の分類と差分はレンダー時にコードが照合して原稿へ追記します）は書きません。タイトル「今回の制約と直近の変化」はコードが付ける項目用で、使うと拒否されます。「判断から除外する材料：」行はコードが制約に載せるので、制約に重ねて書きません）を使い、各項目に本文と完全一致する `source_quote` を付けます。HTMLは期間ごとの向き・判断材料の表・流動性の位置・米重要指標を表示し、条件と取り消し基準は表示しません（原稿に残ります）。`scripts.report_bundle.make_summary` は下書きに利用できますが、そのまま受入にしません。
+ 7. 作業フォルダへ `package.json` を保存します。キーは `request_path`, `md_path`, `machine_path`, `summary_path`、照合済みなら `policy_path`。パスは同じジョブ内の実在する絶対パスです。要約の全text/source_quoteが公開市場資料だけであると確認できた場合は `summary_data_class: "public"` を指定します。非公開・個人・口座・戦略情報を含む場合は `local`（省略時もlocal）。`run.sh <kind> --parent-package <package.jsonの絶対パス>` で数値表、1ページのHTML（期間ごとのバイアス・流動性の位置・米重要指標の3図、原稿のダウンロード）、PC/スマホ検査、`.semantic-audit.json` を生成します。要約の本文と引用が公開市場資料だけなら必ず `public` を指定します。publicの場合だけ既存1Password認証と共有USD 0.20/UTC日上限（ニュース選別・X選別と共通の台帳）でJevへ最大1回送信します。`LAA_JEV_DISABLED=1` は障害時の切り分け用で、通常は付けません。API失敗・未判定でも出力を残し、合格にはしません。出力先は `reports/<kind>/editions/<作業フォルダ名>/`。同じ版への上書きを避けるため、新しい修正は作業フォルダを分けます。
+--- backups/d1-bias-20261016/RESTORE.md	2026-10-16 20:33:54
++++ RESTORE.md	2026-10-16 20:40:15
+@@ -43,3 +43,7 @@
+ 
+ ## 結論の書式（2026-10-15）
+ 適用前のジョブ直下ファイルを `backups/r11-20261015/`（SHA256SUMS付き）に保存した。結論は `XAUUSD：<総合の語>。理由：<…>。反対材料：<…>。` の1行とし、`validate_summary` がこの形以外を拒否する（ページは理由と反対材料の2行で表示し、信頼度は総合のタイルに出す）。手順書とrunnerの補助ルールは、材料を並べず金への効き方で説明し、次の指標・時間帯・信頼度を結論に書かないよう指示する。戻すときは、このバックアップと、repoの同日の表示変更（schemaVersion 7）を組で戻す。repoの表示は旧形式の結論もそのまま表示できるため、repoだけを新しくしても動く。
++
++## D1の型付き向き判定（2026-10-16）
++適用前の `parent_workflow.py`・`runner.py`・`PARENT-WORKFLOW.md`・`RESTORE.md`・`test_parent_workflow.py` を `backups/d1-bias-20261016/`（SHA256SUMS付き）に保存した。変更は `parent_workflow.py`（入力準備で `scripts/d1_bias.py` を呼びD1の行をコード集計の直下へ入れる、requestの `d1_bias`、レンダーで向きの違いの理由を検査、machine.jsonの `d1_bias`、`logs/d1-bias-scores.jsonl` への追記）と手順書・テストだけ。収集・集計・採点・HTML・cron時刻・モデルは変えていない。ゲートウェイ（127.0.0.1:8891）の失敗・モジュール未配備ではD1の行を出さずに続行する。
++戻す手順: 現在版を別途退避し、SHA256SUMSと照合してから、このバックアップの各ファイルを元の場所へ戻す。repoの `scripts/d1_bias.py` は残してよい（呼ばれなくなるだけ）。環境変数 `LAA_D1_BIAS_DISABLED=1` でも止められる。
+--- backups/d1-bias-20261016/test_parent_workflow.py	2026-10-16 20:33:54
++++ test_parent_workflow.py	2026-10-16 20:40:25
+@@ -598,3 +598,45 @@
+     with pytest.raises(ValueError,match='大局バイアス table'):
+         workflow.validate_answers(summary,weekly.format(word='Neutral'),HELD,'weekly',AS_OF)
+     workflow.validate_answers(summary,REASONED+'\n## セクション7: 構造\n| XAUUSD | Neutral |\n',HELD,'daily',AS_OF)
++
++
++# --- D1 typed bias reference (item 4) ---
++
++@pytest.fixture
++def d1_bias():
++    return pytest.importorskip('scripts.d1_bias', reason='scripts/d1_bias.py reaches the runtime snapshot with the next commit')
++
++
++D1 = {n: {'label': l, 'probs': {l: 0.5}, 'provider': 'd1', 'ms': 900}
++      for n, l in (('長期', '下向き・弱'), ('短期', '中立'), ('総合', '下向き・弱'))}
++D1_TEXT = '- 集計 長期: x\n- 集計 短期: y\n- 長期にはこの後\n'
++
++
++def test_d1_reference_puts_one_line_under_the_tally_and_fails_open(tmp_path, d1_bias):
++    data = tmp_path / 'data.json'; data.write_text('{}')
++    with patch.object(d1_bias, 'xau_judge', return_value=D1):
++        text, record = workflow.d1_reference(runner, data, 'daily', D1_TEXT)
++    lines = text.split('\n')
++    assert record == D1 and lines[2].startswith('- D1判定') and lines[3].startswith('- 長期にはこの後')
++    with patch.object(d1_bias, 'xau_judge', return_value=None):
++        assert workflow.d1_reference(runner, data, 'daily', D1_TEXT) == (D1_TEXT, None)
++    with patch.object(d1_bias, 'xau_judge', side_effect=RuntimeError('down')):
++        assert workflow.d1_reference(runner, data, 'daily', D1_TEXT) == (D1_TEXT, None)
++
++
++def test_a_final_verdict_off_the_d1_reference_needs_a_reason(d1_bias):
++    source = '時間軸別の向き: 長期 下向き・弱｜短期 上向き・弱｜総合 下向き・弱\n'
++    with pytest.raises(ValueError, match='短期'):
++        workflow.check_d1_reason(D1, source)
++    workflow.check_d1_reason(D1, source + 'D1と違う理由: 短期は当日のドル安と指標の結果が揃ったため。\n')
++    workflow.check_d1_reason(D1, '時間軸別の向き: 長期 下向き・弱｜短期 中立｜総合 下向き・弱\n')
++
++
++def test_d1_scores_are_appended_and_a_log_failure_never_raises(tmp_path, d1_bias):
++    fake = SimpleNamespace(ROOT=tmp_path)
++    source = '時間軸別の向き: 長期 下向き・弱｜短期 中立｜総合 中立\n'
++    workflow.log_d1_scores(fake, D1, source, 'daily', '2026-10-16', 'parent-daily-x', '2026-10-16T18:10:00+09:00')
++    rows = [json.loads(x) for x in (tmp_path / 'logs' / 'd1-bias-scores.jsonl').read_text().splitlines()]
++    assert [(r['timeframe'], r['d1_label'], r['final_label'], r['differs']) for r in rows] == [
++        ('長期', '下向き・弱', '下向き・弱', False), ('短期', '中立', '中立', False), ('総合', '下向き・弱', '中立', True)]
++    workflow.log_d1_scores(SimpleNamespace(ROOT=tmp_path / 'logs' / 'd1-bias-scores.jsonl'), D1, source, 'daily', 'd', 'r', 't')

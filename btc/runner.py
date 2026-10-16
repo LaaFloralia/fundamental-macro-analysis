@@ -67,7 +67,8 @@ SECRETS_WRAPPER = Path(os.environ.get('BTC_SECRETS_WRAPPER') or '/Users/laa/.con
 SANDBOX = Path('/usr/bin/sandbox-exec')
 # Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage,
 # btc.presentation -> scripts.offchart_dashboard (the page shared with XAU), btc.dashboard -> scripts.report_bundle.
-SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scripts/offchart_dashboard.py', 'scripts/report_bundle.py')
+SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scripts/offchart_dashboard.py', 'scripts/report_bundle.py',
+                  'scripts/d1_bias.py')
 SNAPSHOT_SUFFIXES = ('.py', '.json', '.md')
 STRIPPED_ENV = ('PYTHONPATH', 'PYTHONHOME', 'FRED_API_KEY', 'TWELVEDATA_API_KEY', 'OP_SERVICE_ACCOUNT_TOKEN',
                 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL', 'MYFXBOOK_EMAIL', 'MYFXBOOK_PASSWORD',
@@ -298,6 +299,8 @@ def run_entry(paths: Paths, args) -> int:
                     code = 124
                 if code == GUARD_EXIT:
                     entry['error_category'] = 'credential_env_present'
+                if code == 0 and not (args.parent_package or args.parent_review):
+                    entry['d1_bias'] = entry_d1(paths, args.mode)
             finally:
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 if staging is not None:
@@ -332,6 +335,18 @@ def finish_command(paths: Paths, mode: str, output: Path, started: str, tmpdir: 
     return sandbox_prefix(paths, tmpdir) + [
         str(paths.python), '-B', str(paths.worker), mode, '--finish-worker', '--root', str(paths.root),
         '--collect-output', str(output), '--session-started', started]
+
+
+def entry_d1(paths: Paths, mode: str) -> str:
+    """D1 typed bias reference outside the sandbox (the gateway token is unreadable inside). Never raises; a fixed
+    label (ok | skipped | unavailable | no_request) goes to the entry log and the run is otherwise unchanged."""
+    try:
+        spec = importlib.util.spec_from_file_location('btc_entry_d1_bias', paths.runtime / 'btc' / 'd1_bias.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.entry_reference(paths.root, mode, runtime=paths.runtime)
+    except Exception:  # noqa: BLE001 - fixed label
+        return 'unavailable'
 
 
 def entry_triage(paths: Paths, staging: Path) -> dict:

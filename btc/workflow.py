@@ -303,6 +303,12 @@ def render_package(job: Job, package_path, expected_mode: str | None, stages: St
         record['edition_path'] = str(edition_path)
         write_json(edition_path, {**record, 'symbol': SYMBOL})
         record_status(job, record)
+        hook = getattr(stages, 'after_render', None)
+        if hook is not None:
+            try:
+                hook(job.root, machine, target.name, current.isoformat())
+            except Exception:  # noqa: BLE001 - the scoring log never fails an edition
+                pass
         print(json.dumps({'status': record['status'], 'edition_path': str(edition_path), 'outputs': outputs},
                          ensure_ascii=False))
         return 0

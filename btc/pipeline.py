@@ -56,7 +56,17 @@ class BtcStages:
         return analysis.validate(parent, facts, edition_id=ctx.work_dir.name)
 
     def build_report(self, validated: dict, facts: dict, collection: dict, ctx: RunContext) -> ReportParts:
-        return report.build(validated, facts, collection, ctx)
+        parts = report.build(validated, facts, collection, ctx)
+        from btc import d1_bias
+        d1 = d1_bias.request_reference(ctx.work_dir)  # stored by the entry; None without D1 (fail-open)
+        if d1:
+            parts.machine_extensions['d1_bias'] = d1
+        return parts
+
+    def after_render(self, root: Path, machine: dict, run: str, at: str) -> None:
+        """Local scoring log for later calibration: D1 label/probabilities next to the final label."""
+        from btc import d1_bias
+        d1_bias.record_scores(root, machine.get('d1_bias'), machine, run=run, at=at)
 
     def validate_machine(self, machine: dict, parts: ReportParts) -> None:
         """machine.json schema (own validator, unknown keywords are errors) and MD decision block consistency."""
