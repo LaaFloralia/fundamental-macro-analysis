@@ -20,7 +20,9 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import stat
 import sys
+import tempfile
 
 CORE_RELATIVE = ('scripts', 'd1_bias.py')
 MAX_HEADLINES = 12
@@ -98,16 +100,46 @@ def btc_state(facts: dict, mode: str) -> dict | None:
 
 # ------------------------------------------------------------------ entry hook
 
+def _read_regular(path: Path) -> bytes:
+    """Bytes of a regular, single-link file owned by this user, opened without following symlinks.
+    The entry runs outside the sandbox on files the sandboxed worker can write, so every read and write
+    refuses links instead of trusting a path check made earlier."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+            raise PermissionError('not a private regular file')
+        chunks = []
+        while chunk := os.read(fd, 1 << 20):
+            chunks.append(chunk)
+        return b''.join(chunks)
+    finally:
+        os.close(fd)
+
+
 def _digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(_read_regular(path)).hexdigest()
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
-    temp = path.with_name(path.name + '.d1tmp')
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, 'wb') as stream:
-        stream.write(data)
-    os.replace(temp, path)
+    """Replace ``path`` through a fresh exclusive temp file in the same folder (never a predictable name)."""
+    folder = path.parent
+    info = os.lstat(folder)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise PermissionError('folder is not a directory')
+    if os.path.lexists(path) and stat.S_ISLNK(os.lstat(path).st_mode):
+        raise PermissionError('target is a symlink')
+    fd, temp = tempfile.mkstemp(dir=folder, prefix='.d1-', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
 
 
 def entry_reference(root: Path, mode: str, *, runtime: Path | None = None, decide=None) -> str:
@@ -115,18 +147,21 @@ def entry_reference(root: Path, mode: str, *, runtime: Path | None = None, decid
     ok | skipped | unavailable | no_request."""
     try:
         root = Path(root)
-        latest = json.loads((root / f'latest-{mode}.json').read_text(encoding='utf-8'))
+        latest = json.loads(_read_regular(root / f'latest-{mode}.json').decode('utf-8'))
         if latest.get('status') != 'awaiting_parent_authoring' or not latest.get('request_path'):
             return 'no_request'
-        request_path = Path(latest['request_path']).resolve()
+        raw_request = Path(latest['request_path'])
         work = (root / 'work').resolve()
-        if work not in request_path.parents or request_path.is_symlink():
+        if not raw_request.is_absolute() or raw_request.is_symlink() or raw_request.parent.is_symlink():
             return 'no_request'
-        request = json.loads(request_path.read_text(encoding='utf-8'))
+        request_path = raw_request.resolve()
+        if request_path != raw_request or work not in request_path.parents:
+            return 'no_request'
+        request = json.loads(_read_regular(request_path).decode('utf-8'))
         if request.get('d1_bias') or request.get('mode') != mode:
             return 'skipped'
         folder = request_path.parent
-        facts = json.loads((folder / Path(request['facts_path']).name).read_text(encoding='utf-8'))
+        facts = json.loads(_read_regular(folder / Path(request['facts_path']).name).decode('utf-8'))
         input_path = folder / Path(request['input_path']).name
         if _digest(input_path) != request['input_sha256']:
             return 'skipped'
@@ -138,7 +173,7 @@ def entry_reference(root: Path, mode: str, *, runtime: Path | None = None, decid
         line = core.format_line(d1, hint=HINT)
         if not line:
             return 'unavailable'
-        text = core.insert_line(input_path.read_text(encoding='utf-8'), line, anchors=('- coverage:',))
+        text = core.insert_line(_read_regular(input_path).decode('utf-8'), line, anchors=('- coverage:',))
         _write_atomic(input_path, text.encode('utf-8'))
         request['input_sha256'] = _digest(input_path)
         request['d1_bias'] = d1

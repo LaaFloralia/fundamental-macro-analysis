@@ -208,3 +208,26 @@ def test_render_package_writes_the_log_after_success_and_never_fails_on_it(tmp_p
 def test_final_label_follows_the_code_direction(status, direction, strength, expected):
     machine = {'btc': {'direction_status': status, 'candidate_direction': direction, 'direction_strength': strength}}
     assert d1_bias.final_labels(machine) == {'総合': expected}
+
+
+def test_entry_file_helpers_refuse_links(tmp_path):
+    import os
+    import pytest
+    from btc import d1_bias as entry
+    real = tmp_path / 'real.json'
+    real.write_text('{}', encoding='utf-8')
+    link = tmp_path / 'link.json'
+    link.symlink_to(real)
+    with pytest.raises(OSError):
+        entry._read_regular(link)
+    hard = tmp_path / 'hard.json'
+    os.link(real, hard)
+    with pytest.raises(PermissionError):
+        entry._read_regular(hard)
+    with pytest.raises(PermissionError):
+        entry._write_atomic(link, b'x')
+    assert real.read_text(encoding='utf-8') == '{}'
+    target = tmp_path / 'out.json'
+    entry._write_atomic(target, b'ok')
+    assert target.read_bytes() == b'ok'
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith('.d1-')]
