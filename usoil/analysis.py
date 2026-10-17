@@ -1,0 +1,396 @@
+"""Parent analysis JSON: input briefing, schema, validation and token expansion (design 8.2; P9).
+
+The parent writes interpretation and selection only. Quantities and times
+appear as ``{{fact:<fact_id>}}`` / ``{{event:<event_id>:start_at}}`` tokens and
+are expanded by code. Text is plain: markup characters (``< > [ ] ` |``),
+``javascript:`` and line breaks are rejected (A2: external and parent strings
+never become HTML, links or images in the Markdown).
+"""
+from __future__ import annotations
+
+from datetime import timedelta
+import json
+from pathlib import Path
+import re
+
+from usoil import carry
+from usoil.common import JST, parse_time
+from usoil.facts import fact_text
+from usoil.jsonschema_lite import validate as schema_validate
+from usoil.stages import AnalysisError
+from usoil.text import md_safe
+
+SCHEMA_PATH = Path(__file__).resolve().parent / 'schemas' / 'parent-analysis.schema.json'
+SCHEMA_VERSION = 'usoil-parent-analysis-1.0'
+TOKEN = re.compile(r'\{\{(fact|event):([a-z0-9_.:-]+?)(?::(start_at))?\}\}')
+ANY_TOKEN = re.compile(r'\{\{[^}]*\}\}')
+UNSAFE = re.compile(r'[<>\[\]`|\r\n\t\x00-\x08\x0b-\x1f\x7f]|javascript:|vbscript:|data:', re.I)
+DIGIT = re.compile(r'[0-9０-９]')
+# Fixed terms that contain digits but carry no market quantity.
+ALLOWED_TERMS = re.compile(r'8項目|[123]群|S&P\s?500|10年|2年|'
+                           r'[0-9０-９]{1,3}(?:日|時間|週|分|営業日|か月)')
+MAX_TEXT = 600
+RULES = {
+    'inventory_direction_flip': 'EIA単週・採用可能な4週累積の向きが変わる、または閾値を外れる',
+    'cot_crowding_clears': '候補方向のMM net/OI百分位と週次OI増加による混雑が解消する',
+    'macro_alignment_changes': 'DXYまたはFRED広義ドルと米10年実質金利の組合せが変わる',
+    'event_window_ends': '停止時間が終わり、新しいデータで再評価できる',
+    'source_recovers': '欠測していた情報源が回復する',
+    'named_level_reformed': '新しい閉バーで過去高安が変わる、または限月の比較条件が変わる',
+    'news_verification_changes': 'ニュースの一次本文確認が変わる（訂正・撤回を含む）',
+    'curve_flips': 'フロントと第2限月のスプレッドの判定が変わる',
+    'reference_price_fallback_enters': 'CNBC参照が欠測・古くなりYahoo終値フォールバックへ移る、または両方使えなくなる',
+}
+CLAIM_KINDS = ('fact_interpretation', 'hypothesis', 'limitation')
+UNUSABLE = ('missing', 'invalid', 'warming_up', 'terms_restricted', 'not_applicable')
+
+
+def schema() -> dict:
+    return json.loads(SCHEMA_PATH.read_text(encoding='utf-8'))
+
+
+def _event_index(facts: dict) -> dict:
+    return {e['id']: e for e in facts['state'].get('events', [])}
+
+
+def expand(text: str, facts_index: dict, events: dict) -> str:
+    def replace(match):
+        kind, ident, field = match.groups()
+        if kind == 'fact':
+            return fact_text(facts_index[ident])
+        return parse_time(events[ident]['start_at']).astimezone(JST).strftime('%Y-%m-%d %H:%M JST')
+    return TOKEN.sub(replace, text)
+
+
+def _check_claim(claim: dict, where: str, facts_index: dict, events: dict, problems: list) -> None:
+    text = claim['text']
+    if len(text) > MAX_TEXT:
+        problems.append(f'{where}: text_too_long')
+    if UNSAFE.search(text):
+        problems.append(f'{where}: markup_or_unsafe_characters')
+    tokens = TOKEN.findall(text)
+    stripped = TOKEN.sub(' ', text)
+    if ANY_TOKEN.search(stripped):
+        problems.append(f'{where}: malformed_token')
+    if DIGIT.search(ALLOWED_TERMS.sub(' ', stripped)):
+        problems.append(f'{where}: raw_number_outside_tokens')
+    ids = set(claim['fact_ids'])
+    for fact_id in claim['fact_ids']:
+        if fact_id not in facts_index:
+            problems.append(f'{where}: unknown_fact:{fact_id}')
+    for kind, ident, field in tokens:
+        if kind == 'fact':
+            if ident not in facts_index:
+                problems.append(f'{where}: unknown_fact_token:{ident}')
+            elif ident not in ids:
+                problems.append(f'{where}: token_fact_not_listed:{ident}')
+        elif ident not in events or field != 'start_at':
+            problems.append(f'{where}: unknown_event_token:{ident}')
+    if claim['claim_kind'] == 'fact_interpretation':
+        if not claim['fact_ids']:
+            problems.append(f'{where}: interpretation_without_facts')
+        unusable = [f for f in claim['fact_ids'] if f in facts_index and facts_index[f]['status'] in UNUSABLE]
+        if unusable:
+            # A missing / warming-up / restricted fact can only appear in a hypothesis or limitation.
+            problems.append(f'{where}: interpretation_of_unusable_fact:{unusable[0]}')
+
+
+def _claims(analysis: dict):
+    yield 'thesis', analysis['thesis']
+    for key in ('liquidity', 'positioning', 'bias'):
+        yield f'three_domains.{key}', analysis['three_domains'][key]
+    yield 'positioning_summary', analysis['positioning_summary']
+    for i, a in enumerate(analysis['news_assessments']):
+        yield f'news_assessments[{i}].interpretation', a['interpretation']
+    for i, s in enumerate(analysis['scenarios']):
+        yield f'scenarios[{i}].expected_effect', s['expected_effect']
+        yield f'scenarios[{i}].counter_case', s['counter_case']
+    yield 'destination_choice.rationale', analysis['destination_choice']['rationale']
+    yield 'destination_choice.counter_case', analysis['destination_choice']['counter_case']
+    for i, c in enumerate(analysis['counter_cases']):
+        yield f'counter_cases[{i}]', c
+    for i, r in enumerate(analysis['reevaluation_conditions']):
+        yield f'reevaluation_conditions[{i}].explanation', r['explanation']
+    for i, c in enumerate(analysis['limitations']):
+        yield f'limitations[{i}]', c
+
+
+def _norm(text: str) -> str:
+    return re.sub(r'\s+', ' ', str(text or '')).strip().lower()
+
+
+def validate(analysis: dict, facts: dict, *, edition_id: str) -> dict:
+    """Schema + semantic checks; returns the analysis with an ``expanded`` copy of every claim."""
+    problems = [f'schema: {e}' for e in schema_validate(analysis, schema())]
+    if problems:
+        raise AnalysisError(problems[:40])
+    facts_index = {f['fact_id']: f for f in facts['facts']}
+    events = _event_index(facts)
+    news = {n['id']: n for n in facts['state'].get('news', {}).get('items', [])}
+    known = {k['known_id'] for k in facts['state'].get('news', {}).get('carried') or []}
+    sources = {f['source_id'] for f in facts['facts'] if f['source_id'] != 'computed'}
+    if analysis['edition_id'] != edition_id:
+        problems.append('edition_id_mismatch')
+    if analysis['input_manifest_sha256'] != facts['input_manifest_sha256']:
+        problems.append('input_manifest_mismatch')
+    if analysis['requested_status'] == 'changes_requested':
+        problems.append('parent_requested_changes')
+        problems += [f'parent_issue:{i["code"]}' for i in analysis['issues']][:20]
+    elif analysis['issues']:
+        problems.append('issues_must_be_empty_when_ready')
+    for where, claim in _claims(analysis):
+        _check_claim(claim, where, facts_index, events, problems)
+    seen = set()
+    for i, a in enumerate(analysis['news_assessments']):
+        where = f'news_assessments[{i}]'
+        item = news.get(a['news_id'])
+        if item is None:
+            problems.append(f'{where}: unknown_news:{a["news_id"]}')
+            continue
+        if a['news_id'] in seen:
+            problems.append(f'{where}: duplicate_news')
+        seen.add(a['news_id'])
+        if a['event_cluster_id'] != item['event_cluster_id']:
+            problems.append(f'{where}: cluster_mismatch')
+        body_ok = (item.get('body') or {}).get('status') == 'retrieved'
+        if a['verification'] == 'primary_confirmed' and item['code_verification'] != 'primary_body_retrieved':
+            problems.append(f'{where}: primary_confirmed_without_official_body')
+        if a['verification'] == 'secondary_body_confirmed' and not body_ok:
+            problems.append(f'{where}: body_confirmed_without_body')
+        if a['importance'] in ('critical', 'high') and a['verification'] not in ('primary_confirmed', 'secondary_body_confirmed'):
+            problems.append(f'{where}: high_importance_requires_body_check')
+        if (a['verification'] in ('headline_only', 'disputed', 'retracted') and a['impact'] in ('supportive', 'adverse')
+                and a['interpretation']['claim_kind'] == 'fact_interpretation'):
+            # Headlines are unverified leads (P4): a direction may only be stated as a hypothesis.
+            problems.append(f'{where}: unverified_news_stated_as_fact')
+        source = ' '.join([item['title'], item.get('excerpt', ''), (item.get('body') or {}).get('excerpt', '')])
+        if not a['source_quote'].strip() or _norm(a['source_quote']) not in _norm(source):
+            problems.append(f'{where}: source_quote_not_in_retrieved_text')
+        if UNSAFE.search(a['source_quote']):
+            problems.append(f'{where}: source_quote_unsafe_characters')
+        for fact_id in a['fact_ids']:
+            if fact_id not in facts_index:
+                problems.append(f'{where}: unknown_fact:{fact_id}')
+        for known_id in a.get('known_event_ids') or []:
+            if known_id not in known:
+                problems.append(f'{where}: unknown_known_event:{known_id}')
+        if a.get('follow_up_new_facts') and not a.get('known_event_ids'):
+            problems.append(f'{where}: follow_up_requires_known_event_ids')
+        for source_id in a.get('affected_source_ids') or []:
+            if source_id not in sources:
+                problems.append(f'{where}: unknown_affected_source:{source_id}')
+        if a.get('affected_source_ids') and not (a['importance'] == 'critical' and a['impact'] in ('adverse', 'mixed')):
+            problems.append(f'{where}: affected_sources_only_for_critical_incident')
+    # R-04: a recovery must name a persisted open incident, a code-known news item and existing facts;
+    # freshness, official body and affected-source coverage are checked by the code (carry.recovery_problems).
+    open_incidents = {x['incident_id']: x for x in facts['state'].get('incidents', {}).get('open', [])}
+    seen_recovery = set()
+    for i, r in enumerate(analysis.get('incident_recoveries') or []):
+        where = f'incident_recoveries[{i}]'
+        incident = open_incidents.get(r['incident_id'])
+        if incident is None:
+            problems.append(f'{where}: unknown_open_incident:{r["incident_id"]}')
+            continue
+        if r['incident_id'] in seen_recovery:
+            problems.append(f'{where}: duplicate_incident')
+        seen_recovery.add(r['incident_id'])
+        if r['news_id'] not in news:
+            problems.append(f'{where}: unknown_news:{r["news_id"]}')
+            continue
+        unknown = [f for f in r['fact_ids'] if f not in facts_index]
+        problems += [f'{where}: unknown_fact:{f}' for f in unknown]
+        if not unknown:
+            problems += [f'{where}: {p}' for p in carry.recovery_problems(incident, r, facts)]
+    ids = set()
+    for i, s in enumerate(analysis['scenarios']):
+        if s['id'] in ids or not re.fullmatch(r'[a-z0-9_-]{1,40}', s['id']):
+            problems.append(f'scenarios[{i}]: invalid_or_duplicate_id')
+        ids.add(s['id'])
+        for rule in s['condition_rule_ids'] + s['invalidation_rule_ids']:
+            if rule not in RULES:
+                problems.append(f'scenarios[{i}]: unknown_rule:{rule}')
+        if not s['invalidation_rule_ids']:
+            problems.append(f'scenarios[{i}]: invalidation_required')
+        for fact_id in s['fact_ids']:
+            if fact_id not in facts_index:
+                problems.append(f'scenarios[{i}]: unknown_fact:{fact_id}')
+    for i, r in enumerate(analysis['reevaluation_conditions']):
+        if r['rule_id'] not in RULES:
+            problems.append(f'reevaluation_conditions[{i}]: unknown_rule:{r["rule_id"]}')
+        for fact_id in r['fact_ids']:
+            if fact_id not in facts_index:
+                problems.append(f'reevaluation_conditions[{i}]: unknown_fact:{fact_id}')
+    problems += destination_problems(analysis['destination_choice'], facts, facts_index)
+    if problems:
+        raise AnalysisError(problems[:60])
+    out = json.loads(json.dumps(analysis))
+    expanded = {}
+    for where, claim in _claims(analysis):
+        expanded[where] = expand(claim['text'], facts_index, events)
+    out['expanded'] = expanded
+    return out
+
+
+def destination_problems(choice: dict, facts: dict, facts_index: dict) -> list[str]:
+    problems = []
+    if (choice['side'] == 'none') != (choice['kind'] == 'none'):
+        problems.append('destination: side_and_kind_must_both_be_none_or_both_set')
+    for rule in choice['invalidation_rule_ids']:
+        if rule not in RULES:
+            problems.append(f'destination: unknown_rule:{rule}')
+    if choice['kind'] == 'none':
+        if choice['level_fact_ids']:
+            problems.append('destination: levels_without_kind')
+        return problems
+    if not choice['level_fact_ids']:
+        problems.append('destination: levels_required')
+    if not choice['invalidation_rule_ids']:
+        problems.append('destination: invalidation_required')
+    st = facts['state']
+    if st.get('levels', {}).get('comparison_status') != 'verified':
+        problems.append('destination: contract_comparison_unverified')
+    allowed = {x['fact_id'] for x in st.get('levels', {}).get('items', [])}
+    ref = facts_index.get(st.get('reference_price', {}).get('fact_id') or '')
+    for fact_id in choice['level_fact_ids']:
+        if fact_id not in allowed:
+            problems.append(f'destination: level_not_allowed_for_kind:{fact_id}')
+            continue
+        level = facts_index[fact_id]['value']
+        if ref is None or ref['value'] is None or level is None:
+            problems.append('destination: reference_price_or_level_missing')
+        elif (choice['side'] == 'up') != (level > ref['value']):
+            problems.append(f'destination: level_on_wrong_side:{fact_id}')
+    return problems
+
+
+def _table_row(*cells) -> str:
+    return '| ' + ' | '.join(md_safe(c) if c is not None else '—' for c in cells) + ' |'
+
+
+def briefing(facts: dict, preview: dict, *, edition_id: str, mode: str, session_slot: str,
+             previous: list | None = None) -> str:
+    """analysis-input.md: what the parent reads before writing the analysis JSON."""
+    st = facts['state']
+    lines = [
+        '# USOIL チャート外分析 親の入力資料', '',
+        f'- edition_id: {edition_id}',
+        f'- input_manifest_sha256: {facts["input_manifest_sha256"]}',
+        f'- mode / session_slot: {mode} / {session_slot}',
+        f'- as_of: {facts["as_of"]}（{parse_time(facts["as_of"]).astimezone(JST).strftime("%Y-%m-%d %H:%M JST")}）',
+        '', '## 書き方（コードが検査する）', '',
+        '- 親が書くのは解釈と選択だけ。数値・時刻・合計・百分位・閾値はコードが持つ。',
+        '- 数値は {{fact:<fact_id>}}、イベント時刻は {{event:<event_id>:start_at}} で書く。トークン外の数字は拒否'
+        '（例外: 8項目・1〜3群・S&P 500・2年・10年・期間表現の日/時間/週/分/営業日）。',
+        '- 使ったトークンの fact_id は同じ claim の fact_ids に列挙する。fact_interpretation は fact_ids が1件以上必要。',
+        '- 文字 < > [ ] ` | と改行・javascript: は使わない（HTML・リンク・画像・表として解釈させないため）。',
+        '- news_assessments は下表の news_id だけ。primary_confirmed は「公式の本文取得済み」、secondary_body_confirmed は'
+        '「本文取得済み」の項目だけ。high/critical は本文確認が必要。source_quote は見出しか抜粋の原文の一部。',
+        '- oil_specific_event 群に数えるのは、一次本文確認済み・high/critical・supportive/adverse・期間内の項目だけ（コードが判定）。',
+        '- destination_choice は既存の過去高安・ラウンド参考水準（named_level_price）の fact だけ。'
+        'comparison_status=verified までは side/kind=none が必須（限月比較未確認を文章では解除できない）。'
+        'なければ side/kind とも none。価格を新しく書かない。',
+        '- scenarios・counter_cases・reevaluation_conditions・limitations は各1件以上。rule_id は下の一覧から選ぶ。',
+        '- 不一致を見つけたら requested_status=changes_requested と issues を書く（facts は直さない）。', '',
+        '## rule_id 一覧', '',
+    ]
+    lines += [f'- {k}: {v}' for k, v in RULES.items()]
+    lines += ['', '## コードの判定（oil_specific_event は親の選択前の仮表示）', '']
+    for key, g in preview['groups'].items():
+        lines.append(f'- {key}: {g["state"]}（{g["reason_code"]}）')
+    lines += [f'- direction: {preview["direction_status"]} / {preview["candidate_direction"]} / 確度 {preview["direction_strength"]}',
+              f'- score: {preview["total"]}点 / band {preview["band"]} / confidence {preview["confidence"]}',
+              f'- trade_gate: {preview["trade_gate"]["status"]} {preview["trade_gate"]["reason_codes"]}',
+              f'- coverage: {preview["coverage_present"]}/8 {preview["bundles"]}', '']
+    for item in preview['items']:
+        lines.append(f'  - {item["key"]}: {item["points"]}（{item["status"]}・{item["reason_code"]}）')
+    lines += ['', '## イベント（event_id）', '', '| event_id | 名称 | 開始 | 重要度 | 状態 | 停止時間 |', '|---|---|---|---|---|---|']
+    for e in st.get('events', []):
+        window = e.get('stop_window')
+        lines.append(_table_row(e['id'], e['name'], parse_time(e['start_at']).astimezone(JST).strftime('%Y-%m-%d %H:%M JST'),
+                                e['importance'], e['status'],
+                                f'{parse_time(window["start_at"]).astimezone(JST).strftime("%H:%M")}〜'
+                                f'{parse_time(window["end_at"]).astimezone(JST).strftime("%H:%M")} JST' if window else None))
+    unresolved = st.get('news', {}).get('opec_schedule_unconfirmed') or []
+    if unresolved:
+        lines += ['', '## OPEC予定の未確認事項（limitationsへ残す）', '',
+                  '- 会合予定を検知したが、明示日付・時刻・タイムゾーンを確認できない項目は停止窓を作らない。'
+                  '公表時刻を会合時刻に代用しない。構造化または親確認済みの予定が必要。']
+        for item in unresolved:
+            lines.append(f'- {md_safe(item["news_id"])}: {md_safe(item["title"])}（{item["reason"]}）')
+    lines += ['', '## ニュース（news_id）', '',
+              '| news_id | cluster | 配信元 | 公表 | コード確認 | 見出し | 抜粋 |', '|---|---|---|---|---|---|---|']
+    for n in st.get('news', {}).get('items', []):
+        excerpt = (n.get('body') or {}).get('excerpt') or n.get('excerpt', '')
+        lines.append(_table_row(n['id'], n['event_cluster_id'], n['publisher'],
+                                parse_time(n['published_at']).astimezone(JST).strftime('%m-%d %H:%M JST'),
+                                n['code_verification'], n['title'], excerpt[:200]))
+    shown_since = parse_time(facts['as_of']) - timedelta(days=carry.BRIEFING_DAYS)
+    carried = [k for k in st.get('news', {}).get('carried') or [] if parse_time(k['first_known_at']) >= shown_since]
+    lines += ['', '## 既知イベント（known_event_ids・採用済みの版で評価済み）', '',
+              '- 同じイベントの再報道（URL違い・見出し更新を含む）は known_event_ids にこの known_id を書く。'
+              'コードは初出時刻から期間を数え、再報道で加点期間を延ばさない。',
+              f'- 表は直近{carry.BRIEFING_DAYS}日に初出のものだけ。コードは{carry.KNOWN_RETENTION_DAYS}日以内の既知イベントすべてと照合する'
+              '（同じURL・本文の再報道は日数がたっても加点しない）。',
+              '- 新しい一次事実を伴う続報だけ follow_up_new_facts=true（コードは新しい一次本文と初出後の公表も確認する）。'
+              '採用された続報は別の known_id になり、その公表時刻から期間を数える。', '']
+    if carried:
+        lines += ['| known_id | 初出 | 採用版 | 見出し |', '|---|---|---|---|']
+        for k in carried:
+            lines.append(_table_row(k['known_id'], parse_time(k['first_known_at']).astimezone(JST).strftime('%m-%d %H:%M JST'),
+                                    f'{k["mode"]} {k["edition_id"]}', k['title']))
+    else:
+        lines.append('- なし')
+    incidents = st.get('incidents', {}).get('open') or []
+    lines += ['', '## 未解決の重大障害（incident_recoveries）', '',
+              '- 前の採用版から継続中。解除は incident_recoveries に incident_id・公式復旧の news_id（一次本文取得済み・'
+              '障害より後の公表）・fact_ids（affected_source_ids の各 source を、復旧告知の公表より後に取引所で観測したもの。'
+              '日付だけの値は数えない）を書いたときだけ。影響sourceが指定なしの障害は親では解除できない。', '']
+    if incidents:
+        lines += ['| incident_id | 公表 | 影響source | 見出し |', '|---|---|---|---|']
+        for inc in incidents:
+            lines.append(_table_row(inc['incident_id'], parse_time(inc['published_at']).astimezone(JST).strftime('%m-%d %H:%M JST'),
+                                    '、'.join(inc.get('affected_source_ids') or []) or '（指定なし: 親では解除できない）',
+                                    inc.get('title') or ''))
+    else:
+        lines.append('- なし')
+    released = st.get('incidents', {}).get('recently_released') or []
+    lines += ['', '## 手動解除された障害（直近14日・参考）', '',
+              '- 社長指示として記録された手動解除。記録者の表示は実行者の申告で、認証ではない。'
+              '同じ公表（見出し・URL・公表時刻が同じ）の障害は再び開かない。公表時刻が違えば新しい障害として扱う。'
+              '解除は解除時刻より後の版から反映する。', '']
+    if released:
+        lines += ['| incident_id | 解除 | 理由 | 記録者 | 見出し |', '|---|---|---|---|---|']
+        for r in released:
+            lines.append(_table_row(r['incident_id'], parse_time(r['released_at']).astimezone(JST).strftime('%m-%d %H:%M JST'),
+                                    r.get('release_reason') or '', r.get('released_by') or '', r.get('title') or ''))
+    else:
+        lines.append('- なし')
+    lines += ['', '## 目的地の候補（level_fact_ids）', '']
+    for level in st.get('levels', {}).get('items', []):
+        lines.append(f'- named_level_price: {level["fact_id"]}（{level["name"]}・{level["state_word"]}）')
+    if previous:
+        lines += ['', '## 前回版', '']
+        for p in previous:
+            lines.append(f'- {p.get("collected_at")} {p.get("session_slot")}: {p.get("md_path")}')
+    lines += ['', '## ファクト一覧', '', '| fact_id | 表示 | status | 時点 | source |', '|---|---|---|---|---|']
+    for f in facts['facts']:
+        when = f['observed_at'] or f['observation_date'] or f['period_end'] or f['retrieved_at']
+        lines.append(_table_row(f['fact_id'], f['display'], f['status'], when, f['source_id']))
+    lines += ['', '## JSON の骨組み', '', '```json', json.dumps(skeleton(edition_id, facts), ensure_ascii=False, indent=1), '```', '']
+    return '\n'.join(lines)
+
+
+def skeleton(edition_id: str, facts: dict) -> dict:
+    ref = facts['state'].get('reference_price', {}).get('fact_id')
+    claim = {'text': '…{{fact:' + (ref or 'FACT_ID') + '}}…', 'fact_ids': [ref] if ref else [], 'claim_kind': 'fact_interpretation'}
+    return {'schema_version': SCHEMA_VERSION, 'edition_id': edition_id,
+            'input_manifest_sha256': facts['input_manifest_sha256'], 'requested_status': 'ready_for_validation',
+            'thesis': claim, 'three_domains': {'liquidity': claim, 'positioning': claim, 'bias': claim},
+            'positioning_summary': claim, 'news_assessments': [],
+            'scenarios': [{'id': 'base', 'condition_rule_ids': ['inventory_direction_flip'], 'fact_ids': [],
+                           'expected_effect': claim, 'counter_case': claim, 'invalidation_rule_ids': ['event_window_ends']}],
+            'destination_choice': {'side': 'none', 'kind': 'none', 'level_fact_ids': [], 'rationale': claim,
+                                   'counter_case': claim, 'invalidation_rule_ids': []},
+            'counter_cases': [claim], 'reevaluation_conditions': [{'rule_id': 'source_recovers', 'fact_ids': [],
+                                                                   'explanation': claim}],
+            'limitations': [{'text': '…', 'fact_ids': [], 'claim_kind': 'limitation'}], 'issues': []}

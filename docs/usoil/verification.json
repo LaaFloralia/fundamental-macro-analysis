@@ -1,0 +1,333 @@
+{
+  "schema_version": "usoil-verification-1.0",
+  "date_jst": "2026-10-17",
+  "baseline_revision": "33e8537df8d034cf8bc6dfa6eb9bfd732a0d6c04",
+  "policy_version": "usoil-offchart-1.0",
+  "parent_model": "gpt-6.1-sol",
+  "parent_effort": "xhigh",
+  "scope": {
+    "added_roots": [
+      "usoil",
+      "tests/usoil",
+      "docs/usoil"
+    ],
+    "existing_btc_and_xau_changed": false
+  },
+  "tests": {
+    "baseline_passed": 1306,
+    "final_passed": 1797,
+    "final_seconds": 134.24,
+    "full_log_sha256": "118847587f350b074e95e5a1bfb1d5ccb17a157fefa71db95acf785673027d14",
+    "earlier_full_run": {
+      "passed": 1791,
+      "failed": 2,
+      "failures_retained": true,
+      "causes": [
+        "copied crypto headline fixture",
+        "disabled triage reason not persisted"
+      ]
+    },
+    "shell_syntax": "passed",
+    "runner_installer_help": "passed",
+    "staged_diff_check": "passed"
+  },
+  "live": {
+    "mode": "daily",
+    "as_of": "2026-10-17T01:12:49.862670Z",
+    "source_status": {
+      "yahoo_ohlc": "ok",
+      "cftc_cot": "ok",
+      "eia_wpsr": "ok",
+      "fred": "ok",
+      "forexfactory_week": "ok",
+      "fed_calendar": "ok",
+      "bea_calendar": "ok",
+      "news": "ok",
+      "cnbc_quotes": "ok",
+      "cboe_ovx": "ok"
+    },
+    "generation_status": "succeeded_local",
+    "review_status": "parent_passed",
+    "artifact_hashes": {
+      "md_path": "adb3fa49d0c79e113ca6e6d8811245fbbfca80c9784a0e4e74f0993b3d70979d",
+      "html_path": "5d4d262c6e0ac7d0545275af5b6e4cd015997c5ec37812df659a41657bcd0cf7",
+      "json_path": "9b09172031f0b73434528c334fc91c6c370a79f2f6c592758139185fa503bba2",
+      "facts_path": "efed6fbcc339968ff1d77eed39e14019de9c0453c4ba3b92f9b0fec8dc72ced3",
+      "data_path": "5d7d8c88ed72bd3bbf2c76bb1152e895570439c6b11b3cadb0bd9c651cc70c26",
+      "bundle_path": "010bdab14a640fa1ec1d8427d0524a48697bb0bdbc6662ad2b85aebea7b92d1d",
+      "parent_review_path": "d9f2d5043d29eb063fa664d8dfb1a7989bfaa60af0aa99c516cea5101a87be3f"
+    },
+    "browser": {
+      "status": "passed",
+      "widths": [
+        1365,
+        1800,
+        390
+      ],
+      "images": 51
+    },
+    "parent_checks": {
+      "facts_match_sources": {
+        "passed": true,
+        "evidence": "保存dataから参照価格、在庫差、限月差2本、COT比率/百分位、OVX変化を親と別Agentが照合。future/欠測/鮮度を保持。"
+      },
+      "numbers_and_units": {
+        "passed": true,
+        "evidence": "最終PC/mobile実画像でUSD/bbl、M bbl、枚、比率、百分位、金利/OASの%とbpを確認。全bindingが通る。"
+      },
+      "summary_preserves_conditions": {
+        "passed": true,
+        "evidence": "見送り、方向が弱いこと、マクロ/OVXの古さ、限月比較未確認、一次確認なしの報道を加点しない条件を本文と概要で確認。"
+      },
+      "no_unverified_trading_claims": {
+        "passed": true,
+        "evidence": "research_only true/execution_enabled false、目的地none。未比較目的地の機械拒否、日足のみの定着断定防止も独立再現済み。"
+      },
+      "desktop_readable": {
+        "passed": true,
+        "evidence": "1365/1800幅の概要・PC全4図・desktop-page-02を実画像確認。overflow/viewport逸脱/欠落文字0。"
+      },
+      "mobile_readable": {
+        "passed": true,
+        "evidence": "390幅の概要・全4図・mobile-page-02/mobile-open-02を実画像確認。横溢れなし。物理iPhoneは未確認。"
+      },
+      "figures_meaning_and_labels": {
+        "passed": true,
+        "evidence": "製品は参考、採点対象の原油在庫だけ上向き、限月第2-3差+1.78%、欠測/古い値/限月未確認の注記を確認。"
+      },
+      "no_content_loss": {
+        "passed": true,
+        "evidence": "MDと埋込原稿の一致、要約/図引用、全数値binding、3幅全表示テキスト検査、51画像hash検査が通る。"
+      }
+    },
+    "archive_path": "/Users/laa/dev/fundamental-macro-analysis/output/usoil-verification-20261017",
+    "archive_index_sha256": "d8c9979f918f88e733d4e503fe2f9204f601a637ef064fa60504c2a0d6f2afa2"
+  },
+  "independent_review": {
+    "separate_agent": true,
+    "model": "gpt-6.1-sol",
+    "effort": "xhigh",
+    "checks_passed": true,
+    "record_sha256": "6f89d7121129862afc8f65d8cd7e2f1592e673eb6abeb3cf3eff30773513004c",
+    "closed_findings": [
+      "COT identity missing/mixed",
+      "EIA nonfinite/partial/inconsistent stock cells",
+      "CNBC derived float overflow",
+      "OVX missing/naive/future time and overflow",
+      "malformed relevant FF events mislabelled complete",
+      "OPEC explicit schedule wiring",
+      "unverified contract comparison allowed a destination",
+      "daily close asserted hours of acceptance",
+      "product inventory direction / curve key / percent units / OVX weekly time",
+      "disabled triage persistence and symlinked staging/ancestor write"
+    ]
+  },
+  "credential_boundary": {
+    "restored_exclusions": [
+      "TWELVEDATA",
+      "MYFXBOOK",
+      "SUPABASE",
+      "OP_*"
+    ],
+    "synthetic_env_and_path_tests": "passed",
+    "live_secret_leak": "not_observed",
+    "credential_collection": "existing FRED op reference only"
+  },
+  "authority": {
+    "production_install": false,
+    "schedule_enabled": false,
+    "journal_dot_hp_connected": false,
+    "external_publication": false,
+    "execution_enabled": false,
+    "new_api_billing": false,
+    "auxiliary_models_default": "off",
+    "inventory_adopted": "standby"
+  },
+  "unconfirmed": [
+    "weekly live run",
+    "physical iPhone",
+    "scheduled continuity",
+    "calibrated profitability",
+    "exact CME holiday/session calendar",
+    "Yahoo/CNBC contract comparability",
+    "new D1 purpose/production integration"
+  ],
+  "source_files": [
+    {
+      "path": "usoil/fetch.py",
+      "sha256": "15ea7d2bc37a73ce7fb3d77397ab984cbaa76f2f3a1e309ee6ddd1bb6ad50d9f"
+    },
+    {
+      "path": "usoil/bundle.py",
+      "sha256": "a6c75e1c965672eddf341803a8adefa9d9d05f9a7a716aaf6e048b786eeaf421"
+    },
+    {
+      "path": "usoil/facts.py",
+      "sha256": "c27b220a638326c27304377849ee539ac9c1c15d5ab9dcb853cd35e4506a260d"
+    },
+    {
+      "path": "usoil/carry.py",
+      "sha256": "9494b93ad0b36450df4537077b064d227e55dcd165db7c6bfa0f53358ca650ca"
+    },
+    {
+      "path": "usoil/collect.py",
+      "sha256": "4d96da55397e5ef26f0b3100be2c382339a464189f7def685f57be9f94a8fec2"
+    },
+    {
+      "path": "usoil/runner.py",
+      "sha256": "13fda98ce57fe23542e7d421732d23e1d98e6b9456c82804ad48fb5d54a879aa"
+    },
+    {
+      "path": "usoil/analysis.py",
+      "sha256": "839658eaa28bfe9a2cb2fdc1d76e9f9cf9ffb2483640a22faf305160c0952995"
+    },
+    {
+      "path": "usoil/headline_triage.py",
+      "sha256": "095dbad4af78a101b194ec232c80abdd3184e75fab6e3245445af4dfd4078b60"
+    },
+    {
+      "path": "usoil/install_job.py",
+      "sha256": "711275b374f55dbe6fb1f889529e8e75d80a5102b2674a72a98d850f7c2654c6"
+    },
+    {
+      "path": "usoil/secrets.env.tpl",
+      "sha256": "3627d4d8d0c14d41feb739f0e63f47c5ee05deccae9474508235ad9092f022d0"
+    },
+    {
+      "path": "usoil/scoring.py",
+      "sha256": "9c4a887c419da97603c5085bf9c757c2eb5e913ea2c00abb70856c755f654548"
+    },
+    {
+      "path": "usoil/acceptance.py",
+      "sha256": "f1fbdc9b8f38ca9c480c1a629317ab761214bfa71d358f71d0606e794e1fc648"
+    },
+    {
+      "path": "usoil/d1_bias.py",
+      "sha256": "7a5d17b5bbfdac3a73a405e918f38aa905eaed5af4d17a301c8b7512d8e627ad"
+    },
+    {
+      "path": "usoil/__init__.py",
+      "sha256": "e62ce1738e7258e4bebe0254174b05030268f62a6f0b2cbe3b4e8786a4a0c033"
+    },
+    {
+      "path": "usoil/review.py",
+      "sha256": "19755449c9c400a4c122e82fbebed8aadcb5eab72b7f52a37d3d819f230657c4"
+    },
+    {
+      "path": "usoil/stages.py",
+      "sha256": "e4e6c36e89d0e79dfc3180e76622f047b2bb7474c5cf45bf66a89d9bbad1f5dd"
+    },
+    {
+      "path": "usoil/dashboard.py",
+      "sha256": "769d9a992559fe79693027e20b6c2b07ea71a397670ae324b41fc8ab94e1f1af"
+    },
+    {
+      "path": "usoil/machine.py",
+      "sha256": "d76dedee74f128d15d3cce713f6bb7df9e83b244e1f27be11e41d90ccdeb8689"
+    },
+    {
+      "path": "usoil/presentation.py",
+      "sha256": "9fa400c2356c27cc9b6b762a9a7bd87062a5739e808b1ac9b8f83dc71e088461"
+    },
+    {
+      "path": "usoil/common.py",
+      "sha256": "c4509cf850a410e60e4141922b4310cc4c5bb3108c805fbbea0b8c6c94a31dea"
+    },
+    {
+      "path": "usoil/pipeline.py",
+      "sha256": "d867f5492b9af9657a158375f09e6375b68ad76534bdebc211e6a65bcbcee968"
+    },
+    {
+      "path": "usoil/text.py",
+      "sha256": "9d15bea514acdc60374a2ba628d2a0d5491209234849b35c3ed8536a07e7f185"
+    },
+    {
+      "path": "usoil/workflow.py",
+      "sha256": "4ee06494b9cda80c9fffc23e60426643619b98e439f4431a326451ee1141c825"
+    },
+    {
+      "path": "usoil/jsonschema_lite.py",
+      "sha256": "306672dfd4c6f4bc2b43f201a6d0ce918232fbae54d67084fe9ce6919d7e5c8b"
+    },
+    {
+      "path": "usoil/levels.py",
+      "sha256": "634bc605420f21919c00f1627258b52c28b535830261fa78344323529ec6f803"
+    },
+    {
+      "path": "usoil/us_calendar.py",
+      "sha256": "079cbdd70b484fdb39f92ae9a74b137cfb4db3b8c5174d265cd9d1884095d890"
+    },
+    {
+      "path": "usoil/news.py",
+      "sha256": "baf4d8d92f95ec8c1cda5b77dd4a712e4102e685477d9431ce5657178c93d871"
+    },
+    {
+      "path": "usoil/report.py",
+      "sha256": "a941df0c8fdab654c7632b9bb64e2184b2472ea558f20f91a800e8fee46948c7"
+    },
+    {
+      "path": "usoil/history.py",
+      "sha256": "d0ad0dd7fce8f0c76d31a91268a9b2f585c5282ee61027521beef06a87408ca0"
+    },
+    {
+      "path": "usoil/schemas/facts.schema.json",
+      "sha256": "497b7ea27997ce4ce96a777436a133f9157feebd3bb1a7c004b3114f83d0ac92"
+    },
+    {
+      "path": "usoil/schemas/parent-analysis.schema.json",
+      "sha256": "7a9df0b042b2f88cad7e598cc952ba183a5a968bb017285e555022ab9acc8bc3"
+    },
+    {
+      "path": "usoil/schemas/machine.schema.json",
+      "sha256": "8f07c26e3c6222e96e64cfe2cfbcde42dbd17e308e116b09bc7d8a84bfd7cc03"
+    },
+    {
+      "path": "usoil/job_template/boundary.sb",
+      "sha256": "ef65babfcd3508e5f5a38e786029eb263c68c60537266b593934bd7cf80a2d42"
+    },
+    {
+      "path": "usoil/job_template/run.sh",
+      "sha256": "d6defa44bf0123fd122cad807de431d118a0e6c19f76eb376ff766ac998f3569"
+    },
+    {
+      "path": "usoil/job_template/PARENT-WORKFLOW.md",
+      "sha256": "fbcae5da66df985753e585ddcc87749621b71a5b211c396f282051bfccb8dfc4"
+    },
+    {
+      "path": "usoil/sources/market.py",
+      "sha256": "90d205c8d7bf37fb7e9f877935e8d83a71be1ed83c67276398131096b5170b95"
+    },
+    {
+      "path": "usoil/sources/__init__.py",
+      "sha256": "a7bc1494fa9be6e15bbac4b7dab1546a25c9dbc8ef657ca38c2c337c7f604372"
+    },
+    {
+      "path": "usoil/sources/eia.py",
+      "sha256": "abc10a4aa150e3924a60c49a5b6efada4daa7fff169b44f92b233f2083424254"
+    },
+    {
+      "path": "usoil/sources/calendar.py",
+      "sha256": "5c8ec94901f4c97e789bf36a592c3ba1fd1e7b5056bfd978d34cd984c224cc2f"
+    },
+    {
+      "path": "usoil/sources/vol.py",
+      "sha256": "4a93a06dd8edf6874d7884ea2528bd29c6be1462ff1de52a2cca62d50efbc3c8"
+    },
+    {
+      "path": "usoil/sources/cot.py",
+      "sha256": "805ae305a7f1ef426629094592902a3b3a6692ba29be228007aa1ede5ccc5f5f"
+    },
+    {
+      "path": "usoil/sources/base.py",
+      "sha256": "c6d5c07c37bf914f7240924a4a791b7c0717d00c4af1d4ea1e19e0b2aefdc807"
+    },
+    {
+      "path": "usoil/sources/macro.py",
+      "sha256": "1fd23915db4a72892a5ec42ca7bc0ae46c0bdc50e8d3ff5b9a7732c962f06160"
+    },
+    {
+      "path": "usoil/data/official_calendar_cache.json",
+      "sha256": "704ae054dbfca5036de434f206ed066d172a77fe072911f8cdc284e6e9c0bff8"
+    }
+  ]
+}
