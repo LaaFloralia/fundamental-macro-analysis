@@ -1233,7 +1233,7 @@ def liquidity_figure(data, stamp, mode, source=None):
                           icon='┄', distance_text=away(mo), value=mo))
         bindings.append({'figure': 'liquidity', 'label': 'NY 0時の始値', 'path': 'xau_levels.midnight_open',
                          'value': number(mo), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc')})
-    # Where retail positions sit: the average entries and the Order Book clusters (in the map, or below it when far).
+    # Where retail positions sit: the observed average entries (in the map, or below it when far).
     for build in (_retail_entries,):
         rows_in, binds, gaps, *told = build(data, stamp, price, away, far)
         items.extend(rows_in)
@@ -1270,7 +1270,7 @@ def liquidity_figure(data, stamp, mode, source=None):
         rows.append(f'流動性｜{band["label"]}: {fmt(band["lower"])}〜{fmt(band["upper"])}'
                     f'（GVZ {liq.get("gvz")}・{liq.get("gvz_as_of")}）')
     last_bar = _bar_span(lv.get('last_bar_utc'))
-    legend = ('名前付きの高値・安値と個人の注文・建玉の位置を価格順（上ほど高い価格）に並べています。価格の右の縦線は現在値より上が赤、下が緑で、'
+    legend = ('名前付きの高値・安値と個人の平均建値を価格順（上ほど高い価格）に並べています。価格の右の縦線は現在値より上が赤、下が緑で、'
               '濃い行が現在値です（画面を動かしても上端か下端に残ります）。価格の下の「差」は現在値との差（ドル）です。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
               '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
               '↗↘抜けたまま（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
@@ -1285,8 +1285,8 @@ def liquidity_figure(data, stamp, mode, source=None):
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
                '翌取引日の終わりまで表示します。') +
               'NY 0時の始値は当日の参考値で、判定には使いません。'
-              '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、「個人62%ロング」は個人の建玉に占めるロングの割合、'
-              '平均建値と比率は観測値です。損益推定と未検証の注文・建玉価格帯は表示から除外しています。'
+              '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、「個人62%ロング」は個人の建玉に占めるロングの割合です。'
+              '平均建値と比率は観測値です。損益の推定と未検証の注文・建玉価格帯は表示から除外しています。'
               f'平均建値は取得から{QUOTE_MAX_HOURS}時間以内、帯のGVZは観測日が{GVZ_MAX_AGE_DAYS}日以内のときだけ出し、'
               '古い・欠けているときは理由を図の下と制約に書きます。'
               'Order Block・FVGはチャートで判断する領域のため載せていません。'
