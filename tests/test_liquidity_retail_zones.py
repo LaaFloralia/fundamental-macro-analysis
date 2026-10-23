@@ -1,10 +1,4 @@
-"""Where retail positions sit on the liquidity map (r10): the average entries and the MyFXBook Order Book clusters.
-
-Contract: every row is rebuilt from the collection JSON alone (check_regenerated), every shown string is in its
-quoted appendix row (offchart_dashboard.validate), and clusters from an earlier collection are used only when at
-most three calendar days old, with their date and time. Real inputs: the 2026-10-14 18:00 Daily collection
-(Order Book fetch failed) and the 2026-10-13 09:00 collection (clusters fetched).
-"""
+"""Retail observations stay visible; unverified order zones and inferred P/L are excluded."""
 from copy import deepcopy
 from datetime import datetime
 import json
@@ -51,35 +45,8 @@ def edition(data, source, mode='daily'):
 
 # ------------------------------------------------------------------ this collection's clusters
 
-def test_fetched_clusters_are_zone_rows_with_side_share_source_and_time():
-    figure = board.liquidity_figure(with_order_book(sample()), NOW, 'daily', SOURCE)['figure']
-    rows = {i['price_text']: i for i in zones(figure)}
-    assert list(rows) == ['4,429.00〜4,434.56', '4,190.00〜4,201.50', '4,104.00〜4,170.00']  # price order
-    above = rows['4,190.00〜4,201.50']
-    assert (above['label'], above['pool'], above['distance_text'], above['state_word'], above['touched'], above['icon']) == \
-        ('個人の注文・建玉が集まる価格帯', 'BSL', '差 +12.53', '35件', '', '▭')
-    below = rows['4,104.00〜4,170.00']
-    assert (below['pool'], below['distance_text'], below['state_word']) == ('SSL', '差 -7.47', '279件')
-    assert rows['4,429.00〜4,434.56']['offscale'] is True and not above.get('offscale')
-    assert above['source_quote'] == '流動性｜個人の注文・建玉が集まる価格帯: 4,190.00〜4,201.50｜BSL｜差 +12.53｜35件'
-    for item in zones(figure):
-        assert all(str(item[k]) in item['source_quote'] for k in SHOWN if item.get(k))
-        assert '損切り' not in item['source_quote'] and '指値' not in item['source_quote']
-    legend = figure['legend']
-    assert '注文・建玉 MyFXBook・10/13 22:12 JST 取得（60分遅れ）' in legend  # the fetch line (not on every row)
-    assert '注文・建玉の数でロットではありません' in legend and '15価格' in legend
-    assert '未約定の注文か保有中の建玉か、損切りか指値かを示していない' in legend
-    assert figure['missing'] == []
 
 
-def test_a_cluster_around_the_price_has_no_side_tag_and_sits_by_the_current_row():
-    data = with_order_book(sample())
-    data['myfxbook_open_orders']['XAUUSD']['ssl_candidates'] = [{'low': 4170.0, 'high': 4180.0, 'volume_sum': 9,
-                                                                  'share_pct': 40.0}]
-    items = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']['items']
-    labels = [i['label'] for i in items]
-    zone = items[labels.index('現在値') - 1]
-    assert (zone['kind'], zone['pool'], zone['distance_text']) == ('zone', '', '現在値を含む')
 
 
 # ------------------------------------------------------------------ an earlier collection's clusters
@@ -90,96 +57,16 @@ def failed(data, error='Order Book ペアを抽出できず (DOM 変更の可能
     return data
 
 
-def test_failed_fetch_uses_clusters_kept_within_three_days_with_their_fetch_time():
-    data = failed(sample())
-    data['retail_analytics'] = {'previous_pools': {'date': '2026-10-10', 'fetched_at': '2026-10-10T00:03:00Z',
-                                                   'bsl': ORDER_BOOK['bsl_candidates'], 'ssl': ORDER_BOOK['ssl_candidates']}}
-    figure = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']
-    assert {i['touched'] for i in zones(figure)} == {''}
-    assert [n['text'] for n in figure['notices']] == ['個人の注文・建玉は前回 10/10 09:03 JST の取得分（最新の取得に失敗）']
-    # The full reason is a limitation (not a 欠測 line under the map: the kept clusters are shown).
-    result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
-    assert result['figure']['missing'] == []
-    assert result['notes'] == ['流動性マップ: 個人の注文・建玉が集まる価格帯は10/10の前回取得分を表示'
-                               '（今回の取得失敗（Order Book ペアを抽出できず (DOM 変更の可能性)））']
-    # No stored bars in this sample: the state says so rather than guessing.
-    assert {i['state_word'].split('・')[-1] for i in zones(figure)} == {'取得後の足なし'}
-    data['retail_analytics']['previous_pools']['date'] = '2026-10-09'   # four calendar days: not used
-    result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
-    assert zones(result['figure']) == []
-    line = ('個人の注文・建玉が集まる価格帯（MyFXBook・60分遅れ）: 今回の取得失敗（Order Book ペアを抽出できず (DOM 変更の可能性)）'
-            '・前回分: 最新 10/09・3日より古い')
-    assert result['figure']['missing'] == [{'text': line, 'source_quote': f'流動性｜欠測: {line}'}]
-    assert f'流動性｜欠測: {line}' in result['rows'] and f'流動性マップ: {line}' in result['notes']
 
 
-def test_nothing_kept_is_a_missing_line_never_an_invented_zone():
-    for data in (failed(sample()), sample()):
-        result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
-        assert zones(result['figure']) == [] and len(result['figure']['missing']) == 1
-        assert result['figure']['missing'][0]['text'].endswith('・前回分: 記録なし')
-    data = sample()
-    data['myfxbook_open_orders'] = {'XAUUSD': {**ORDER_BOOK, 'timestamp': '2026-10-12T09:00:00Z'}}  # a day and a half old
-    text = board.liquidity_figure(data, NOW, 'daily', SOURCE)['figure']['missing'][0]['text']
-    assert '今回の取得が古い（取得 10/12 18:00 JST・24時間より前）' in text
 
 
-def test_kept_clusters_take_their_state_from_the_stored_bars_after_the_fetch():
-    data = real('2026-10-14T1800.data.json')
-    oo = real('2026-10-13T0900.data.json')['myfxbook_open_orders']['XAUUSD']
-    data['retail_analytics']['previous_pools'] = {'date': '2026-10-13', 'fetched_at': oo['timestamp'],
-                                                  'bsl': oo['bsl_candidates'], 'ssl': oo['ssl_candidates']}
-    stamp = bundle.analysis_cutoff(data)
-    rows = {i['price_text']: i for i in zones(board.liquidity_figure(data, stamp, 'daily')['figure'])}
-    assert {i['touched'] for i in rows.values()} == {''}
-    # 前日高値（10/13） 4,200.45 traded above the whole 4,173.86〜4,190.61 cluster after the fetch.
-    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・掃引済み（10/13 13:00 JST）'
-    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・取得後は未到達'
-    assert rows['4,104.00〜4,170.00']['state_word'] == '279件・到達・抜けていない（10/13 09:15 JST）'
-    edition(data, real_source('2026-10-14T1800-r3.md'))
 
 
 # ------------------------------------------------------------------ real collections, end to end
 
-def test_real_1014_daily_shows_kept_clusters_and_entries_and_rebuilds_exactly():
-    data = real('2026-10-14T1800.data.json')
-    assert data['myfxbook_open_orders']['XAUUSD']['error']  # the 18:00 Order Book fetch failed
-    result, full, summary, figures, _ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    figure = next(f for f in figures if f['id'] == 'liquidity')
-    for line in (
-            '流動性｜個人ロングの平均建値: 4,393.67｜差 +250.41｜個人61%ロング・含み損-5.7%\n',
-            '流動性｜個人ショートの平均建値: 3,996.87｜差 -146.39｜個人39%ショート・含み損-3.7%\n',
-            '流動性｜個人の注文・建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜差 +30.60｜35件・到達後に反転（10/13 17:00 JST）\n',
-            '流動性｜個人の注文・建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む｜279件・到達後も戻りが小さい（10/13 22:00 JST）\n',
-            '流動性｜個人の注文・建玉が集まる価格帯: 4,429.00〜4,434.56｜BSL｜差 +285.74｜15件・24時間は未到達\n',
-            '流動性｜表示の注記: 個人の注文・建玉は前回 10/13 の取得分（最新の取得に失敗）\n',
-            '個人の取得: 平均建値 MyFXBook・10/14 18:03 JST。',
-            '制約: 流動性マップ: 個人の注文・建玉が集まる価格帯は10/13の前回取得分を表示'
-            '（今回の取得失敗（Order Book ペアを抽出できず (DOM 変更の可能性)））'):
-        assert line in full
-    shown = [i['label'] for i in figure['items'] if not i.get('offscale')]
-    outside = [i['label'] for i in figure['items'] if i.get('offscale')]
-    assert shown.count('個人の注文・建玉が集まる価格帯') == 2
-    assert outside == ['前月高値（9月）', '個人の注文・建玉が集まる価格帯', '個人ロングの平均建値', '個人ショートの平均建値']
-    assert figure['missing'] == [] and 'aux' not in figure
-    # Four calendar days later the same kept clusters are no longer shown.
-    late = deepcopy(data)
-    late['retail_analytics']['baseline_date'] = '2026-10-10'
-    figure = board.liquidity_figure(late, bundle.analysis_cutoff(late), 'daily')['figure']
-    assert zones(figure) == [] and figure['missing'][0]['text'].endswith('・前回分: 最新 10/10・3日より古い')
 
 
-def test_real_1013_order_book_clusters_on_the_1014_map_rebuild_exactly():
-    """The 10/13 09:00 clusters as if fetched in this collection (its own data has no 1-hour bars for the map)."""
-    data = real('2026-10-14T1800.data.json')
-    oo = deepcopy(real('2026-10-13T0900.data.json')['myfxbook_open_orders'])
-    oo['XAUUSD']['timestamp'] = '2026-10-14T09:02:30Z'
-    data['myfxbook_open_orders'] = oo
-    _, full, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    assert '流動性｜個人の注文・建玉が集まる価格帯: 4,173.86〜4,190.61｜BSL｜差 +30.60｜35件\n' in full
-    assert '流動性｜個人の注文・建玉が集まる価格帯: 4,104.00〜4,170.00｜現在値を含む｜279件\n' in full
-    assert '／注文・建玉 MyFXBook・10/14 18:02 JST 取得（60分遅れ）。' in full
-    assert '前回取得分を表示' not in full
 
 
 def test_real_1013_collection_rebuilds_without_a_liquidity_map():
@@ -188,16 +75,6 @@ def test_real_1013_collection_rebuilds_without_a_liquidity_map():
     assert [f['id'] for f in result['figures']] == ['bias', 'calendar']  # no 1-hour levels in that collection
 
 
-def test_a_changed_cluster_or_entry_is_caught_by_the_rebuild():
-    data = real('2026-10-14T1800.data.json')
-    result, full, summary, figures, manifest = edition(data, real_source('2026-10-14T1800-r3.md'))
-    for change in (lambda d: d['retail_analytics']['sweep_events'][0].update(high=4199.0),
-                   lambda d: d['retail_sentiment']['XAUUSD'].update(long_pct=70.0),
-                   lambda d: d['retail_analytics'].update(baseline_date='2026-10-12')):
-        changed = deepcopy(data)
-        change(changed)
-        with pytest.raises(bundle.BundleError, match='differ'):
-            bundle.check_regenerated(changed, manifest, figures, full, summary)
 
 
 # ------------------------------------------------------------------ mobile width (C)
@@ -249,89 +126,16 @@ def kept_without_time(data, day='2026-10-13'):
     return data
 
 
-@pytest.mark.parametrize('name', ['with fetch time', 'without fetch time'])
-def test_long_kept_cluster_states_wrap_inside_a_390px_screen(name):
-    data = real('2026-10-14T1800.data.json')
-    if name == 'with fetch time':
-        oo = real('2026-10-13T0900.data.json')['myfxbook_open_orders']['XAUUSD']
-        data['retail_analytics']['previous_pools'] = {'date': '2026-10-13', 'fetched_at': oo['timestamp'],
-                                                      'bsl': oo['bsl_candidates'], 'ssl': oo['ssl_candidates']}
-    else:
-        kept_without_time(data)
-    _, full, summary, figures, _ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    words = [i['state_word'] for f in figures if f['id'] == 'liquidity' for i in zones(f)]
-    assert max(len(w) for w in words) >= 24  # e.g. 「279件・到達後も戻りが小さい（10/13 22:00 JST）」
-    page_html, _ = dash.build(full, summary, figures, title='t', source_name='s.md')
-    page, opened, right = screen_widths(page_html)
-    assert (page, opened) == (390, 390) and right <= 390
 
 
 # ------------------------------------------------------------------ review r10 (GPT-6 Astra)
 
-def test_zone_rows_say_the_kind_is_unknown_and_the_legend_states_the_scraper_rules():
-    """1: the provider does not say whether a count is a pending order or an open position."""
-    import inspect
-    from scrapers import myfxbook_open_orders as oo
-    figure = board.liquidity_figure(with_order_book(sample()), NOW, 'daily', SOURCE)['figure']
-    assert {(i['label'], i['touched']) for i in zones(figure)} == {('個人の注文・建玉が集まる価格帯', '')}
-    assert {i['pool'] for i in zones(figure)} == {'BSL', 'SSL'}  # above the price: buy-side liquidity candidate
-    legend = figure['legend']
-    assert 'AsksとBidsそれぞれについて件数の多い15価格' in legend and '上下それぞれ件数の多い15価格' not in legend
-    assert '取得時の価格から±10%を超える価格は除き' in legend and '直前の価格との差が0.5%未満なら同じ帯' in legend
-    assert '上と下それぞれ件数の多い3帯まで' in legend and '種類は分かりません（種類不明）' in legend
-    # The stated rules are the scraper's own defaults and its page note (15 per series).
-    defaults = inspect.signature(oo._cluster_and_classify).parameters
-    assert defaults['max_distance_pct'].default * 100 == board.ZONE_FILTER_PCT
-    assert defaults['cluster_pct'].default * 100 == board.ZONE_GAP_PCT
-    assert '[:3]' in inspect.getsource(oo._cluster_and_classify) and board.ZONE_TOP == 3
-    assert 'Asks / Bids 各上位 15 件' in oo.__doc__
 
 
-def test_kept_clusters_without_a_fetch_time_take_the_collectors_verdict_for_the_same_cluster():
-    """2: legacy previous_pools (no fetched_at) together with sweep_events of the same day and edges."""
-    data = kept_without_time(real('2026-10-14T1800.data.json'))
-    assert data['retail_analytics']['baseline_date'] == '2026-10-13'
-    result, full, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    figure = next(f for f in result['figures'] if f['id'] == 'liquidity')
-    rows = {i['price_text']: i for i in zones(figure)}
-    assert {i['touched'] for i in rows.values()} == {''}
-    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・到達後に反転（10/13 17:00 JST）'
-    assert rows['4,104.00〜4,170.00']['state_word'] == '279件・到達後も戻りが小さい（10/13 22:00 JST）'
-    assert rows['4,429.00〜4,434.56']['state_word'] == '15件・24時間は未到達'
-    assert all(i['state_word'] for i in rows.values())  # never an empty state
-    assert ('制約: 流動性マップ: 個人の注文・建玉が集まる価格帯は10/13の前回取得分を表示'
-            '（今回の取得失敗（Order Book ペアを抽出できず (DOM 変更の可能性)））') in full
 
 
-@pytest.mark.parametrize('change', [
-    lambda ra: ra.update(baseline_date='2026-10-12'),  # the verdicts judged another day's clusters
-    lambda ra: ra['sweep_events'][0].update(high=4199.0),  # another cluster
-    lambda ra: ra.update(sweep_events=[])])
-def test_kept_clusters_without_a_fetch_time_or_a_matching_verdict_say_the_state_is_unconfirmed(change):
-    data = kept_without_time(real('2026-10-14T1800.data.json'))
-    change(data['retail_analytics'])
-    result, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    rows = {i['price_text']: i for f in result['figures'] if f['id'] == 'liquidity' for i in zones(f)}
-    assert rows['4,173.86〜4,190.61']['state_word'] == '35件・状態未確認（取得時刻なし）'
-    assert len(rows) == 3 and all(i['state_word'] for i in rows.values())
 
 
-@pytest.mark.parametrize('oo_change,brief', [
-    ({'error': 'Order Book ペアを抽出できず (DOM 変更の可能性)'}, '最新の取得に失敗'),
-    ({'error': None, 'timestamp': '2026-10-14T09:02:30Z', 'bsl_candidates': [], 'ssl_candidates': []}, '最新の取得で価格帯なし'),
-    ({'error': None, 'timestamp': '2026-10-12T09:02:30Z'}, '最新の取得が古い')])
-def test_kept_clusters_say_briefly_why_this_collection_did_not_get_them(oo_change, brief):
-    data = kept_without_time(real('2026-10-14T1800.data.json'))
-    if 'bsl_candidates' not in oo_change:  # a stale fetch: clusters present, but too old to show
-        current = real('2026-10-13T0900.data.json')['myfxbook_open_orders']['XAUUSD']
-        oo_change = {**oo_change, 'bsl_candidates': current['bsl_candidates'], 'ssl_candidates': current['ssl_candidates']}
-    data['myfxbook_open_orders']['XAUUSD'].update(oo_change)
-    result, *_ = edition(data, real_source('2026-10-14T1800-r3.md'))
-    figure = next(f for f in result['figures'] if f['id'] == 'liquidity')
-    assert {i['touched'] for i in zones(figure)} == {''}
-    # One notice line above the map says why (instead of repeating it on every row).
-    text = f'個人の注文・建玉は前回 10/13 の取得分（{brief}）'
-    assert figure['notices'] == [{'text': text, 'source_quote': f'流動性｜表示の注記: {text}'}]
 
 
 def entries(data):
@@ -403,3 +207,25 @@ def test_no_label_on_the_map_or_chips_is_kept_on_one_line():
     assert '.lv>span{min-width:0;overflow-wrap:anywhere}' in css
     facts = css[css.index('.kv dd{'):css.index('}', css.index('.kv dd{'))]
     assert 'overflow-wrap:anywhere' in facts and 'min-width:0' in facts
+
+
+@pytest.mark.parametrize('mode', ['daily', 'weekly'])
+@pytest.mark.parametrize('previous', [False, True])
+def test_unverified_current_and_previous_zones_never_enter_report(mode, previous):
+    data = real('2026-10-14T1800.data.json')
+    if not previous:
+        data['myfxbook_open_orders'] = real('2026-10-13T0900.data.json')['myfxbook_open_orders']
+    if mode == 'weekly':
+        from scrapers.xau_levels import recompute
+        from scrapers.xau_levels import level_events
+        events, event_source = level_events(data)
+        data['xau_levels'] = recompute(data['xau_bars_used'], data['xau_levels']['inputs']['computed_at'], data['xau_levels']['price'], events, True, event_source)
+    result, full, summary, figures, manifest = edition(data, real_source('2026-10-14T1800-r3.md'), mode)
+    figure = next(f for f in figures if f['id'] == 'liquidity')
+    assert zones(figure) == []
+    assert any(i['kind'] == 'retail' for i in figure['items'])
+    assert not any('含み損' in i['state_word'] or '含み益' in i['state_word'] for i in figure['items'])
+    changed = deepcopy(data)
+    changed['retail_sentiment']['XAUUSD']['avg_long_entry'] += 100
+    with pytest.raises(bundle.BundleError, match='differ|match'):
+        bundle.check_regenerated(changed, manifest, figures, full, summary)

@@ -1135,11 +1135,10 @@ ENTRY_SIDES = (('avg_long_entry', 'long', '個人ロングの平均建値'), ('a
 
 
 def _retail_entries(data, stamp, price, away, far):
-    """The retail average entries (long and short) as map rows: share and unrealised P/L against the shown price
+    """The retail average entries (long and short) as map rows: observed share only; no inferred P/L
     (the fetch time goes to the legend). Each side is checked on its own: a failed fetch (取得失敗), no record (取得なし),
     a stale fetch (its fetch time) or no value for the side (値なし) is a missing line, one per side, or one
     for both when both have the same reason. ([rows], [bindings], [missing lines], [], [], [fetch line])."""
-    from scrapers.retail_analytics import build_pl_structure
     r = (data.get('retail_sentiment') or {}).get('XAUUSD')
     r = r if isinstance(r, dict) else {}
     origin = r.get('source') or 'MyFXBook'
@@ -1157,7 +1156,6 @@ def _retail_entries(data, stamp, price, away, far):
         gaps = [f'個人ロング・ショートの平均建値（{origin}）: {missing[0][1]}']
     else:
         gaps = [f'{label}（{origin}）: {why}' for label, why in missing]
-    pl = build_pl_structure(r, price) if not common else {}
     rows, bindings = [], []
     for key, side, label in ENTRY_SIDES:
         v = values[key]
@@ -1167,10 +1165,6 @@ def _retail_entries(data, stamp, price, away, far):
         share = num(r.get(f'{side}_pct'))
         if share is not None:
             parts.append(f'個人{share:g}%{"ロング" if side == "long" else "ショート"}')
-        p = (pl.get(side) or {}).get('pl_pct')
-        if num(p) is not None:
-            shown_pl, places = shown(p, 1)
-            parts.append(f'{"含み益" if p >= 0 else "含み損"}{shown_pl:+.{places}f}%')
         rows.append(_liq('retail', label, fmt(v), v, state='retail', state_word='・'.join(parts), icon='◆',
                          distance_text=away(v), offscale=far(v), value=v))
         bindings.append({'figure': 'liquidity', 'label': label, 'path': f'retail_sentiment.XAUUSD.{key}', 'value': number(v),
@@ -1179,118 +1173,12 @@ def _retail_entries(data, stamp, price, away, far):
     return rows, bindings, gaps, [], [], fetch_lines
 
 
-def _zone_state(data, low, high, side, since):
-    """The state of a cluster from the stored closed bars after its fetch (`since`): the far edge with the
-    level rule (掃引済み・抜けて推移・抜けて定着), else whether a bar reached the near edge."""
-    from scrapers.xau_bars import restore
-    from scrapers.xau_levels import STATE_WORD, scan_bars, sweep_state
-    try:
-        h1, m15 = restore(data.get('xau_bars_used'))
-    except ValueError:
-        return '取得後の足なし'
-    # The first bar that starts at or after the fetch (15-minute grid): a bar that began before it is not counted.
-    start = since.astimezone(ZoneInfo('UTC')).replace(second=0, microsecond=0)
-    if start < since:
-        start += timedelta(minutes=1)
-    start += timedelta(minutes=-start.minute % 15)
-    bars = scan_bars(h1, m15, start)
-    if not bars:
-        return '取得後の確定足なし'
-    stamp_of = lambda t: t.astimezone(JST).strftime('%m/%d %H:%M') + ' JST'
-    near, far_edge, level_side = (low, high, 'high') if side == 'bsl' else (high, low, 'low')
-    state, at = sweep_state(far_edge, level_side, bars)
-    if state != 'resting':
-        return f'{shown_state(state, STATE_WORD[state])}（{stamp_of(at)}）'
-    reached, at = sweep_state(near, level_side, bars)
-    return f'到達・抜けていない（{stamp_of(at)}）' if reached != 'resting' else '取得後は未到達'
 
 
-def _sweep_verdict(event):
-    """The collector's 24-hour verdict for one swept-baseline record, with the bar that first reached the zone."""
-    word = SWEEP_VERDICT.get(event.get('verdict'))
-    if not word:
-        return ZONE_UNKNOWN_STATE
-    at = _utc_label(event.get('swept_at_utc')) if event.get('swept_at_utc') else ''
-    return word + (f'（{at}）' if at else '')
 
 
-def _matching_verdict(ra, day, side, cluster):
-    """The verdict of the same cluster (same day, side and edges) in the collector's swept baseline, or None."""
-    if not day or ra.get('baseline_date') != day:
-        return None
-    low, high = num(cluster.get('low')), num(cluster.get('high'))
-    for event in ra.get('sweep_events') or []:
-        if (isinstance(event, dict) and str(event.get('side')).lower() == side and low is not None and high is not None
-                and num(event.get('low')) == low and num(event.get('high')) == high):
-            return _sweep_verdict(event)
-    return None
 
 
-def _retail_zones(data, stamp, price, away, far):
-    """MyFXBook Order Book clusters as zone rows. This collection's clusters when it got them; otherwise the
-    latest clusters the collector kept (retail_analytics.previous_pools, or for older collections the swept
-    baseline of retail_analytics) when at most ZONE_MAX_AGE_DAYS calendar days old; otherwise a missing line.
-    Kept clusters name their fetch on their second line, and one notice above the map says why this collection's
-    are not shown (the full reason goes to the limitations); the fetch time goes to the legend. Their state comes from the stored bars after their
-    fetch time; without a fetch time, from the collector's verdict for the same cluster when there is one, else
-    状態未確認. ([rows], [], [missing lines], [notes], [notices], [fetch line]): the rows are rebuilt by
-    check_regenerated, not bound one by one."""
-    oo = (data.get('myfxbook_open_orders') or {}).get('XAUUSD') or {}
-    oo = oo if isinstance(oo, dict) else {}
-    ra = data.get('retail_analytics') or {}
-    ra = ra if isinstance(ra, dict) else {}
-    zones, origin, why, notes, notices, fetch_lines = [], '', '', [], [], []
-    current = [(side, c) for side in ('bsl', 'ssl') for c in (oo.get(f'{side}_candidates') or [])] if present(oo) else []
-    late = stale_time(oo.get('timestamp'), stamp) if current else None
-    if current and not late:
-        origin = f'MyFXBook・{_stamp(oo.get("timestamp"))} 取得（60分遅れ）'
-        fetch_lines = [f'注文・建玉 {origin}']
-        zones = [(side, c, '') for side, c in current]
-    else:
-        why, brief = (
-            (f'今回の取得失敗（{_clean(oo.get("error"))[:60]}）', '最新の取得に失敗') if oo.get('error') else
-            (f'今回の取得が古い（{late}）', '最新の取得が古い') if late else
-            ('今回の取得なし', '最新の取得なし') if not oo else
-            ('今回の取得でクラスタなし', '最新の取得で価格帯なし'))
-        prev = ra.get('previous_pools') if isinstance(ra.get('previous_pools'), dict) else None
-        baseline = [e for e in ra.get('sweep_events') or [] if isinstance(e, dict) and e.get('side') in ('BSL', 'SSL')]
-        day = (prev or {}).get('date') or (ra.get('baseline_date') if baseline else None)
-        age = stale_day(day, stamp, ZONE_MAX_AGE_DAYS) if day else '記録なし'
-        if age:
-            return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why}・前回分: {age}'], []
-        fetched = _parse_jst(prev.get('fetched_at')) if prev else None
-        when = f'{_stamp(prev["fetched_at"])}' if fetched else ''
-        if prev:
-            zones = [(side, c, _zone_state(data, num(c.get('low')), num(c.get('high')), side, fetched) if fetched
-                      else _matching_verdict(ra, day, side, c) or ZONE_UNKNOWN_STATE)
-                     for side in ('bsl', 'ssl') for c in prev.get(side) or []]
-        else:
-            zones = [(e['side'].lower(), e, _sweep_verdict(e)) for e in baseline]
-        notes.append(f'{RETAIL_ZONE}は{_md(day)}の前回取得分を表示（{why}）')
-        notices.append(f'個人の注文・建玉は前回 {when or _md(day)} の取得分（{brief}）')
-    rows = []
-    for side, c, state in zones:
-        low, high = num(c.get('low')), num(c.get('high'))
-        if low is None or high is None or low > high:
-            continue
-        if low > price:
-            pool, near = 'BSL', low
-        elif high < price:
-            pool, near = 'SSL', high
-        else:
-            pool, near = '', None
-        # The count alone: a share of the side at fetch time (「取得時下側の100%」) reads against a BSL tag once
-        # the price has moved past the zone.
-        count = num(c.get('volume_sum'))
-        words = ([f'{count:,.0f}件'] if count is not None else []) + ([state] if state else [])
-        rows.append(_liq('zone', RETAIL_ZONE, fmt(low) if low == high else f'{fmt(low)}〜{fmt(high)}',
-                         near if near is not None else price, pool=pool, state='zone',  # a zone around the price sits by it
-                         state_word='・'.join(words), icon=ZONE_ICON,
-                         distance_text=away(near) if near is not None else '現在値を含む',
-                         offscale=near is not None and far(near)))
-    if not rows:
-        return [], [], [f'{RETAIL_ZONE}（{ZONE_SOURCE}）: {why or "価格帯の値なし"}'], [], []
-    return rows, [], [], notes, notices, fetch_lines
 
 
 def liquidity_figure(data, stamp, mode, source=None):
@@ -1346,7 +1234,7 @@ def liquidity_figure(data, stamp, mode, source=None):
         bindings.append({'figure': 'liquidity', 'label': 'NY 0時の始値', 'path': 'xau_levels.midnight_open',
                          'value': number(mo), 'digits': 2, 'unit': 'USD/oz', 'observedAt': lv.get('last_bar_utc')})
     # Where retail positions sit: the average entries and the Order Book clusters (in the map, or below it when far).
-    for build in (_retail_entries, _retail_zones):
+    for build in (_retail_entries,):
         rows_in, binds, gaps, *told = build(data, stamp, price, away, far)
         items.extend(rows_in)
         bindings.extend(binds)
@@ -1398,19 +1286,7 @@ def liquidity_figure(data, stamp, mode, source=None):
                '翌取引日の終わりまで表示します。') +
               'NY 0時の始値は当日の参考値で、判定には使いません。'
               '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、「個人62%ロング」は個人の建玉に占めるロングの割合、'
-              '「含み損-6.6%」は平均建値から表示した現在値までの値動きの率（レバレッジを掛ける前）です。'
-              f'{ZONE_ICON}{RETAIL_ZONE}は、MyFXBookのOrder Book（認証済みの実口座だけ・60分遅れ）がAsksとBidsそれぞれについて'
-              '件数の多い15価格を示したものを合わせ、こちらで帯にまとめたものです（未検証）。'
-              f'取得時の価格から±{ZONE_FILTER_PCT:g}%を超える価格は除き、取得時の価格より上と下に分け、価格順で直前の価格との差が'
-              f'{ZONE_GAP_PCT:g}%未満なら同じ帯にし、上と下それぞれ件数の多い{ZONE_TOP}帯までを載せます。'
-              '件数は注文・建玉の数でロットではありません。取得元は未約定の注文か保有中の建玉か、損切りか指値かを示していないため、'
-              f'種類は分かりません（{ZONE_KIND}）。件数は帯に含まれる価格の合計、差は現在値に近い端まで、'
-              'BSL・SSLは現在値より上か下か（現在値を含む帯は付けない）。注文・建玉の内容は取得の60分前の状態です。'
-              '今回の取得に失敗したときは'
-              f'{ZONE_MAX_AGE_DAYS}日以内に取得できた分を前回の取得日時と一緒に出し（図の上にその旨を1行で示します）、'
-              '取得後の確定足で価格帯に届いたか・抜けたかを示します'
-              '（取得時刻の記録がない分は日付だけを示し、取得元が同じ価格帯を直近24時間の足で判定していればその判定、'
-              'なければ「状態未確認」とします）。価格帯の時刻は最初に届いた、または抜けた足です。今回の取得に失敗した理由は制約に書きます。'
+              '平均建値と比率は観測値です。損益推定と未検証の注文・建玉価格帯は表示から除外しています。'
               f'平均建値は取得から{QUOTE_MAX_HOURS}時間以内、帯のGVZは観測日が{GVZ_MAX_AGE_DAYS}日以内のときだけ出し、'
               '古い・欠けているときは理由を図の下と制約に書きます。'
               'Order Block・FVGはチャートで判断する領域のため載せていません。'

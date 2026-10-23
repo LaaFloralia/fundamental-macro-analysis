@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 JST = ZoneInfo('Asia/Tokyo')
 REQUIRED_FIGURES = ('bias', 'liquidity', 'calendar')
-MANIFEST_VERSION = 8  # 2: release rows carry text bindings; 3: figures are regenerated at validation;
+MANIFEST_VERSION = 9  # 2: release rows carry text bindings; 3: figures are regenerated at validation;
                       # 4: levels carry `confirmed` and the 5-minute publishing lag (v3 editions are not rebuilt);
                       # 5: 判定外 materials, endpoint digits, error-checked nowcasts (v4 editions are not rebuilt)
                       # 6: retail entries and Order Book zones in the liquidity map, trend lines only (v5 not rebuilt)
@@ -23,6 +23,7 @@ MANIFEST_VERSION = 8  # 2: release rows carry text bindings; 3: figures are rege
                       #    kept-clusters notice row (v6 editions are not rebuilt)
                       # 8: shorter liquidity rows (one difference, no first bar or tier, no fetch line), 抜けたまま,
                       #    中立 alone, no release-candle line in the US table (v7 editions are not rebuilt)
+                      # 9: exclude unverified order zones and inferred retail P/L (v8 not rebuilt)
 APPENDIX = '\n\n## 図表に使用した観測値\n'
 CONCLUSION_MAX = 220  # the master prompts ask for one line of 220 characters
 

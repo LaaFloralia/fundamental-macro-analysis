@@ -286,11 +286,11 @@ def test_the_retail_average_is_shown_in_the_map_or_in_the_visible_outside_list()
     main_view = liquidity_html[:liquidity_html.index('<details')]
     outside = main_view[main_view.index('class="offscale"'):]
     # 4,412.64 is +5.63% from 4,177.47 (outside the ±2.5% map), 4,025.02 is -3.65%: both in the visible list.
-    for label, price, rest in (('個人ロングの平均建値', '4,412.64', '個人56%ロング・含み損-5.3%'),
-                               ('個人ショートの平均建値', '4,025.02', '個人44%ショート・含み損-3.8%')):
+    for label, price, rest in (('個人ロングの平均建値', '4,412.64', '個人56%ロング'),
+                               ('個人ショートの平均建値', '4,025.02', '個人44%ショート')):
         assert f'<span class="lv-label">{label}</span>' in outside and price in outside and rest in outside
     assert '平均建値 MyFXBook・10/13 18:03 JST' in liquidity_html[liquidity_html.index('<details'):]  # in the legend
-    assert '流動性｜個人ロングの平均建値: 4,412.64｜差 +235.17｜個人56%ロング・含み損-5.3%\n' in full
+    assert '流動性｜個人ロングの平均建値: 4,412.64｜差 +235.17｜個人56%ロング\n' in full
     assert '水準の決め方と状態の意味（開いて確認）' in page and 'class="aux"' not in page
     assert re.findall(r'<details[^>]*\bopen\b', page) == []
     # Inside the shown range the average is a row of the map itself.
@@ -299,4 +299,4 @@ def test_the_retail_average_is_shown_in_the_map_or_in_the_visible_outside_list()
     page, *_ = page_of(data)
     ladder = page[page.index('<ul class="ladder">'):page.index('class="offscale"')]
     assert '<span class="lv-label">個人ロングの平均建値</span>' in ladder and '含み益+0.3%' not in ladder
-    assert '個人56%ロング・含み損-0.3%' in ladder
+    assert '個人56%ロング' in ladder

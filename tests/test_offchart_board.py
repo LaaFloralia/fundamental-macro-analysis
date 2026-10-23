@@ -635,7 +635,7 @@ def test_liquidity_map_orders_named_levels_with_state_distance_and_pool():
     assert by['NY 0時の始値']['state_word'] == '当日の始値（参考）'  # not premium / discount
     retail = next(i for i in result['figure']['items'] if i['label'] == '個人ロングの平均建値')
     assert (retail['state_word'], retail['touched'], retail['offscale']) == \
-        ('個人56%ロング・含み損-5.3%', '', True)
+        ('個人56%ロング', '', True)
     assert [i['label'] for i in items if i.get('offscale')] == ['前月高値（9月）', '前週安値（10/05週）']
     assert '未到達（確定足で一度も抜けていない）' in result['figure']['legend'] and '注文そのものは観測していません' in result['figure']['legend']
     assert result['figure']['cautions'] == []
@@ -922,7 +922,7 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
     # Levels without their stored bars cannot be rebuilt (test below); this one checks the other figures.
     del data['xau_levels']
     manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
-    assert manifest['schemaVersion'] == 8
+    assert manifest['schemaVersion'] == 9
     bundle.check_regenerated(data, manifest, figures, source, summary)
     assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
     assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source
@@ -1285,3 +1285,16 @@ def test_legend_explains_the_trend_line_scale_only():
     assert 'その行だけの自動尺度' in legend and '傾きを行どうしで比べることはできません' in legend
     assert '2点の比較線' not in legend and '棒が' not in legend
     assert '傾きは閾値に対する大きさ' not in legend
+
+
+def test_map_excludes_unverified_order_zones_and_inferred_pl():
+    data = sample()
+    data['myfxbook_open_orders'] = {'XAUUSD': {'timestamp': NOW.isoformat(),
+        'bsl_candidates': [{'low': 4200, 'high': 4210, 'count': 100}],
+        'ssl_candidates': [{'low': 4100, 'high': 4110, 'count': 100}]}}
+    data['retail_analytics'] = {'previous_pools': {'date': NOW.date().isoformat(),
+        'bsl': [{'low': 4250, 'high': 4260, 'count': 999}]}}
+    result = board.liquidity_figure(data, NOW, 'daily', SOURCE)
+    assert not any(i['kind'] == 'zone' for i in result['figure']['items'])
+    assert any(i['kind'] == 'retail' for i in result['figure']['items'])
+    assert not any('含み損' in line or '含み益' in line for line in result['rows'])
