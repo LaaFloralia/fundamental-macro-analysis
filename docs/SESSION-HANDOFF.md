@@ -1,8 +1,10 @@
 # Session handoff
 
-Updated: 2026-10-23 (JST, verified display inputs)
+Updated: 2026-10-23 (JST, both HP editions published)
 
 ## HP latest completed publication
+
+Current public Daily/Weekly are the 2026-10-23 r3 editions (data as of 18:42 / 18:45 JST). Under the explicit one-time owner approval in BUS-295, independent DSH text checks plus all 74 parent-reviewed images replaced the unavailable independent visual review. Both R2 objects and HP HTML were read back byte-for-byte; production PC/mobile displays were inspected. This is `owner_approved_20261023`, not independent visual acceptance. The HP reader pins both exact source/display digests. Approval, original reviews, prior public objects and publication receipts are retained at the job root under `publication/hp-latest/owner-approved-20261023/`. The ordinary publisher and next-edition independent review requirement are unchanged.
 
 `scripts/hp_publication.py` publishes one independently reviewed, dated latest-completed XAUUSD document per Daily/Weekly. The author and its parent review remain local-only. The separate `hq/harness/chart_intel_publication.py` phase runs after Hermes confirms the scheduled author ended, using the existing protected subscription worker, immutable source input, and all readable PC/mobile evidence images. It cannot use a failed current run or an old successful manifest as that slot's completion.
 
