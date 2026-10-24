@@ -60,12 +60,10 @@ def fixture_edition(root, *, name='edition-a', as_of=ASOF, tiles='page'):
     hashes = {label: hp.sha(paths[key].read_bytes()) for key, label in (
         ('html_path', 'htmlSha256'), ('md_path', 'sourceSha256'), ('bundle_path', 'bundleSha256'),
         ('render_evidence_path', 'renderSha256'), ('json_path', 'machineSha256'), ('numeric_path', 'numericSha256'))}
-    checks = {key: {'passed': True, 'evidence': 'fixture independently checked'} for key in hp.CHECKS}
+    checks = {key: {'passed': True, 'evidence': 'fixture parent checked'} for key in hp.CHECKS}
     hp.write_json(paths['parent_review_path'], {**hashes, 'status': 'parent_passed',
-        'independentProcess': False, 'issues': [], 'checks': checks})
-    hp.write_json(base.with_suffix('.hp-review.json'), {**hashes, 'status': 'independent_passed',
-        'independentProcess': True, 'reviewer': 'test-independent', 'reviewedAt': NOW.isoformat(),
-        'issues': [], 'checks': checks, 'imagesReviewed': images})
+        'independentProcess': False, 'reviewer': 'parent-ciel', 'issues': [], 'checks': checks,
+        'imagesReviewed': images, 'reviewedAt': NOW.isoformat()})
     record = {'mode': 'daily', 'status': 'succeeded_local', 'ok': True,
               'generation_status': 'succeeded', 'review_status': 'parent_passed', 'historical_revision': False,
               'collected_at': as_of.isoformat(), 'generated_at': (as_of + timedelta(minutes=10)).isoformat(),
@@ -146,38 +144,57 @@ def test_corrupt_newest_never_falls_back_or_writes(tmp_path, target):
     assert store.writes == 0
 
 
-@pytest.mark.parametrize('change', ['independentProcess', 'checks', 'imagesReviewed', 'reviewedAt'])
-def test_incomplete_review_blocks_publish(tmp_path, change):
+def test_publish_uses_only_the_parent_review(tmp_path):
     edition = fixture_edition(tmp_path)
-    review = edition.with_name('Daily_Bias_Report.hp-review.json')
+    assert not Path(hp.read(edition)['outputs']['html_path']).with_suffix('.hp-review.json').exists()
+    store = MemoryStorage()
+    assert hp.publish('daily', tmp_path, publish=True, storage=store, now=NOW)['status'] == 'published'
+    assert store.writes == 1
+
+
+def test_envelope_carries_parent_status_and_parent_review_time(tmp_path):
+    edition = fixture_edition(tmp_path)
+    store = MemoryStorage()
+    hp.publish('daily', tmp_path, publish=True, storage=store, now=NOW)
+    data = json.loads(store.body)
+    parent = hp.read(edition.with_name('Daily_Bias_Report.parent-review.json'))
+    assert data['reviewStatus'] == 'parent_passed'
+    assert data['reviewedAt'] == parent['reviewedAt']
+
+
+@pytest.mark.parametrize('change', ['status', 'independentProcess', 'issues', 'reviewedAt'])
+def test_parent_review_not_accepted_blocks_publish(tmp_path, change):
+    edition = fixture_edition(tmp_path)
+    review = edition.with_name('Daily_Bias_Report.parent-review.json')
     data = hp.read(review)
-    data[change] = {'independentProcess': False, 'checks': {}, 'imagesReviewed': [],
-                    'reviewedAt': (NOW + timedelta(days=1)).isoformat()}[change]
+    data[change] = {'status': 'changes_requested', 'independentProcess': True,
+                    'issues': ['TEST 指摘'], 'reviewedAt': (NOW + timedelta(days=1)).isoformat()}[change]
     hp.write_json(review, data)
     with pytest.raises(hp.PublicationError):
         hp.publish('daily', tmp_path, now=NOW)
 
 
-def test_missing_right_edge_image_review_blocks_publish(tmp_path):
+def test_parent_review_hash_must_match_the_frozen_edition(tmp_path):
     edition = fixture_edition(tmp_path)
-    review_path = edition.with_name('Daily_Bias_Report.hp-review.json')
-    review = hp.read(review_path)
-    review['imagesReviewed'] = [image for image in review['imagesReviewed'] if 'table-right' not in image['path']]
-    hp.write_json(review_path, review)
-    with pytest.raises(hp.PublicationError, match='visual inspection incomplete'):
+    review = edition.with_name('Daily_Bias_Report.parent-review.json')
+    data = hp.read(review)
+    data['htmlSha256'] = '0' * 64
+    hp.write_json(review, data)
+    with pytest.raises(hp.PublicationError, match='hash mismatch'):
         hp.publish('daily', tmp_path, now=NOW)
 
 
-def test_page_tiles_or_legacy_source_tiles_are_required(tmp_path):
-    fixture_edition(tmp_path, name='legacy', as_of=ASOF - timedelta(days=1), tiles='source')
+@pytest.mark.parametrize('status', ['independent_passed', 'owner_approved_20261023'])
+def test_previous_object_under_a_retired_gate_stays_valid_and_can_be_replaced(tmp_path, status):
     edition = fixture_edition(tmp_path)
-    assert hp.publish('daily', tmp_path, now=NOW)['status'] == 'dry_run_validated'
-    review_path = edition.with_name('Daily_Bias_Report.hp-review.json')
-    review = hp.read(review_path)
-    review['imagesReviewed'] = [image for image in review['imagesReviewed'] if 'mobile-page-' not in image['path']]
-    hp.write_json(review_path, review)
-    with pytest.raises(hp.PublicationError, match='visual inspection incomplete'):
-        hp.publish('daily', tmp_path, now=NOW)
+    store = MemoryStorage()
+    hp.publish('daily', tmp_path, publish=True, storage=store, now=NOW)
+    previous = json.loads(store.body)
+    previous['reviewStatus'] = status
+    store.body = json.dumps(previous).encode()
+    assert hp.publish('daily', tmp_path, publish=True, storage=store, now=NOW)['status'] == 'published'
+    assert json.loads(store.body)['reviewStatus'] == 'parent_passed'
+    assert store.writes == 2
 
 
 @pytest.mark.parametrize('offset', [-1, 7 * 60, 20 * 24 * 60])

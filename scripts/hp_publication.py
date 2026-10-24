@@ -1,5 +1,7 @@
-"""Publish the latest independently reviewed completed XAUUSD edition to HP.
+"""Publish the latest XAUUSD edition its own parent review accepted to HP.
 
+The parent author's own review (status parent_passed) is the only publication gate;
+a separate independent review is no longer required (owner decision 2026-10-24).
 The document keeps its original as-of date. This is not a fresh-market release:
 freshness is checked at original generation, while review/publication use real time.
 Only one atomic JSON object per kind is stored remotely. Markdown remains in editions.
@@ -27,6 +29,9 @@ from scripts.report_acceptance import CHECKS
 from scripts.report_bundle import check_bindings, check_regenerated, timestamp as collection_timestamp
 
 ROOT = Path('/Users/laa/.codex/jobs/chart-intel')
+# Existing public objects published under the retired gates stay valid previous
+# objects until a newer edition replaces them.
+ACCEPTED_REVIEW_STATUSES = ('parent_passed', 'independent_passed', 'owner_approved_20261023')
 PUBLIC_BASE = 'https://reports-data.laa-inc.com'
 BUCKET = 'laa-hp-media'
 SITE_BASE = 'https://www.laa-inc.com/reports'
@@ -136,6 +141,10 @@ def validate_edition(edition_path, root=ROOT, now=None):
     collected, generated = stamp(record.get('collected_at')), stamp(record.get('generated_at'))
     if (collected > generated or generated > current or generated - collected > timedelta(hours=6)):
         raise PublicationError('Collection was stale at generation or future-dated')
+    # The parent review follows its generation and cannot postdate this publication.
+    reviewed_at = stamp(parent.get('reviewedAt'))
+    if not stamp(record.get('generated_at')) <= reviewed_at <= current:
+        raise PublicationError('Invalid parent review time')
     if (bundle.get('kind') != kind or bundle.get('historicalRevision') is True
             or bundle.get('synthetic') is True or stamp(bundle.get('asOf')) != collected
             or bundle.get('reportDate') != collected.date().isoformat()):
@@ -200,45 +209,8 @@ def validate_edition(edition_path, root=ROOT, now=None):
                              if key != 'html_path'})
     return {'editionPath': str(path), 'edition': folder.name, 'record': record,
             'bundle': bundle, 'hashes': hashes, 'html': html, 'images': images,
-            'reviewPath': str(html_file.with_suffix('.hp-review.json')),
+            'parent': parent, 'reviewedAt': parent['reviewedAt'],
             'reviewDocuments': review_documents}
-
-
-def validate_review(candidate, review_path=None, now=None):
-    current = now or datetime.now(timezone.utc)
-    folder = Path(candidate['editionPath']).parent
-    path = local_file(review_path or candidate['reviewPath'], folder)
-    review = read(path)
-    if (review.get('status') not in ('passed', 'independent_passed')
-            or review.get('independentProcess') is not True
-            or not review.get('reviewer') or review.get('reviewer') == 'parent-ciel'
-            or review.get('issues') != []):
-        raise PublicationError('Independent acceptance required')
-    reviewed_at = stamp(review.get('reviewedAt'))
-    if not stamp(candidate['record']['generated_at']) <= reviewed_at <= current:
-        raise PublicationError('Invalid independent review time')
-    if any(review.get(key) != value for key, value in candidate['hashes'].items()):
-        raise PublicationError('Independent review hash mismatch')
-    checks = review.get('checks', {})
-    if set(checks) != set(CHECKS) or any(not isinstance(item, dict) or item.get('passed') is not True
-            or not isinstance(item.get('evidence'), str) or not item['evidence'].strip() for item in checks.values()):
-        raise PublicationError('Independent checks incomplete')
-    expected = {item['path']: item['sha256'] for item in candidate['images']}
-    inspected = review.get('imagesReviewed', [])
-    if not inspected or len({item['path'] for item in inspected}) != len(inspected):
-        raise PublicationError('Inspected image evidence missing or repeated')
-    if any(expected.get(item['path']) != item.get('sha256') for item in inspected):
-        raise PublicationError('Inspected images not bound to browser evidence')
-    names = {Path(item['path']).name for item in inspected}
-    # Every capture is required, the explanations-open tiles included; the single tall '-full.png'
-    # of editions before 2026-10-14 stays optional.
-    required = {Path(path).name for path in expected if not Path(path).name.endswith('-full.png')}
-    # Page tiles of the one-page dashboard; source tiles in editions before 2026-10-13.
-    tiles = lambda view: any(name.startswith((f'{view}-page-', f'{view}-source-')) for name in names)
-    if (not required <= names or not {'desktop-overview.png', 'mobile-overview.png'} <= names
-            or not tiles('desktop') or not tiles('mobile')):
-        raise PublicationError('Independent visual inspection incomplete')
-    return review
 
 
 def display_html(source, as_of):
@@ -329,13 +301,12 @@ def verify_reader(store, kind, expected, sleep=time.sleep):
     raise PublicationError('HP readback hash mismatch after cache convergence window')
 
 
-def publish(kind, root=ROOT, *, review_path=None, publish=False, storage=None,
+def publish(kind, root=ROOT, *, publish=False, storage=None,
             public_base=PUBLIC_BASE, verify_site=True, now=None):
     current = now or datetime.now(timezone.utc)
     with publication_lock(root) as directory:
         selected = latest_completed(kind, root)
         candidate = validate_edition(selected, root, current)
-        review = validate_review(candidate, review_path, current)
         bundle = candidate['bundle']
         displayed = display_html(candidate['html'], bundle['asOf'])
         if len(displayed.encode()) > 2_000_000:
@@ -344,8 +315,8 @@ def publish(kind, root=ROOT, *, review_path=None, publish=False, storage=None,
                     'asOf': bundle['asOf'], 'publishedAt': current.isoformat(),
                     'url': f'{SITE_BASE}/{kind}', 'sha256': sha(displayed.encode()),
                     'sourceHtmlSha256': candidate['hashes']['htmlSha256'],
-                    'html': displayed, 'reviewStatus': 'independent_passed',
-                    'reviewedAt': review['reviewedAt']}
+                    'html': displayed, 'reviewStatus': 'parent_passed',
+                    'reviewedAt': candidate['reviewedAt']}
         result = {'status': 'dry_run_validated', 'kind': kind, 'edition': candidate['edition'],
                   'editionPath': str(selected), 'asOf': bundle['asOf'], 'datePolicy': 'latest_completed',
                   'sha256': envelope['sha256'], 'storageVerified': False, 'hpVerified': False}
@@ -381,18 +352,18 @@ def publish(kind, root=ROOT, *, review_path=None, publish=False, storage=None,
         if previous_bytes is not None:
             previous = json.loads(previous_bytes)
             if (previous.get('kind') != kind or previous.get('schemaVersion') != 1
-                    or sha(previous.get('html', '').encode()) != previous.get('sha256')):
+                    or sha(previous.get('html', '').encode()) != previous.get('sha256')
+                    or previous.get('reviewStatus') not in ACCEPTED_REVIEW_STATUSES):
                 raise PublicationError('Existing public object is invalid')
             if stamp(previous['asOf']) > stamp(envelope['asOf']):
                 raise PublicationError('Older report cannot replace newer public report')
             if (previous['asOf'] == envelope['asOf'] and previous['sha256'] == envelope['sha256']
                     and previous.get('sourceHtmlSha256') == envelope['sourceHtmlSha256']
-                    and previous.get('reviewStatus') == 'independent_passed'
+                    and previous.get('reviewStatus') == envelope['reviewStatus']
                     and previous.get('reviewedAt') == envelope['reviewedAt']):
                 body, unchanged = previous_bytes, True
         # Recheck after network reads to prevent a concurrent change of accepted local inputs.
         repeated = validate_edition(selected, root, current)
-        validate_review(repeated, review_path, current)
         if repeated['hashes'] != candidate['hashes'] or latest_completed(kind, root) != selected:
             raise PublicationError('Edition changed during publication')
         # Persist the intent before PUT, including its exact hash. It contains no
@@ -466,14 +437,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('kind', choices=('daily', 'weekly'))
     parser.add_argument('--root', type=Path, default=ROOT)
-    parser.add_argument('--review', type=Path)
     parser.add_argument('--public-base', default=PUBLIC_BASE)
     parser.add_argument('--publish', action='store_true')
     parser.add_argument('--skip-site-verification', action='store_true', help='Initial rollout only; result does not claim HP verified')
     parser.add_argument('--cleanup-old-html', action='store_true')
     args = parser.parse_args(argv)
     try:
-        result = publish(args.kind, args.root, review_path=args.review, publish=args.publish,
+        result = publish(args.kind, args.root, publish=args.publish,
                          public_base=args.public_base, verify_site=not args.skip_site_verification)
         if args.cleanup_old_html:
             result['retention'] = cleanup_old_html(args.kind, args.root, apply=args.publish)
