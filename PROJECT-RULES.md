@@ -5,10 +5,10 @@
 ## Runtime
 
 - Python 3.12 以上、依存管理は `uv`
-- 現行入口は `/Users/laa/.codex/jobs/chart-intel/run.sh daily|weekly`。本文・機械JSON・最終レビューは現在のCodex親タスクが担当する
+- 現行入口は `/Users/laa/.codex/jobs/chart-intel/run.sh daily|weekly`。本文・機械JSON・最終レビューは定期設定で選んだ親が担当する（現行はPaseo経由のOpus 5.5 High）
 - 同入口は本repoのコミット済みコードを専用runtimeへsnapshotする。未コミット修正だけでは定期処理へ反映されない
 - 手順は `/Users/laa/.codex/jobs/chart-intel/PARENT-WORKFLOW.md`、再開時は [引き継ぎ](docs/SESSION-HANDOFF.md) を読む
-- Claude/Hermes/旧Routinesは休止資産。`scripts/intel.py brief` など旧一気通貫入口を現行ジョブの代わりに起動しない
+- Hermesが定期起動し、Paseo経由で親を実行する。旧Routinesと `scripts/intel.py brief` など旧一気通貫入口は再起動しない
 - Jevは公開市場資料の要約と根拠文の照合補助に限定する。固定の数値・日付・鮮度検査と親の受入判定を代替しない
 
 ## Scope
