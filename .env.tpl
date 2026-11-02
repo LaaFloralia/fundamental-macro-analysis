@@ -12,6 +12,3 @@ SUPABASE_SERVICE_ROLE_KEY=op://Agents/FundamentalMacroAnalysis/supabase_service_
 # MyFXBook 公式API（コミュニティ見通し。画面はボット確認で取得不可のため、2026-09-26〜）
 MYFXBOOK_USERNAME=op://Agents/Myfxbook/username
 MYFXBOOK_PASSWORD=op://Agents/Myfxbook/password
-
-# Exa 検索API（公式ページの一次資料検索。scrapers/primary_sources.py、2026-11-03〜）
-EXA_API_KEY=op://Agents/424yfyipwh55y3baolys6r2wry/credential

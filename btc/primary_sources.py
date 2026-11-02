@@ -1,4 +1,4 @@
-"""Official pages behind public news leads, found with the Exa search API (shared by XAU and BTC).
+"""Official pages behind BTC news leads, found with the Exa search API.
 
 Why: the feeds give media headlines. The 2026-10-30 Binance outflow (14 headlines, one event) could not
 be counted because no official body was read, and the same original statement re-told by several outlets
@@ -7,9 +7,9 @@ the actor's official site or path) and keeps only what code can check.
 
 Rules:
 - Sent to Exa: one public headline per actor, the official domain list and a start date. Nothing private.
-- ``EXA_API_KEY`` comes from the existing 1Password wrapper; it is only placed in the request header,
-  never stored, logged or returned. Missing key -> ``skipped``.
-- At most ``MAX_QUERIES`` requests per run, no retry. HTTP 402 (credits used up) stops the run and is
+- ``EXA_API_KEY`` comes from the optional ``btc/exa.env.tpl`` (the runner collects without it when it cannot
+  be read); it is only placed in the request header, never stored, logged or returned. Missing key -> ``skipped``.
+- At most ``MAX_QUERIES`` actors and ``MAX_REQUESTS`` requests per run, no retry. HTTP 402 (credits used up) stops the run and is
   recorded as ``credits_exhausted``; nothing is ever paid or topped up from here.
 - Host and path of each result are re-checked against the actor's scopes; index pages are refused.
 - Exa's ``publishedDate`` is usually a day: ``published_precision`` says so and nothing turns it into a
@@ -57,63 +57,48 @@ class PrimaryFetchError(Exception):
 class Actor:
     actor_id: str
     label: str
-    assets: frozenset
     pattern: re.Pattern
     scopes: tuple  # 'host' or 'host/path-prefix' (Exa includeDomains syntax)
     search_name: str  # English name for the fallback query
 
 
-def _actor(actor_id, label, assets, pattern, *scopes, search_name=None):
+def _actor(actor_id, label, pattern, *scopes, search_name=None):
     # Case-sensitive: names are capitalised ("US strategy links ..." is not Strategy Inc.); common words
     # inside a pattern are written with (?i:...).
-    return Actor(actor_id, label, frozenset(assets), re.compile(pattern), tuple(scopes), search_name or label)
+    return Actor(actor_id, label, re.compile(pattern), tuple(scopes), search_name or label)
 
 
 REGIONAL_FED = ('newyorkfed.org', 'bostonfed.org', 'philadelphiafed.org', 'clevelandfed.org', 'richmondfed.org',
                 'atlantafed.org', 'chicagofed.org', 'stlouisfed.org', 'minneapolisfed.org', 'kansascityfed.org',
                 'dallasfed.org', 'frbsf.org')
 ACTORS = (
-    # Crypto issuers and venues (BTC).
-    _actor('binance', 'Binance', {'btc'}, r'\bBinance\b', 'binance.com/en/support/announcement'),
-    _actor('coinbase', 'Coinbase', {'btc'}, r'\bCoinbase\b', 'coinbase.com/blog', 'investor.coinbase.com'),
-    _actor('tether', 'Tether', {'btc'}, r'\bTether\b|\bUSDT\b', 'tether.io/news'),
-    _actor('circle', 'Circle', {'btc'}, r'\bUSDC\b|\bCircle\b(?=.*(?i:usdc|stablecoin|crypto|bitcoin|freez))',
+    # Crypto issuers and venues.
+    _actor('binance', 'Binance', r'\bBinance\b', 'binance.com/en/support/announcement'),
+    _actor('coinbase', 'Coinbase', r'\bCoinbase\b', 'coinbase.com/blog', 'investor.coinbase.com'),
+    _actor('tether', 'Tether', r'\bTether\b|\bUSDT\b', 'tether.io/news'),
+    _actor('circle', 'Circle', r'\bUSDC\b|\bCircle\b(?=.*(?i:usdc|stablecoin|crypto|bitcoin|freez))',
            'circle.com/pressroom', 'circle.com/blog'),
-    _actor('strategy', 'Strategy', {'btc'},
+    _actor('strategy', 'Strategy',
            r'\bMicroStrategy\b|\bSaylor\b|\bMSTR\b|\bStrategy\b(?=.*(?i:bitcoin|btc|saylor|strc|strk|preferred|treasury))',
            'strategy.com/press'),
-    _actor('kraken', 'Kraken', {'btc'}, r'\bKraken\b', 'blog.kraken.com'),
-    _actor('bybit', 'Bybit', {'btc'}, r'\bBybit\b', 'announcements.bybit.com'),
-    _actor('okx', 'OKX', {'btc'}, r'\bOKX\b', 'okx.com/help'),
-    _actor('sec', 'SEC', {'btc'}, r'\bSEC\b|Securities and Exchange Commission', 'sec.gov/newsroom'),
-    _actor('cftc', 'CFTC', {'btc'}, r'\bCFTC\b', 'cftc.gov/PressRoom'),
-    # US government and central banks (both; the Fed also through the regional banks' sites).
-    _actor('treasury', 'US Treasury', {'btc', 'xau'}, r'\bTreasury\b(?! (?i:yields?|bonds?|notes?|bills?|market))|\bOFAC\b|'
+    _actor('kraken', 'Kraken', r'\bKraken\b', 'blog.kraken.com'),
+    _actor('bybit', 'Bybit', r'\bBybit\b', 'announcements.bybit.com'),
+    _actor('okx', 'OKX', r'\bOKX\b', 'okx.com/help'),
+    _actor('sec', 'SEC', r'\bSEC\b|Securities and Exchange Commission', 'sec.gov/newsroom'),
+    _actor('cftc', 'CFTC', r'\bCFTC\b', 'cftc.gov/PressRoom'),
+    # US government (the Fed also through the regional banks' sites).
+    _actor('treasury', 'US Treasury', r'\bTreasury\b(?! (?i:yields?|bonds?|notes?|bills?|market))|\bOFAC\b|'
            r'(?i:\bsanction)', 'home.treasury.gov/news', 'ofac.treasury.gov'),
-    _actor('fed', 'Federal Reserve', {'btc', 'xau'},
+    _actor('fed', 'Federal Reserve',
            r"\bFed\b|\bFOMC\b|Federal Reserve|\bWarsh\b|\bPowell\b",
            'federalreserve.gov/newsevents', *REGIONAL_FED),
-    _actor('us_data', 'BLS・BEA・DOL', {'xau'},
-           r'\bCPI\b|\bPCE\b|\bGDP\b|\bPPI\b|\bJOLTS\b|\bECI\b|(?i:payrolls?|jobs report|jobless claims|'
-           r'labou?r costs?|employment cost|wage growth|retail sales|consumer prices|producer prices)',
-           'bls.gov/news.release', 'bea.gov/news', 'dol.gov/newsroom', search_name='BLS BEA economic release'),
-    _actor('us_admin', 'White House・State Dept', {'btc', 'xau'},
+    _actor('us_admin', 'White House・State Dept',
            r'White House|State Department|(?i:\bembassy\b|non-emergency staff|executive order|\btariffs?\b)',
            'whitehouse.gov', 'state.gov', 'travel.state.gov', search_name='White House State Department'),
-    _actor('boj', 'Bank of Japan', {'xau'}, r'\bBoJ\b|\bBOJ\b|Bank of Japan', 'boj.or.jp/en'),
-    _actor('ecb', 'ECB', {'xau'}, r'\bECB\b|European Central Bank', 'ecb.europa.eu/press'),
-    _actor('boe', 'Bank of England', {'xau'}, r'\bBoE\b|\bBOE\b|Bank of England', 'bankofengland.co.uk/news'),
-    _actor('pboc', "People's Bank of China", {'xau'}, r"\bPBoC\b|\bPBOC\b|People.s Bank of China", 'pbc.gov.cn/en'),
-    _actor('wgc', 'World Gold Council', {'xau'},
-           r'World Gold Council|\bWGC\b|(?i:central banks?\W+(?:\w+\W+){0,3}gold)', 'gold.org/goldhub'),
-    _actor('ism', 'ISM', {'xau'}, r'\bISM\b', 'ismworld.org'),
-    _actor('opec', 'OPEC', {'xau'}, r'\bOPEC\b', 'opec.org'),
     # Iran's government speaks through IRNA (state news agency) and its ministries: the origin of
     # 'Iran says ...', not an independent confirmation of facts on the ground.
-    _actor('iran', 'Iran（IRNA・政府）', {'xau', 'btc'}, r'\bIran(?:ian)?\b|\bTehran\b|\bAraghchi\b|\bPezeshkian\b',
+    _actor('iran', 'Iran（IRNA・政府）', r'\bIran(?:ian)?\b|\bTehran\b|\bAraghchi\b|\bPezeshkian\b',
            'en.irna.ir/news', 'en.irna.ir/amp', 'en.mfa.ir', 'president.ir/en', search_name='Iran government'),
-    _actor('aramco', 'Saudi Aramco・SPA', {'xau'}, r'\bAramco\b|\bSaudi\b', 'aramco.com/en/news-media', 'spa.gov.sa',
-           search_name='Saudi Aramco Saudi Press Agency'),
 )
 STOP = set('''about after again against ahead amid also among around because been before being below
 between could despite down during each from further have into last latest leave like more most much near
@@ -129,7 +114,7 @@ DATE_LINE = re.compile(r'(?:Published|Updated|Released|Release Date|Posted|Date)
 
 
 SUFFIXES = ('ations', 'ation', 'ings', 'ing', 'ions', 'ion', 'ed', 's')
-GENERIC_NAMES = {'bitcoin', 'btc', 'gold', 'xau', 'usd', 'dollar', 'crypto', 'fed', 'fomc'}
+GENERIC_NAMES = {'bitcoin', 'btc', 'usd', 'dollar', 'crypto', 'fed', 'fomc'}
 
 
 def stem(word: str) -> str:
@@ -246,7 +231,7 @@ def query_text(title: str) -> str:
 def representative(matched: list[dict], actor: Optional[Actor] = None) -> dict:
     """A headline whose subject is the actor (named in its first words), then the one sharing the most words with
     the others of its group (the common story), the higher triage score and the newer one. The newest alone is
-    often a side story (11/03: a denial by a third party); a gold story that names Iran in passing is not Iran's."""
+    often a side story (11/03: a denial by a third party); a story that names Iran in passing is not Iran's."""
 
     def subject(item):
         found = actor.pattern.search(item['title']) if actor else None
@@ -276,17 +261,15 @@ def fed_speaker(title: str) -> str:
     return ''
 
 
-# A bank's or broker's note re-published by a feed ('US Dollar: ... – DBS', 'Gold: ... - TD Securities') is
+# A bank's or broker's note re-published by a feed ('US Dollar: ... – DBS', 'Bitcoin: ... - Standard Chartered') is
 # commentary, not an actor's statement: it starts no search.
 COMMENTARY = re.compile(r'\s[–—-]\s*[A-Z][A-Za-z&.]*(?:\s[A-Z][A-Za-z&.]*){0,2}\s*$')
 
 
-def plan_queries(items: list[dict], asset: str, *, max_queries: int = MAX_QUERIES, min_publishers: int = 1) -> list[dict]:
+def plan_queries(items: list[dict], *, max_queries: int = MAX_QUERIES, min_publishers: int = 1) -> list[dict]:
     """One query per actor named in the headlines, strongest first (score, outlets, headlines)."""
     plans = []
     for actor in ACTORS:
-        if asset not in actor.assets:
-            continue
         own = actor_stems(actor)
         groups: dict = {}
         for item in items:
@@ -403,7 +386,7 @@ def _status_kind(code: int) -> Optional[str]:
             429: 'rate_limited'}.get(code, 'server_error' if code >= 500 else 'http_error')
 
 
-def search(items: list[dict], *, asset: str, api_key: Optional[str],
+def search(items: list[dict], *, api_key: Optional[str],
            post: Callable[[str, dict, dict, float], tuple], now: Optional[datetime] = None,
            max_queries: int = MAX_QUERIES, min_publishers: int = 1, clock=time.monotonic) -> dict:
     """Search official pages for the actors in ``items`` ({id, title, publisher, published_at, p?}).
@@ -412,12 +395,12 @@ def search(items: list[dict], *, asset: str, api_key: Optional[str],
     ``PrimaryFetchError`` on transport failure. Never raises; the record carries fixed labels only.
     """
     now = (now or datetime.now(UTC)).astimezone(UTC)
-    record = {'provider': 'exa', 'endpoint': ENDPOINT, 'asset': asset, 'searched_at': _z(now), 'status': 'skipped',
+    record = {'provider': 'exa', 'endpoint': ENDPOINT, 'searched_at': _z(now), 'status': 'skipped',
               'reason': None, 'queries': [], 'pages': [], 'by_headline': {}, 'cost_usd': 0.0,
               'limits': {'max_queries': max_queries, 'num_results': NUM_RESULTS, 'max_age_hours': MAX_AGE_HOURS,
                          'match_min': MATCH_MIN}}
     usable = [i for i in items if isinstance(i, dict) and i.get('id') and i.get('title') and _time(i.get('published_at'))]
-    plans = plan_queries(usable, asset, max_queries=max_queries, min_publishers=min_publishers)
+    plans = plan_queries(usable, max_queries=max_queries, min_publishers=min_publishers)
     if not plans:
         record['reason'] = 'no_official_actor'
         return record
@@ -500,54 +483,3 @@ def search(items: list[dict], *, asset: str, api_key: Optional[str],
         record['reason'] = stopped
     return record
 
-
-def requests_post(url: str, body: dict, headers: dict, timeout: float) -> tuple:
-    """Plain HTTPS POST for the XAU collector (requests); fixed labels on failure, no redirects."""
-    import requests
-    try:
-        resp = requests.post(url, json=body, headers=headers, timeout=timeout, allow_redirects=False)
-    except requests.exceptions.Timeout:
-        raise PrimaryFetchError('timeout') from None
-    except requests.exceptions.RequestException:
-        raise PrimaryFetchError('connection') from None
-    if not 200 <= resp.status_code < 300:
-        return resp.status_code, None
-    try:
-        return resp.status_code, resp.json()
-    except ValueError:
-        return resp.status_code, None
-
-
-def format_lines(record: Optional[dict], headlines: dict, tz=None) -> list[str]:
-    """Model-input lines: what was searched, each checked official page, and the headlines it backs."""
-    tz = tz or timezone(timedelta(hours=9))
-    lines = ['### 一次資料（公式ページの本文・Exa検索）']
-    if not isinstance(record, dict):
-        lines.append('- 未実施')
-        return lines
-    if record.get('status') == 'skipped':
-        lines.append(f"- 未実施（{record.get('reason')}）")
-        return lines
-    asked = []
-    for q in record.get('queries') or []:
-        shown = sum(1 for p in record.get('pages') or [] if p.get('query_index') == q.get('index'))
-        state = (f"{shown}件採用" if q.get('status') == 'ok'
-                 else f"失敗: {q.get('error_kind')}" if q.get('status') == 'failed' else f"未実施: {q.get('error_kind')}")
-        asked.append(f"{q['actor_label']}（{state}）")
-    lines.append(f"- 照会 {len(record.get('queries') or [])}件: {'・'.join(asked)}。費用見積 {record.get('cost_usd', 0):.3f} USD。"
-                 f"取得 {datetime.fromisoformat(record['searched_at'].replace('Z', '+00:00')).astimezone(tz):%m/%d %H:%M} JST")
-    for page in record.get('pages') or []:
-        day = datetime.fromisoformat(page['exa_published'].replace('Z', '+00:00'))
-        when = f"{day:%Y-%m-%d}（日付のみ）" if page['published_precision'] == 'day' else f"{day.astimezone(tz):%m/%d %H:%M} JST"
-        own = f"、本文の日付「{' / '.join(page['page_dates'])}」" if page.get('page_dates') else ''
-        backs = [m['headline_id'] for m in page.get('matched') or []]
-        titles = [f"{h}「{headlines[h]['title'][:80]}」" for h in backs if h in headlines]
-        lines.append(f"- {page['id']} [{page['actor_label']}・{page['host']}] {page['title']} — {page['url']}"
-                     f"（Exaの公表日 {when}{own}）")
-        lines.append(f"  抜粋: {page['excerpt']}")
-        lines.append(f"  対応する見出し: {'、'.join(titles) if titles else 'なし（語の一致が基準未満）'}")
-    if not record.get('pages'):
-        lines.append('- 採用できる公式ページなし')
-    lines.append('※ 公式サイトの本文（Exaの取得・キャッシュ経由）。同じページに対応する見出しは同じ元情報の再報道として一つに数える。'
-                 '対応はコードの語の一致による候補で、見出しの主張を本文が支えるかは抜粋で確認する')
-    return lines

@@ -178,7 +178,7 @@ def item_identifiers(item: dict) -> list[str]:
     if sha:
         ids.append(f'body:{sha}')
     page = item.get('primary') or {}
-    # The official page backing a media headline (scrapers.primary_sources): its URL is stable across fetches,
+    # The official page backing a media headline (btc.primary_sources): its URL is stable across fetches,
     # its text hash may not be (the page shows the crawler's local time).
     if page.get('url'):
         ids.append(f'url:{page["url"]}')

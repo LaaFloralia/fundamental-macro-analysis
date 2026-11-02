@@ -21,7 +21,7 @@
   that code did not perform.
 - Price reaction (design 6.3): Binance BTCUSDT closed 1-minute bars around
   the publisher time; baseline is the bar closing before t0; no forward fill.
-- Official pages (``scrapers.primary_sources``, collect worker, EXA_API_KEY): for
+- Official pages (``btc.primary_sources``, collect worker, optional EXA_API_KEY): for
   actors named by at least two outlets (Binance, Tether, Treasury ...), Exa is
   asked for the actor's own page; the news-detail worker attaches a checked page
   to the headlines it backs as ``primary`` and only then marks them
@@ -295,7 +295,7 @@ PAGE_FIELDS = ('id', 'actor', 'actor_label', 'url', 'host', 'title', 'exa_publis
 
 
 def _primary_post(f: Fetcher):
-    from scrapers import primary_sources
+    from btc import primary_sources
 
     def post(url, body, headers, timeout):
         try:
@@ -307,10 +307,10 @@ def _primary_post(f: Fetcher):
 
 def primary_search(f: Fetcher, candidates: list[dict], now: datetime) -> dict:
     """Exa search for the official pages of actors in the media headlines (official feeds excluded)."""
-    from scrapers import primary_sources
+    from btc import primary_sources
     items = [{'id': c['id'], 'title': c['title'], 'publisher': c['publisher'], 'published_at': c['published_at']}
              for c in candidates if not c.get('official')]
-    return primary_sources.search(items, asset='btc', api_key=os.environ.get('EXA_API_KEY'), post=_primary_post(f),
+    return primary_sources.search(items, api_key=os.environ.get('EXA_API_KEY'), post=_primary_post(f),
                                   now=now, min_publishers=PRIMARY_MIN_PUBLISHERS)
 
 

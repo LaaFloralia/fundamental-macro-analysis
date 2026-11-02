@@ -73,7 +73,7 @@ from scrapers.xau_bars import collect as collect_xau_bars, snapshot as bar_snaps
 from scrapers.xau_levels import RESTORED_CALENDAR, build_levels, format_level_lines, level_events, level_inputs
 from scrapers.us_events import format_us_event_lines, results_start
 from scrapers.fred import fetch_fred_series
-from scrapers.news_triage import add_primary, build_news, format_news_lines
+from scrapers.news_triage import build_news, format_news_lines
 from scrapers.offchart_features import build_features, save_features
 from scrapers.positioning_history import (
     append_snapshot, format_positioning_lines, load_history, snapshot_from_data,
@@ -152,12 +152,10 @@ def restored_calendar(since: datetime, now: datetime, history: dict, actuals: di
 
 
 def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = None,
-                           gvz_fetch=None, news_builder=None, save=True, tv_history=TV_HISTORY,
-                           primary_searcher=None) -> None:
+                           gvz_fetch=None, news_builder=None, save=True, tv_history=TV_HISTORY) -> None:
     """指標サプライズ・流動性の目安・ポジショニング履歴・採点入力の取得状況を追加する。
 
-    失敗しても他の入力は残す。now / gvz_fetch / tv_history / primary_searcher はテストで差し替えるための引数
-    （primary_searcher=False で公式ページの検索をしない）。
+    失敗しても他の入力は残す。now / gvz_fetch / tv_history はテストで差し替えるための引数。
     """
     now = now or datetime.now(JST)
     lookback = 7 * 24 if weekly else 36  # news headlines
@@ -226,8 +224,6 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
         print(f"  [WARN]  positioning_history: {e}")
     try:
         results["news_headlines"] = (news_builder or build_news)(now.astimezone(timezone.utc), lookback)
-        if primary_searcher is not False:
-            (primary_searcher or add_primary)(results["news_headlines"], now.astimezone(timezone.utc))
         sel = results["news_headlines"].get("selection") or {}
         print(f"  [OK]    news_triage: 候補 {results['news_headlines'].get('candidate_count')} 件 → "
               f"採用 {len(results['news_headlines'].get('kept') or [])} 件（{sel.get('mode')}）")

@@ -11,14 +11,18 @@ Worker (``<root>/runtime/btc/runner.py --worker``): imports ``btc.*`` from the
 snapshot and runs one workflow phase.
 
 Collection (prepare phase), all steps started by the entry:
-1. ``op-run-batch.sh <runtime>/btc/secrets.env.tpl /usr/bin/env -u
-   OP_SERVICE_ACCOUNT_TOKEN sandbox-exec -f boundary.sb -D TMPDIR=<run tmp>
-   <python> -B <worker> --collect-worker ...``: ``op`` needs the Keychain, so
-   it runs outside the sandbox; its service-account token is removed before
-   ``sandbox-exec``, so only FRED_API_KEY and EXA_API_KEY reach the sandboxed
-   collect worker (context sources, news headlines and the official-page search
-   of ``scrapers/primary_sources.py``; writes ``context.json`` and
-   ``news-candidates.json``).
+1. ``op-run-batch.sh <runtime>/btc/exa.env.tpl op-run-batch.sh
+   <runtime>/btc/secrets.env.tpl /usr/bin/env -u OP_SERVICE_ACCOUNT_TOKEN
+   sandbox-exec -f boundary.sb -D TMPDIR=<run tmp> <python> -B <worker>
+   --collect-worker ...``: ``op`` needs the Keychain, so it runs outside the
+   sandbox; its service-account token is removed before ``sandbox-exec``, so
+   only FRED_API_KEY and EXA_API_KEY reach the sandboxed collect worker
+   (context sources, news headlines and the official-page search of
+   ``btc/primary_sources.py``; writes ``context.json`` and
+   ``news-candidates.json``). FRED is required; Exa is optional: when the
+   wrapper chain never starts the worker, collection is retried once with
+   FRED alone (``official_page_key: unavailable`` in the entry log), so an
+   unreadable Exa item never stops the run.
 2. Jev headline triage in the entry itself (``runtime/btc/headline_triage.py``,
    standard library only): strict validation of ``news-candidates.json``, the
    XAU triage script in a private temp directory, ``news-triage.json`` out.
@@ -66,11 +70,11 @@ DEFAULT_PYTHON = DEFAULT_SOURCE / '.venv/bin/python'
 # Tests replace the wrapper with a fake (never resolves secrets); production uses op-run-batch.sh.
 SECRETS_WRAPPER = Path(os.environ.get('BTC_SECRETS_WRAPPER') or '/Users/laa/.config/laa/op-run-batch.sh')
 SANDBOX = Path('/usr/bin/sandbox-exec')
-# Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage and
-# scrapers.primary_sources (shared with XAU),
+# Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage,
 # btc.presentation -> scripts.offchart_dashboard (the page shared with XAU), btc.dashboard -> scripts.report_bundle.
-SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scrapers/primary_sources.py',
-                  'scripts/offchart_dashboard.py', 'scripts/report_bundle.py', 'scripts/d1_bias.py')
+SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scripts/offchart_dashboard.py', 'scripts/report_bundle.py',
+                  'scripts/d1_bias.py')
+SECRET_TEMPLATES = ('secrets.env.tpl', 'exa.env.tpl')  # FRED (required), Exa (optional)
 SNAPSHOT_SUFFIXES = ('.py', '.json', '.md')
 STRIPPED_ENV = ('PYTHONPATH', 'PYTHONHOME', 'FRED_API_KEY', 'EXA_API_KEY', 'TWELVEDATA_API_KEY', 'OP_SERVICE_ACCOUNT_TOKEN',
                 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL', 'MYFXBOOK_EMAIL', 'MYFXBOOK_PASSWORD',
@@ -95,6 +99,7 @@ class Paths:
         self.manifest = self.root / 'snapshot.json'
         self.worker = self.runtime / 'btc' / 'runner.py'
         self.secrets_template = self.runtime / 'btc' / 'secrets.env.tpl'
+        self.exa_template = self.runtime / 'btc' / 'exa.env.tpl'
 
 
 # --------------------------------------------------------------------- entry
@@ -107,7 +112,7 @@ def snapshot_allowed(name: str) -> bool:
         return True
     if path.parts[0] != 'btc' or 'job_template' in path.parts:
         return False
-    return path.suffix in SNAPSHOT_SUFFIXES or path.name == 'secrets.env.tpl'
+    return path.suffix in SNAPSHOT_SUFFIXES or path.name in SECRET_TEMPLATES
 
 
 def runtime_git() -> str:
@@ -249,7 +254,7 @@ def dry_run_plan(paths: Paths, args) -> dict:
             'lock': str(paths.lock), 'sandbox_policy': str(paths.policy), 'runtime': str(paths.runtime),
             'command': worker_command(paths, args),
             'collection': {'wrapper': str(SECRETS_WRAPPER), 'template': str(paths.secrets_template),
-                           'secrets': ['FRED_API_KEY', 'EXA_API_KEY'],
+                           'secrets': ['FRED_API_KEY'], 'optional_secrets': ['EXA_API_KEY'],
                            'credential_boundary': 'op outside the sandbox; token removed before sandbox-exec',
                            'command': collect_command(paths, args.mode, Path('<work>/.collect-<id>/collection.json'),
                                                       '<collection start>'),
@@ -325,9 +330,12 @@ def _job(paths: Paths):
     return Job(root=paths.root, python=paths.python, secrets_wrapper=SECRETS_WRAPPER)
 
 
-def collect_command(paths: Paths, mode: str, output: Path, started: str, tmpdir: Path | str = '<run tmp>') -> list[str]:
-    # op run passes its own OP_SERVICE_ACCOUNT_TOKEN on to its child: drop it before sandbox-exec.
-    return [str(SECRETS_WRAPPER), str(paths.secrets_template), '/usr/bin/env', '-u', 'OP_SERVICE_ACCOUNT_TOKEN'] + \
+def collect_command(paths: Paths, mode: str, output: Path, started: str, tmpdir: Path | str = '<run tmp>',
+                    exa: bool = True) -> list[str]:
+    # op run passes its own OP_SERVICE_ACCOUNT_TOKEN on to its child: drop it before sandbox-exec. The optional
+    # Exa template wraps the required one (each wrapper reads its token from the Keychain itself).
+    optional = [str(SECRETS_WRAPPER), str(paths.exa_template)] if exa else []
+    return optional + [str(SECRETS_WRAPPER), str(paths.secrets_template), '/usr/bin/env', '-u', 'OP_SERVICE_ACCOUNT_TOKEN'] + \
         sandbox_prefix(paths, tmpdir) + [
             str(paths.python), '-B', str(paths.worker), mode, '--collect-worker', '--root', str(paths.root),
             '--collect-output', str(output), '--session-started', started]
@@ -379,13 +387,20 @@ def collect_outside_sandbox(paths: Paths, mode: str, output: Path, started: date
         return 'credentials_unavailable'
     marker = output.with_name('.collect-started')
     deadline = time.monotonic() + COLLECT_TIMEOUT
-    try:
-        proc = _sandboxed(collect_command(paths, mode, output, started.isoformat(), tmpdir), paths, tmpdir,
-                          COLLECT_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return 'collection_timeout'
-    if proc.returncode == GUARD_EXIT:
-        return 'credential_env_present'
+    exa = paths.exa_template.is_file()
+    while True:
+        try:
+            proc = _sandboxed(collect_command(paths, mode, output, started.isoformat(), tmpdir, exa=exa), paths, tmpdir,
+                              max(60.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return 'collection_timeout'
+        if proc.returncode == GUARD_EXIT:
+            return 'credential_env_present'
+        if marker.exists() or not exa:
+            break
+        exa = False  # the chain never started the worker: retry once with the required FRED template alone
+    if entry is not None:
+        entry['official_page_key'] = 'ok' if exa else 'unavailable'
     if not marker.exists():
         return 'credentials_unavailable'  # the wrapper never started the worker
     if proc.returncode != 0 or not output.with_name(CONTEXT_NAME).is_file():

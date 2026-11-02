@@ -112,12 +112,14 @@ def test_dry_run_writes_nothing(installed):
     assert result.returncode == 0
     plan = json.loads(result.stdout)
     assert plan['dry_run'] is True and plan['symbol'] == 'BTCUSD' and plan['root'] == str(root)
-    assert plan['collection']['secrets'] == ['FRED_API_KEY', 'EXA_API_KEY'] and plan['command'][0] == '/usr/bin/sandbox-exec'
+    assert plan['collection']['secrets'] == ['FRED_API_KEY'] and plan['command'][0] == '/usr/bin/sandbox-exec'
+    assert plan['collection']['optional_secrets'] == ['EXA_API_KEY']
     # op runs outside the sandbox and starts sandbox-exec, never the other way round; its token is
-    # removed before sandbox-exec, and the news-detail worker runs without any wrapper.
+    # removed before sandbox-exec, and the news-detail worker runs without any wrapper. The optional
+    # Exa template wraps the required FRED one.
     collect = plan['collection']['command']
-    assert collect[1].endswith('runtime/btc/secrets.env.tpl')
-    assert collect[2:6] == ['/usr/bin/env', '-u', 'OP_SERVICE_ACCOUNT_TOKEN', '/usr/bin/sandbox-exec']
+    assert collect[1].endswith('runtime/btc/exa.env.tpl') and collect[3].endswith('runtime/btc/secrets.env.tpl')
+    assert collect[4:8] == ['/usr/bin/env', '-u', 'OP_SERVICE_ACCOUNT_TOKEN', '/usr/bin/sandbox-exec']
     finish = plan['collection']['finish_command']
     assert finish[0] == '/usr/bin/sandbox-exec' and '--finish-worker' in finish
     assert not any('op-run' in part or part.endswith('.tpl') for part in finish)
@@ -140,7 +142,8 @@ def test_entry_chain_records_credential_failure(installed, tmp_path):
     assert state['status'] == 'needs_attention' and state['error_category'] == 'credentials_unavailable'
     assert state['symbol'] == 'BTCUSD'
     manifest = json.loads((root / 'snapshot.json').read_text())
-    assert set(manifest['sha256']) >= {'btc/runner.py', 'btc/workflow.py', 'btc/secrets.env.tpl', 'scripts/intel.py'}
+    assert set(manifest['sha256']) >= {'btc/runner.py', 'btc/workflow.py', 'btc/secrets.env.tpl', 'btc/exa.env.tpl',
+                                       'btc/primary_sources.py', 'scripts/intel.py'}
     assert not (root / 'runtime/tests').exists() and not (root / 'runtime/.env').exists()
     assert not (root / 'runtime/btc/job_template').exists()
     entries = [json.loads(x) for x in (root / 'logs/entries.jsonl').read_text().splitlines()]
@@ -170,6 +173,19 @@ def test_entry_chain_runs_collect_worker_in_sandbox(installed, tmp_path):
     assert entries[-1]['collect_status'] == 'collection_worker_failed'
     assert not list((root / 'work').glob('.collect-*'))  # staging removed by the entry
     assert FAKE_TOKEN not in tree_text(root) and FAKE_TOKEN not in result.stdout + result.stderr
+
+
+def test_unreadable_exa_item_never_stops_collection(installed, tmp_path):
+    """The optional Exa template fails to resolve: collection is retried with FRED alone and the worker runs."""
+    repo, root = installed
+    wrapper = fake_wrapper(tmp_path, 'case "$1" in *exa.env.tpl) exit 1;; esac; '
+                                     f'export OP_SERVICE_ACCOUNT_TOKEN={FAKE_TOKEN}; shift; exec "$@"')
+    result = run(root, 'daily', env={'BTC_SECRETS_WRAPPER': str(wrapper), 'BTC_STAGES': 'pending'})
+    assert result.returncode == 1
+    entries = [json.loads(x) for x in (root / 'logs/entries.jsonl').read_text().splitlines()]
+    # The worker started (pending stages then refuse to collect): not credentials_unavailable.
+    assert entries[-1]['collect_status'] == 'collection_worker_failed'
+    assert entries[-1]['official_page_key'] == 'unavailable'
 
 
 def test_entry_chain_guard_trips_on_any_op_variable(installed, tmp_path):
@@ -264,7 +280,7 @@ def test_entry_chain_collect_triage_finish(tmp_path):
     assert collection['op_names_collect'] == [] and collection['op_names_finish'] == []
     assert collection['selection'] == {'mode': 'fallback', 'reason': 'disabled'} and collection['scores'] is None
     entries = [json.loads(x) for x in (root / 'logs/entries.jsonl').read_text().splitlines()]
-    assert entries[-1]['collect_status'] == 'ok'
+    assert entries[-1]['collect_status'] == 'ok' and entries[-1]['official_page_key'] == 'ok'
     assert entries[-1]['news_triage'] == {'mode': 'fallback', 'reason': 'disabled'}
     assert not list((root / 'work').glob('.collect-*'))
     assert FAKE_TOKEN not in tree_text(root)

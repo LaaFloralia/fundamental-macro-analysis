@@ -422,7 +422,7 @@ def test_fixture_has_no_external_prose():
 
 
 def test_primary_confirmed_media_headline_must_quote_the_official_page(built):
-    """A headline backed by an official page (scrapers.primary_sources) is primary only in the page's own words."""
+    """A headline backed by an official page (btc.primary_sources) is primary only in the page's own words."""
     _, facts, _ = built
     facts = copy.deepcopy(facts)
     n = _news(facts, 'secondary_body_retrieved')
