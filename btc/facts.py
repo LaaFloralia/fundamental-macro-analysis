@@ -1624,10 +1624,15 @@ def news_state(F: Facts, S: dict, state: dict):
             'excerpt': md_safe(item.get('excerpt', '')), 'p': item.get('p'), 'reaction': reaction, 'fact_ids': fact_ids,
             'feed_raw_sha256': item.get('feed_raw_sha256'),
         })
+        if isinstance(item.get('primary'), dict):
+            page = dict(item['primary'])
+            page['title'], page['excerpt'] = md_safe(page.get('title', '')), md_safe(page.get('excerpt', ''))
+            items[-1]['primary'] = page
     state['news'] = {'status': rec['status'], 'items': items, 'feeds': v['feeds'], 'selection': v['selection'],
                      'selection_rule': v['selection_rule'], 'candidate_count': v['candidate_count'],
                      'window_start': v['window_start'], 'window_end': v['window_end'],
-                     'lookback_hours': v['lookback_hours'], 'feeds_ok': v['feeds_ok']}
+                     'lookback_hours': v['lookback_hours'], 'feeds_ok': v['feeds_ok'],
+                     'primary_search': v.get('primary_search')}
 
 
 def carry_state(state: dict, history_dir, as_of: datetime):

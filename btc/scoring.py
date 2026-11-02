@@ -195,13 +195,8 @@ def spot_group(facts: dict) -> dict:
 
 
 def _item_ids(item: dict) -> set:
-    ids = {f'url:{item["url"]}'} if item.get('url') else set()
-    if item.get('event_cluster_id'):
-        ids.add(f'cluster:{item["event_cluster_id"]}')
-    sha = (item.get('body') or {}).get('text_sha256')
-    if sha:
-        ids.add(f'body:{sha}')
-    return ids
+    from btc import carry
+    return set(carry.item_identifiers(item))  # one definition: headlines backed by one official page are one event
 
 
 def known_match(item: dict, assessment: dict, known: list[dict]) -> dict | None:

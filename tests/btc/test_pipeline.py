@@ -419,3 +419,26 @@ def test_fixture_has_no_external_prose():
     news_paths = {'sources/[]/values/kept/[]/title', 'sources/[]/values/kept/[]/excerpt',
                   'sources/[]/values/kept/[]/body/excerpt'}
     assert found - news_paths <= OWN_TEXT_PATHS, found - news_paths - OWN_TEXT_PATHS
+
+
+def test_primary_confirmed_media_headline_must_quote_the_official_page(built):
+    """A headline backed by an official page (scrapers.primary_sources) is primary only in the page's own words."""
+    _, facts, _ = built
+    facts = copy.deepcopy(facts)
+    n = _news(facts, 'secondary_body_retrieved')
+    n['code_verification'] = 'primary_body_retrieved'
+    n['primary'] = {'url': 'https://www.binance.com/en/support/announcement/detail/x', 'host': 'www.binance.com',
+                    'actor_label': 'Binance', 'title': 'Security Incident Update', 'excerpt': 'Withdrawals are suspended.',
+                    'exa_published': '2026-10-30T00:00:00Z', 'published_precision': 'day', 'text_sha256': 'a' * 64}
+    for quote, rejected in ((n['title'][:20], True), ('Withdrawals are suspended', False)):
+        a = valid_analysis(facts)
+        a['news_assessments'] = [{'news_id': n['id'], 'event_cluster_id': n['event_cluster_id'], 'group_id': 'context_only',
+                                  'impact': 'unknown', 'importance': 'medium', 'verification': 'primary_confirmed',
+                                  'source_quote': quote, 'fact_ids': [], 'interpretation': claim('TEST 参考。')}]
+        try:
+            analysis_mod.validate(a, facts, edition_id=EDITION)
+            problems = []
+        except AnalysisError as error:
+            problems = error.problems
+        assert any('primary_quote_not_in_official_page' in p for p in problems) is rejected, problems
+        assert not any('primary_confirmed_without_official_body' in p for p in problems)

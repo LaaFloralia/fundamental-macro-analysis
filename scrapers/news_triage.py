@@ -185,6 +185,27 @@ def build_news(now: datetime, lookback_hours: int, fetch=None, runner=None) -> d
             "selection": report}
 
 
+OFFICIAL_FEED_SOURCES = {"ECB", "Federal Reserve"}
+
+
+def kept_items(news: dict) -> list[dict]:
+    """Kept media headlines as primary_sources items; ids k1.. follow the kept order (official feeds excluded)."""
+    return [{"id": f"k{i + 1}", "title": c["title"], "publisher": c["source"], "published_at": c["published"],
+             "p": c.get("p")} for i, c in enumerate(news.get("kept") or []) if c.get("source") not in OFFICIAL_FEED_SOURCES]
+
+
+def add_primary(news: dict, now: datetime, api_key: Optional[str] = None, post=None) -> dict:
+    """Official pages behind the kept headlines (scrapers.primary_sources, Exa). Never raises."""
+    from scrapers import primary_sources
+    try:
+        news["primary_search"] = primary_sources.search(
+            kept_items(news), asset="xau", api_key=api_key if api_key is not None else os.environ.get("EXA_API_KEY"),
+            post=post or primary_sources.requests_post, now=now)
+    except Exception as e:  # noqa: BLE001 — the headlines stay usable without it
+        news["primary_search"] = {"status": "unavailable", "reason": type(e).__name__, "pages": [], "queries": []}
+    return news
+
+
 def format_news_lines(news: Optional[dict]) -> list[str]:
     lines = ["### ニュース見出し（公開RSS・Jev選別）"]
     if not isinstance(news, dict):
@@ -198,10 +219,16 @@ def format_news_lines(news: Optional[dict]) -> list[str]:
               if sel.get("mode") == "jev" else f"キーワード規則（Jev不使用: {sel.get('reason')}）")
     lines.append(f"- 候補 {news.get('candidate_count', 0)} 件（直近{news.get('window_hours')}時間、取得元: {'・'.join(ok) or 'なし'}"
                  f"{'／取得失敗: ' + '・'.join(ng) if ng else ''}）→ 採用 {len(news.get('kept') or [])} 件。選別: {method}")
+    items = {i["title"]: i["id"] for i in kept_items(news)}
     for c in news.get("kept") or []:
         when = datetime.fromisoformat(c["published"]).astimezone(JST).strftime("%m/%d %H:%M")
         p = f"p={c['p']:.2f} " if isinstance(c.get("p"), float) else ""
-        lines.append(f"- {when} JST {p}[{c['source']}] {c['title']} — {c['url']}")
+        ident = f"{items[c['title']]} " if c["title"] in items else ""
+        lines.append(f"- {ident}{when} JST {p}[{c['source']}] {c['title']} — {c['url']}")
     lines.append("※ 見出しのみ・本文未確認。p は金の材料として関連する確率で、方向や重要度ではない。"
                  "方向の判断は原文と金・金利・ドルの実際の反応で確認する")
+    if "primary_search" in news:
+        from scrapers import primary_sources
+        lines.append("")
+        lines.extend(primary_sources.format_lines(news.get("primary_search"), {i["id"]: i for i in kept_items(news)}, JST))
     return lines

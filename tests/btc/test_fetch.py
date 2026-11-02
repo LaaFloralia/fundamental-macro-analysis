@@ -140,3 +140,27 @@ def test_overall_status():
     assert overall_status([{'status': 'unavailable'}]) == 'unavailable'
     assert overall_status([]) == 'unavailable'
     assert overall_status([{'status': 'ok'}, {'status': 'stale'}]) == 'partial'
+
+
+def test_post_json_sends_one_request_without_retry_or_redirect_and_returns_the_status():
+    import requests
+
+    class PostSession(FakeSession):
+        def post(self, url, **kwargs):
+            return self.get(url, **kwargs)
+    session = PostSession([FakeResponse(200, b'{"results": []}')])
+    f = Fetcher(Deadline(60), session=session, sleep=lambda s: None)
+    assert f.post_json('https://api.exa.ai/search', {'query': 'q'}, headers={'x-api-key': 'k'}) == (200, {'results': []})
+    url, kwargs = session.calls[0]
+    assert kwargs['allow_redirects'] is False and kwargs['data'] == b'{"query": "q"}'
+    assert kwargs['headers']['Content-Type'] == 'application/json'
+    session = PostSession([FakeResponse(402, b'{"error": "payment"}')])
+    f = Fetcher(Deadline(60), session=session, sleep=lambda s: None)
+    assert f.post_json('https://api.exa.ai/search', {}) == (402, None)
+    session = PostSession([requests.exceptions.ReadTimeout(), FakeResponse(200)])
+    f = Fetcher(Deadline(60), session=session, sleep=lambda s: None)
+    with pytest.raises(FetchError) as caught:
+        f.post_json('https://api.exa.ai/search', {})
+    assert caught.value.kind == 'timeout' and len(session.calls) == 1  # never retried (a search may be charged)
+    with pytest.raises(FetchError):
+        f.post_json('http://api.exa.ai/search', {})  # https only, nothing sent

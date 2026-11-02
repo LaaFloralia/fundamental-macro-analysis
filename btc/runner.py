@@ -15,8 +15,9 @@ Collection (prepare phase), all steps started by the entry:
    OP_SERVICE_ACCOUNT_TOKEN sandbox-exec -f boundary.sb -D TMPDIR=<run tmp>
    <python> -B <worker> --collect-worker ...``: ``op`` needs the Keychain, so
    it runs outside the sandbox; its service-account token is removed before
-   ``sandbox-exec``, so only FRED_API_KEY reaches the sandboxed collect worker
-   (context sources and news headlines; writes ``context.json`` and
+   ``sandbox-exec``, so only FRED_API_KEY and EXA_API_KEY reach the sandboxed
+   collect worker (context sources, news headlines and the official-page search
+   of ``scrapers/primary_sources.py``; writes ``context.json`` and
    ``news-candidates.json``).
 2. Jev headline triage in the entry itself (``runtime/btc/headline_triage.py``,
    standard library only): strict validation of ``news-candidates.json``, the
@@ -65,12 +66,13 @@ DEFAULT_PYTHON = DEFAULT_SOURCE / '.venv/bin/python'
 # Tests replace the wrapper with a fake (never resolves secrets); production uses op-run-batch.sh.
 SECRETS_WRAPPER = Path(os.environ.get('BTC_SECRETS_WRAPPER') or '/Users/laa/.config/laa/op-run-batch.sh')
 SANDBOX = Path('/usr/bin/sandbox-exec')
-# Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage,
+# Existing modules imported read-only: btc.machine -> scripts.intel, btc.news -> scrapers.news_triage and
+# scrapers.primary_sources (shared with XAU),
 # btc.presentation -> scripts.offchart_dashboard (the page shared with XAU), btc.dashboard -> scripts.report_bundle.
-SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scripts/offchart_dashboard.py', 'scripts/report_bundle.py',
-                  'scripts/d1_bias.py')
+SNAPSHOT_EXTRA = ('scripts/intel.py', 'scrapers/news_triage.py', 'scrapers/primary_sources.py',
+                  'scripts/offchart_dashboard.py', 'scripts/report_bundle.py', 'scripts/d1_bias.py')
 SNAPSHOT_SUFFIXES = ('.py', '.json', '.md')
-STRIPPED_ENV = ('PYTHONPATH', 'PYTHONHOME', 'FRED_API_KEY', 'TWELVEDATA_API_KEY', 'OP_SERVICE_ACCOUNT_TOKEN',
+STRIPPED_ENV = ('PYTHONPATH', 'PYTHONHOME', 'FRED_API_KEY', 'EXA_API_KEY', 'TWELVEDATA_API_KEY', 'OP_SERVICE_ACCOUNT_TOKEN',
                 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_URL', 'MYFXBOOK_EMAIL', 'MYFXBOOK_PASSWORD',
                 # Production always uses Playwright's bundled Chromium: an installed Chrome (dev channel)
                 # would need its per-user singleton socket, which lies outside the sandbox boundary.
@@ -247,7 +249,7 @@ def dry_run_plan(paths: Paths, args) -> dict:
             'lock': str(paths.lock), 'sandbox_policy': str(paths.policy), 'runtime': str(paths.runtime),
             'command': worker_command(paths, args),
             'collection': {'wrapper': str(SECRETS_WRAPPER), 'template': str(paths.secrets_template),
-                           'secrets': ['FRED_API_KEY'],
+                           'secrets': ['FRED_API_KEY', 'EXA_API_KEY'],
                            'credential_boundary': 'op outside the sandbox; token removed before sandbox-exec',
                            'command': collect_command(paths, args.mode, Path('<work>/.collect-<id>/collection.json'),
                                                       '<collection start>'),

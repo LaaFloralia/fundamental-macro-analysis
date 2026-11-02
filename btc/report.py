@@ -520,12 +520,23 @@ def section_news(doc: Doc, facts: dict, analysis: dict, ev: dict, index: dict) -
                     f'期間 {jst(news["window_start"])}〜{jst(news["window_end"])}（{news["lookback_hours"]:g}時間）')
     doc.item('見出しは未確認の手掛かり。本文を取得できたものだけ「本文取得済み」。価格反応は公表時刻付近の動きで因果ではない'
              '（Binance BTCUSDT 1分足、USDT建て）')
+    search = news.get('primary_search') or {}
+    if search.get('status') not in (None, 'skipped'):
+        asked = '・'.join(f'{q.get("actor_label")}（{"成功" if q.get("status") == "ok" else "失敗" if q.get("status") == "failed" else "未実施"}）'
+                         for q in search.get('queries') or [])
+        doc.item(f'公式ページの検索（Exa）: {asked}。見出しに対応した公式ページ {search.get("pages", 0)}件。'
+                 '対応した見出しは同じ元情報の再報道として一つに数える')
+    elif search:
+        doc.item(f'公式ページの検索（Exa）: 未実施（{search.get("reason")}）')
     assessed = {a['news_id']: (i, a) for i, a in enumerate(analysis['news_assessments'])}
     counted = set(ev['groups']['btc_specific_event']['components'].get('news_ids', []))
     candidates = []
     for n in news['items']:
+        page = n.get('primary') or {}
         doc.item(f'{n["id"]}（{n["publisher"]}、{jst(n["published_at"])}）: {n["title"]}'
-                 f'（{CODE_VERIFICATION.get(n["code_verification"], n["code_verification"])}）')
+                 f'（{CODE_VERIFICATION.get(n["code_verification"], n["code_verification"])}'
+                 + (f'。公式ページ: {page["actor_label"]} {page["url"]}、公表日 {page["exa_published"][:10]}'
+                    + ('（日付のみ）' if page.get('published_precision') == 'day' else '') if page else '') + '）')
         if n['id'] in assessed:
             i, a = assessed[n['id']]
             doc.item(f'{n["id"]} 親の評価: {GROUP[a["group_id"]]}・{IMPACT[a["impact"]]}・重要度{a["importance"]}・'

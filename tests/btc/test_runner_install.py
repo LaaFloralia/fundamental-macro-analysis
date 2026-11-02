@@ -112,7 +112,7 @@ def test_dry_run_writes_nothing(installed):
     assert result.returncode == 0
     plan = json.loads(result.stdout)
     assert plan['dry_run'] is True and plan['symbol'] == 'BTCUSD' and plan['root'] == str(root)
-    assert plan['collection']['secrets'] == ['FRED_API_KEY'] and plan['command'][0] == '/usr/bin/sandbox-exec'
+    assert plan['collection']['secrets'] == ['FRED_API_KEY', 'EXA_API_KEY'] and plan['command'][0] == '/usr/bin/sandbox-exec'
     # op runs outside the sandbox and starts sandbox-exec, never the other way round; its token is
     # removed before sandbox-exec, and the news-detail worker runs without any wrapper.
     collect = plan['collection']['command']

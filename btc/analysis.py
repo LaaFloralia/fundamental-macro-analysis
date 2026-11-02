@@ -166,9 +166,15 @@ def validate(analysis: dict, facts: dict, *, edition_id: str) -> dict:
                 and a['interpretation']['claim_kind'] == 'fact_interpretation'):
             # Headlines are unverified leads (P4): a direction may only be stated as a hypothesis.
             problems.append(f'{where}: unverified_news_stated_as_fact')
-        source = ' '.join([item['title'], item.get('excerpt', ''), (item.get('body') or {}).get('excerpt', '')])
+        page = item.get('primary') or {}
+        official_text = ' '.join([page.get('title', ''), page.get('excerpt', '')])
+        source = ' '.join([item['title'], item.get('excerpt', ''), (item.get('body') or {}).get('excerpt', ''), official_text])
         if not a['source_quote'].strip() or _norm(a['source_quote']) not in _norm(source):
             problems.append(f'{where}: source_quote_not_in_retrieved_text')
+        elif (a['verification'] == 'primary_confirmed' and not item.get('official') and page
+              and _norm(a['source_quote']) not in _norm(official_text)):
+            # A media headline is confirmed by the official page only in the page's own words.
+            problems.append(f'{where}: primary_quote_not_in_official_page')
         if UNSAFE.search(a['source_quote']):
             problems.append(f'{where}: source_quote_unsafe_characters')
         for fact_id in a['fact_ids']:
@@ -315,11 +321,35 @@ def briefing(facts: dict, preview: dict, *, edition_id: str, mode: str, session_
                                 f'{parse_time(window["end_at"]).astimezone(JST).strftime("%H:%M")} JST' if window else None))
     lines += ['', '## ニュース（news_id）', '',
               '| news_id | cluster | 配信元 | 公表 | コード確認 | 見出し | 抜粋 |', '|---|---|---|---|---|---|---|']
+    pages: dict = {}
     for n in st.get('news', {}).get('items', []):
         excerpt = (n.get('body') or {}).get('excerpt') or n.get('excerpt', '')
+        if n.get('primary'):
+            pages.setdefault(n['primary']['url'], (n['primary'], []))[1].append(n['id'])
+            excerpt = f'［公式ページ {n["primary"]["host"]} に対応・下の一次資料］ ' + excerpt
         lines.append(_table_row(n['id'], n['event_cluster_id'], n['publisher'],
                                 parse_time(n['published_at']).astimezone(JST).strftime('%m-%d %H:%M JST'),
                                 n['code_verification'], n['title'], excerpt[:200]))
+    search = st.get('news', {}).get('primary_search') or {}
+    lines += ['', '## 一次資料（公式ページ・Exa検索）', '']
+    if search.get('status') in (None, 'skipped'):
+        lines.append(f'- 未実施（{search.get("reason") or "記録なし"}）')
+    else:
+        asked = '・'.join(f'{q.get("actor_label")}（{q.get("status")}{"・" + q["error_kind"] if q.get("error_kind") else ""}）'
+                         for q in search.get('queries') or [])
+        lines.append(f'- 照会: {asked}。費用見積 {search.get("cost_usd") or 0:.3f} USD。')
+    for page, news_ids in pages.values():
+        day = page['exa_published'][:10] if page.get('published_precision') == 'day' else \
+            parse_time(page['exa_published']).astimezone(JST).strftime('%Y-%m-%d %H:%M JST')
+        lines.append(f'- {page["actor_label"]}: {page["title"][:120]}（{page["url"]}、公表日 {day}'
+                     f'{"（日付のみ）" if page.get("published_precision") == "day" else ""}）。'
+                     f'同じ元情報の見出し: {", ".join(news_ids)}')
+        lines.append(f'  - 抜粋: {page["excerpt"]}')
+    if search.get('status') not in (None, 'skipped') and not pages:
+        lines.append('- 採用した見出しに対応する公式ページなし')
+    lines.append('- 公式ページに対応する見出しは code_verification=primary_body_retrieved。primary_confirmed にするのは'
+                 '抜粋が見出しの主張を支える時だけで、source_quote は抜粋の原文から取る（コードが照合）。'
+                 '同じページに対応する見出しは一つの出来事として扱い、二重に数えない。公表日は日付だけで時刻ではない。')
     shown_since = parse_time(facts['as_of']) - timedelta(days=carry.BRIEFING_DAYS)
     carried = [k for k in st.get('news', {}).get('carried') or [] if parse_time(k['first_known_at']) >= shown_since]
     lines += ['', '## 既知イベント（known_event_ids・採用済みの版で評価済み）', '',

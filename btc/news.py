@@ -21,12 +21,20 @@
   that code did not perform.
 - Price reaction (design 6.3): Binance BTCUSDT closed 1-minute bars around
   the publisher time; baseline is the bar closing before t0; no forward fill.
+- Official pages (``scrapers.primary_sources``, collect worker, EXA_API_KEY): for
+  actors named by at least two outlets (Binance, Tether, Treasury ...), Exa is
+  asked for the actor's own page; the news-detail worker attaches a checked page
+  to the headlines it backs as ``primary`` and only then marks them
+  ``primary_body_retrieved``. Headlines backed by the same page are one original
+  statement (their known-event identity shares the page hash). The headline keeps
+  its own publisher time: Exa gives the page a day, not a time.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
 from html.parser import HTMLParser
+import os
 import re
 import time
 from urllib.parse import urlsplit, urlunsplit
@@ -281,8 +289,61 @@ def reaction(f: Fetcher, published_at: str, now: datetime, others: list[str]) ->
     return out
 
 
+PRIMARY_MIN_PUBLISHERS = 2  # before triage: an actor named by one outlet only does not cost a search
+PAGE_FIELDS = ('id', 'actor', 'actor_label', 'url', 'host', 'title', 'exa_published', 'published_precision',
+               'page_dates', 'text_sha256', 'text_chars', 'excerpt', 'retrieved_at', 'via')
+
+
+def _primary_post(f: Fetcher):
+    from scrapers import primary_sources
+
+    def post(url, body, headers, timeout):
+        try:
+            return f.post_json(url, body, headers=headers, timeout=timeout)
+        except FetchError as error:
+            raise primary_sources.PrimaryFetchError(error.kind) from None
+    return post
+
+
+def primary_search(f: Fetcher, candidates: list[dict], now: datetime) -> dict:
+    """Exa search for the official pages of actors in the media headlines (official feeds excluded)."""
+    from scrapers import primary_sources
+    items = [{'id': c['id'], 'title': c['title'], 'publisher': c['publisher'], 'published_at': c['published_at']}
+             for c in candidates if not c.get('official')]
+    return primary_sources.search(items, asset='btc', api_key=os.environ.get('EXA_API_KEY'), post=_primary_post(f),
+                                  now=now, min_publishers=PRIMARY_MIN_PUBLISHERS)
+
+
+def attach_primary(kept: list[dict], search: dict | None) -> None:
+    """Give each kept media headline the official page that backs it (worker side, re-checked shape)."""
+    if not isinstance(search, dict):
+        return
+    pages = {p.get('id'): p for p in search.get('pages') or [] if isinstance(p, dict)}
+    links = search.get('by_headline') if isinstance(search.get('by_headline'), dict) else {}
+    for item in kept:
+        page = pages.get(links.get(item['id']))
+        if item['official'] or not page or not all(k in page for k in PAGE_FIELDS):
+            continue
+        if not str(page['url']).startswith('https://') or not re.fullmatch(r'[0-9a-f]{64}', str(page['text_sha256'])):
+            continue
+        overlap = next((m.get('overlap') for m in page.get('matched') or [] if m.get('headline_id') == item['id']), None)
+        item['primary'] = {k: page[k] for k in PAGE_FIELDS} | {'overlap': overlap}
+
+
+def search_summary(search: dict | None) -> dict | None:
+    """What was asked and found, without page text (facts, report)."""
+    if not isinstance(search, dict):
+        return None
+    keep = ('actor', 'actor_label', 'status', 'error_kind', 'cost_usd', 'results', 'accepted', 'headline_ids')
+    return {'provider': search.get('provider'), 'status': search.get('status'), 'reason': search.get('reason'),
+            'searched_at': search.get('searched_at'), 'cost_usd': search.get('cost_usd'),
+            'queries': [{k: q.get(k) for k in keep if k in q} for q in search.get('queries') or []],
+            'pages': len(search.get('pages') or []), 'limits': search.get('limits')}
+
+
 def collect_headline_source(f: Fetcher, *, now: datetime, lookback_hours: float) -> SourceResult:
-    """Context phase (collect worker): feeds and de-duplicated candidates only; no triage, bodies or reactions."""
+    """Context phase (collect worker): feeds, de-duplicated candidates and the official-page search only;
+    no triage, bodies or reactions."""
     started = time.monotonic()
     start = now - timedelta(hours=lookback_hours)
     candidates, feeds = collect_headlines(f, start, now)
@@ -293,6 +354,7 @@ def collect_headline_source(f: Fetcher, *, now: datetime, lookback_hours: float)
         raise FetchError('connection')
     values = {'window_start': z(start), 'window_end': z(now), 'lookback_hours': lookback_hours, 'feeds': feeds,
               'candidate_count': len(candidates), 'candidates': candidates,
+              'primary_search': primary_search(f, candidates, now),
               'feeds_ok': {'general': ok_general, 'official': ok_official},
               'headline_elapsed_ms': round((time.monotonic() - started) * 1000)}
     retrieved = [x['retrieved_at'] for x in feeds if x.get('retrieved_at')]
@@ -333,11 +395,15 @@ def finish_news(f: Fetcher, record: dict, scores: dict | None, selection: dict, 
             item['reaction'] = reaction(f, item['published_at'], now, [t for t in times if t != item['published_at']])
         else:
             item['reaction'] = None
+    search = values.pop('primary_search', None)
+    attach_primary(kept, search)
     for item in kept:
         item['event_cluster_id'] = 'c-' + title_key(item['title'])
-        item['code_verification'] = ('primary_body_retrieved' if item['official'] and item['body'].get('status') == 'retrieved'
+        item['code_verification'] = ('primary_body_retrieved' if (item['official'] and item['body'].get('status') == 'retrieved')
+                                     or item.get('primary')
                                      else 'secondary_body_retrieved' if item['body'].get('status') == 'retrieved'
                                      else 'headline_only')
+    values['primary_search'] = search_summary(search)
     values.update(selection=selection, kept=kept,
                   selection_rule={'threshold': triage.THRESHOLD, 'keep_min': triage.KEEP_MIN,
                                   'keep_max': triage.KEEP_MAX, 'macro_keep_max': MACRO_KEEP},

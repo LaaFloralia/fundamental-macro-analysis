@@ -349,7 +349,29 @@ class Fetcher:
                 self.sleep(delay)
         raise FetchError(kind)
 
-    def _attempt(self, url, params, headers, limit: float, allow_redirects: bool):
+    def post_json(self, url: str, payload: dict, *, headers: dict | None = None,
+                  timeout: float = DEFAULT_TIMEOUT) -> tuple[int, object]:
+        """One JSON POST (no retry: a repeated search could be charged twice; no redirect).
+
+        Returns ``(status_code, parsed body or None)`` for any HTTP status; transport failures raise
+        ``FetchError`` with a fixed label. Header values (an API key) are never logged or returned."""
+        if self.guard:
+            checked_url(url)
+        remaining = self.deadline.remaining()
+        if remaining < 1.0:
+            raise FetchError('budget_exhausted')
+        body = json.dumps(payload).encode('utf-8')
+        code, raw, _type = self._attempt(url, None, {**(headers or {}), 'Content-Type': 'application/json'},
+                                         min(timeout, remaining), False, method='POST', data=body)
+        if not 200 <= code < 300:
+            return code, None
+        try:
+            return code, json.loads(raw)
+        except (ValueError, UnicodeDecodeError):
+            return code, None
+
+    def _attempt(self, url, params, headers, limit: float, allow_redirects: bool, method: str = 'GET',
+                 data: bytes | None = None):
         """One request whose wall-clock time is capped at ``limit`` seconds.
 
         requests' timeout only bounds each socket wait, and a buffered read
@@ -369,9 +391,14 @@ class Fetcher:
                 target, query = url, params
                 for hop in range(MAX_REDIRECTS + 1):
                     # Redirects are followed here, one hop at a time, so each target is checked first.
-                    response = session.get(target, params=query, headers=headers,
-                                           timeout=(min(CONNECT_TIMEOUT, limit), limit),
-                                           allow_redirects=False if self.guard else allow_redirects, stream=True)
+                    if method == 'GET':
+                        response = session.get(target, params=query, headers=headers,
+                                               timeout=(min(CONNECT_TIMEOUT, limit), limit),
+                                               allow_redirects=False if self.guard else allow_redirects, stream=True)
+                    else:
+                        response = session.post(target, data=data, headers=headers,
+                                                timeout=(min(CONNECT_TIMEOUT, limit), limit),
+                                                allow_redirects=False, stream=True)
                     location = response.headers.get('Location') if hasattr(response, 'headers') else None
                     if not (self.guard and allow_redirects and int(response.status_code) in REDIRECT_CODES
                             and location):

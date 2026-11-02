@@ -177,6 +177,13 @@ def item_identifiers(item: dict) -> list[str]:
     sha = (item.get('body') or {}).get('text_sha256')
     if sha:
         ids.append(f'body:{sha}')
+    page = item.get('primary') or {}
+    # The official page backing a media headline (scrapers.primary_sources): its URL is stable across fetches,
+    # its text hash may not be (the page shows the crawler's local time).
+    if page.get('url'):
+        ids.append(f'url:{page["url"]}')
+    if page.get('text_sha256'):
+        ids.append(f'body:{page["text_sha256"]}')
     return ids
 
 
@@ -204,11 +211,14 @@ def best_match(identifiers, links, known: list[dict]) -> dict | None:
 def is_follow_up(item: dict, assessment: dict, match: dict | None, known: list[dict]) -> bool:
     """Parent flag + a primary body unknown to EVERY retained known record (R3-01) + published after the
     matched record became known."""
-    sha = (item.get('body') or {}).get('text_sha256')
+    page = item.get('primary') or {}
+    sha = page.get('text_sha256') or (item.get('body') or {}).get('text_sha256')
     if match is None or not assessment.get('follow_up_new_facts') or not sha:
         return False
     if any(sha in k.get('body_hashes', []) for k in known):
         return False
+    if page.get('url') and any(f'url:{page["url"]}' in k.get('ids', []) for k in known):
+        return False  # the same official page again (a re-fetch can change its hash), not a new statement
     return parse_time(item['published_at']) > parse_time(match['first_known_at'])
 
 
