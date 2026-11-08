@@ -5,7 +5,7 @@
 ## Runtime
 
 - Python 3.12 以上、依存管理は `uv`
-- 現行入口は `/Users/laa/.codex/jobs/chart-intel/run.sh daily|weekly`。本文・機械JSON・最終レビューは定期設定で選んだ親が担当する（現行はPaseo経由のOpus 5.5 High）
+- 現行入口は `/Users/laa/.codex/jobs/chart-intel/run.sh daily|weekly`。本文・機械JSON・最終レビューは定期設定で選んだ親が担当する（2026-11-08社長指定でWork経由のDeepSeek Max）
 - 同入口は本repoのコミット済みコードを専用runtimeへsnapshotする。未コミット修正だけでは定期処理へ反映されない
 - 手順は `/Users/laa/.codex/jobs/chart-intel/PARENT-WORKFLOW.md`、再開時は [引き継ぎ](docs/SESSION-HANDOFF.md) を読む
 - Hermesが定期起動し、Paseo経由で親を実行する。旧Routinesと `scripts/intel.py brief` など旧一気通貫入口は再起動しない
