@@ -2,6 +2,8 @@
 
 USOILはM2/M3の検証用で、M4のジョブ導入・定期起動・Journal・DOT・HP接続は未実施です。以下は導入後にも使う親の作成手順です。段階と状態名は XAU のチャート外分析（`/Users/laa/.codex/jobs/chart-intel/PARENT-WORKFLOW.md`）と同じで、request → parent-package → parent-review → latest の確認の順に進みます。状態は `running` → `awaiting_parent_authoring` → `awaiting_parent_review` → `succeeded_local` / `needs_attention` / `failed` です。
 
+将来の定期ジョブ作成時は、親を公式DSHの `dsh` / `["opencode-go","deepseek-v4.1-flash"]` / `max` に固定し、実起動値を照合します。他モデルへの自動切替はしません。この指定自体はジョブの導入・起動を意味しません。
+
 親が書くのは分析JSONとレビューだけです。収集・計算・採点（3群・方向の確度・8項目・trade_gate）・MD/HTML/machine.json/要約・図・ブラウザ検査はコードが行います。本文の生成や受入の判定を、別のCodex・LLM CLI・サブエージェントへ委譲しません。ニュース見出しは既定で原油キーワード規則により選別します。Jev/D1など別提供元への自動送信は既定オフです。
 M3では別提供元を呼び出しません。既存の参考配線を使うには、別途明示した採用判断と `USOIL_ENABLE_AI_AUX=1` が必要です。
 D1には追加で `USOIL_D1_ENABLED=1` が必要ですが、共有D1のUSOIL用途は未登録のため実提供元へは未接続です。接続はM4以降に判断します。有料APIへの切替は行いません。
