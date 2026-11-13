@@ -29,6 +29,9 @@ NOWCAST_CLOCK_SKEW = timedelta(minutes=5)  # a fetch time this far after the cut
 # Whole JST days shown after the stamp's date per tier; results run from the previous weekday
 # (Daily; Friday on a Monday) or seven days back (Weekly).
 AHEAD_DAYS = {("daily", "A"): 7, ("daily", "B"): 2, ("weekly", "A"): 8, ("weekly", "B"): 8}
+# The Daily's Tier B look-ahead counts weekdays: two calendar days from a Friday end on Sunday, which hid
+# Monday's and Tuesday's Tier B releases from the Friday editions (2026-11-13: retail sales on 11/17).
+AHEAD_WEEKDAYS = {("daily", "B")}
 
 TIER_A = (
     r"\bfed interest rate decision\b", r"\bfomc statement\b", r"\bfomc press conference\b",
@@ -115,15 +118,26 @@ def results_start(stamp: datetime, mode: str) -> datetime:
     return datetime.combine(day - timedelta(days=back), time(0), JST)
 
 
+def ahead_end(day: date, mode: str, level: str) -> date:
+    """Last JST date a tier's scheduled releases are listed for."""
+    count = AHEAD_DAYS[(mode, level)]
+    if (mode, level) not in AHEAD_WEEKDAYS:
+        return day + timedelta(days=count)
+    while count:
+        day += timedelta(days=1)
+        count -= day.weekday() < 5
+    return day
+
+
 def event_window(stamp: datetime, mode: str, level: str) -> tuple[datetime, datetime]:
     """[start, end) in JST for a tier. Whole days, so the dates in the table title are exact."""
     day = stamp.astimezone(JST).date()
-    return results_start(stamp, mode), datetime.combine(day + timedelta(days=AHEAD_DAYS[(mode, level)] + 1), time(0), JST)
+    return results_start(stamp, mode), datetime.combine(ahead_end(day, mode, level) + timedelta(days=1), time(0), JST)
 
 
 def window_label(stamp: datetime, mode: str) -> str:
     start, day = results_start(stamp, mode), stamp.astimezone(JST).date()
-    end = {level: (day + timedelta(days=AHEAD_DAYS[(mode, level)])).strftime("%m/%d") for level in ("A", "B")}
+    end = {level: ahead_end(day, mode, level).strftime("%m/%d") for level in ("A", "B")}
     if mode == "weekly":
         return f"{start.strftime('%m/%d')}〜{day.strftime('%m/%d')}の結果と{end['A']}までの予定"
     return f"{start.strftime('%m/%d')}からの結果と、Tier Aは{end['A']}・Tier Bは{end['B']}までの予定"
@@ -132,7 +146,10 @@ def window_label(stamp: datetime, mode: str) -> str:
 def tier_scope(mode: str) -> str:
     """How far ahead each tier is listed, from AHEAD_DAYS (the Weekly lists both tiers over the same days)."""
     a, b = AHEAD_DAYS[(mode, "A")], AHEAD_DAYS[(mode, "B")]
-    return f"予定はTier A・Bとも{a}日先まで" if a == b else f"予定はTier Aが{a}日先・Tier Bが{b}日先まで"
+    if a == b and (mode, "B") not in AHEAD_WEEKDAYS:
+        return f"予定はTier A・Bとも{a}日先まで"
+    unit = "営業日先（土日を数えない）" if (mode, "B") in AHEAD_WEEKDAYS else "日先"
+    return f"予定はTier Aが{a}日先・Tier Bが{b}{unit}まで"
 
 
 def gap_text(gap: float) -> str:

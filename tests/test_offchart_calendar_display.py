@@ -90,7 +90,7 @@ def test_results_before_the_week_tabs_are_said_to_come_from_the_archive(stamp, m
 
 
 def test_the_short_title_leaves_time_zone_window_and_top_importance_limit_to_the_folded_legend():
-    for mode, scope in (('daily', '予定はTier Aが7日先・Tier Bが2日先まで'), ('weekly', None)):
+    for mode, scope in (('daily', '予定はTier Aが7日先・Tier Bが2営業日先（土日を数えない）まで'), ('weekly', None)):
         figure = board.event_figure(sample(), NOW, mode)['figure']
         assert figure['title'] == '米国の重要指標' and 'subtitle' not in figure and 'kicker' not in figure
         assert figure['legend'].startswith('時刻はすべてJST。')

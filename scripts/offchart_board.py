@@ -18,6 +18,8 @@ import math
 import re
 from zoneinfo import ZoneInfo
 
+from config import COT_RELEASE_DATES, COT_RELEASE_DELAYED
+from scrapers.freshness import NEW_YORK, age_note, cot_note
 from scrapers.macro_surprise import compute_surprise, event_datetime_jst, gold_sign
 from scrapers.positioning_history import MIN_DISTINCT, MIN_SAMPLES
 from scrapers.us_events import (GAP_NEUTRAL_PP, NOWCAST_MAX_AGE_DAYS, NOWCAST_MAX_PER_WINDOW, adopted_nowcasts,
@@ -265,15 +267,19 @@ def _meeting(text):
 # ------------------------------------------------------------------ board rows
 
 def row(group, label, value, base, change, side, strength, asof, rule, *, note='', word=None,
-        viz=None, bind=None, digits=2, unit='', kind='value'):
+        viz=None, bind=None, digits=2, unit='', kind='value', fresh=''):
+    """One board row. `fresh` says how old the value is and why (scrapers.freshness); empty for a value of
+    the collection day, so only the rows a reader should not take for today's carry it."""
     strength = 'none' if side == 'flat' else strength
     word = word or word_of(side, strength)
     symbol = mark(side, strength)
     quote = (f'{group}｜{label}: {value}（{asof}）｜基準: {base}｜変化: {change}｜向き: {symbol} {word}'
-             + (f'｜{note}' if note else '') + f'｜規則: {rule}')
+             + (f'｜{note}' if note else '') + (f'｜鮮度: {fresh}' if fresh else '') + f'｜規則: {rule}')
     item = {'group': group, 'label': label, 'display': value, 'baseline': base, 'change': change,
             'direction': word, 'symbol': symbol, 'side': side, 'strength': strength, 'tone': TONE[side],
             'asof': asof, 'note': note, 'rule': rule, 'source_quote': quote, 'kind': kind}
+    if fresh:
+        item['fresh'] = fresh
     if viz:
         item['viz'] = viz
     binding = None
@@ -282,6 +288,52 @@ def row(group, label, value, base, change, side, strength, asof, rule, *, note='
         item['value'] = number(raw, digits)
         binding = {'path': path, 'value': item['value'], 'digits': digits, 'unit': unit, 'observedAt': asof}
     return item, binding
+
+
+def _month(period) -> str:
+    return str(period)[-2:].lstrip('0') + '月'
+
+
+def _cb_breakdown(cb: dict) -> tuple[str, str]:
+    """(as-of text, note) of the central-bank row.
+
+    The note lists the months that make up the shown total, oldest first, so they add up to it. A month
+    outside the total (the latest one while few countries have reported) is named apart and marked as not
+    counted. Older collections carry no `cumulative_months`: their months are split by `cumulative_periods`,
+    and a month of the total that was not stored is said to be missing instead of leaving a sum that does
+    not match.
+    """
+    months = [m for m in cb.get('months') or [] if num(m.get('net_tonnes')) is not None]
+    periods = [str(p) for p in cb.get('cumulative_periods') or []]
+    latest = str(cb.get('as_of_date') or '')
+    if not periods:  # collections before cumulative_periods: the three stored months, as then
+        note = '月別 ' + '・'.join(f'{_month(m["period"])} {number(m["net_tonnes"], 1):+.1f} t'
+                                 for m in reversed(months[:3])) if months else ''
+        return (latest.replace('-M', '年') + '月分' if latest else '時点不明'), note
+    counted = [m for m in cb.get('cumulative_months') or [] if num(m.get('net_tonnes')) is not None] \
+        or [m for m in months if str(m.get('period')) in periods]
+    held = {str(m['period']): m for m in counted}
+    note = '内訳 ' + '・'.join(f'{_month(p)} {number(held[p]["net_tonnes"], 1):+.1f} t' if p in held
+                             else f'{_month(p)} 記録なし' for p in sorted(periods))
+    early = [m for m in months if str(m.get('period')) not in periods and str(m.get('period')) > max(periods)]
+    for m in sorted(early, key=lambda m: str(m['period'])):
+        who = f'{int(m["reporters"])}か国の速報・' if num(m.get('reporters')) is not None else '速報・'
+        note += f'／{_month(m["period"])} {number(m["net_tonnes"], 1):+.1f} t（{who}合計に含めない）'
+    asof = f'{max(periods).replace("-M", "年")}月分まで'
+    if early:
+        asof += f'（{_month(max(str(m["period"]) for m in early))}は速報）'
+    return asof, note
+
+
+def _forming(day, stamp) -> bool:
+    """True when a daily bar dated `day` (a New York date) is still being formed at the cutoff (before 17:00
+    New York of that date): its "close" is a value of the day so far, not a close."""
+    try:
+        bar = date.fromisoformat(str(day)[:10])
+    except ValueError:
+        return False
+    local = stamp.astimezone(NEW_YORK)
+    return bar == local.date() and local.hour < 17
 
 
 def _series_change(points, back):
@@ -466,6 +518,7 @@ def bias_rows(data, stamp, mode, source=None):
                           f'20営業日前 {fmt(s["value_20obs_ago"], ep)}%（{_md(s.get("as_of_20obs_ago"))}）', f'{change:+.{places}f}pp',
                           side, strength, _md(s.get('as_of_date')), '上昇は金の逆風、低下は追い風。20営業日で±0.10pp以上で強',
                           note=_correlation_note(data, 'DFII10'), viz=_spark(s.get('recent'), True, 20, 'fred.DFII10.recent'),
+                          fresh=age_note(s.get('as_of_date'), stamp),
                           bind=('fred.DFII10.change_20obs', s['change_20obs']), digits=places, unit='pp'))
     else:
         skip('実質金利', '20営業日前の値なし')
@@ -478,9 +531,12 @@ def bias_rows(data, stamp, mode, source=None):
         raw = (v1 / v0 - 1) * 100
         pct, places = shown(raw, 2, 1.0)
         side, strength = judge(raw, 1.0, -1)
+        forming = _forming(d1, stamp)
         keep('ドル（20営業日）', row(long_g, 'ドル指数DXY（20営業日）', fmt(v1, 3), f'20営業日前 {fmt(v0, 3)}（{_md(d0)}）',
-                                f'{pct:+.{places}f}%', side, strength, _md(d1),
+                                f'{pct:+.{places}f}%', side, strength, _md(d1) + (' 日足の途中値' if forming else ''),
                                 'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強',
+                                note='当日の行の現在値とは取得時点が違う（日足の表の値）' if forming else '',
+                                fresh=age_note(d1, stamp, 'equity'),
                                 viz=_spark(closes, True, 20, 'dxy.recent_closes'),
                                 bind=(f'dxy.recent_closes.{len(closes) - 1}.1', v1), digits=3, unit='index'))
     else:
@@ -494,6 +550,7 @@ def bias_rows(data, stamp, mode, source=None):
                                     f'20営業日前 {fmt(s["value_20obs_ago"])}（{_md(s.get("as_of_20obs_ago"))}）',
                                     f'{pct:+.{places}f}%', side, strength, _md(s.get('as_of_date')),
                                     'ドル高は金の逆風、ドル安は追い風。20営業日で±1.0%以上で強',
+                                    fresh=age_note(s.get('as_of_date'), stamp),
                                     viz=_spark(s.get('recent'), True, 20, 'fred.DTWEXBGS.recent'),
                                     bind=('fred.DTWEXBGS.change_20obs', s['change_20obs']), unit='index'))
         else:
@@ -513,16 +570,13 @@ def bias_rows(data, stamp, mode, source=None):
     elif num(cb.get('cumulative_3m_t')) is not None:
         change, places = shown(cb['cumulative_3m_t'], 1, 20.0)
         side, strength = judge(cb['cumulative_3m_t'], 20.0, +1)
-        months = [m for m in cb.get('months') or [] if num(m.get('net_tonnes')) is not None][:3]
         span = f'{cb["cumulative_periods"][-1][-2:].lstrip("0")}〜{cb["cumulative_periods"][0][-2:].lstrip("0")}月' \
             if len(cb.get('cumulative_periods') or []) >= 2 else '直近3ヶ月'
-        bars = [{'label': str(m['period'])[-2:].lstrip('0') + '月', 'value': number(m['net_tonnes'], 1)}
-                for m in reversed(months)]
+        asof, note = _cb_breakdown(cb)
         keep('中銀の金購入', row(long_g, '中銀の金購入（IMF報告国・3ヶ月）', f'{change:+.{places}f} t（{span}）',
-                              'ゼロ（買い越しと売り越しの境）', f'{change:+.{places}f} t', side, strength,
-                              str(cb.get('as_of_date') or '時点不明').replace('-M', '年') + '月分',
+                              'ゼロ（買い越しと売り越しの境）', f'{change:+.{places}f} t', side, strength, asof,
                               '純購入は構造的な下支え、純売却は逆風。月次で1〜2ヶ月遅れ。3ヶ月で±20t以上で強',
-                              note='月別 ' + '・'.join(f'{b["label"]} {b["value"]:+.1f} t' for b in bars) if bars else '',
+                              note=note,
                               bind=('gold_cb.cumulative_3m_t', cb['cumulative_3m_t']), digits=places, unit='t'))
     else:
         skip('中銀の金購入', '3ヶ月合計なし')
@@ -564,6 +618,7 @@ def bias_rows(data, stamp, mode, source=None):
             keep('米2年債', row(short_g, f'米2年債利回り（{"5営業日" if weekly else "前営業日比"}）', f'{fmt(v1, ep)}%',
                              f'{_md(d0)} {fmt(v0, ep)}%', f'{change:+.{places}f}pp', side, strength, _md(d1),
                              f'上昇は金の逆風、低下は追い風。±{threshold:.2f}pp以上で強（FRED DGS2）', viz=viz,
+                             fresh=age_note(d1, stamp),
                              bind=(f'fred.DGS2.recent.{len(s["recent"]) - 1}.1', v1), unit='%'))
     if weekly:
         pair = _series_change(closes, 5) if closes else None
@@ -576,7 +631,9 @@ def bias_rows(data, stamp, mode, source=None):
             pct, places = shown(raw, 2, 0.7)
             side, strength = judge(raw, 0.7, -1)
             keep('ドル（短期）', row(short_g, 'ドル指数DXY（5営業日）', fmt(v1, 3), f'{_md(d0)} {fmt(v0, 3)}', f'{pct:+.{places}f}%',
-                                side, strength, _md(d1), 'ドル高は金の逆風、ドル安は追い風。5営業日で±0.7%以上で強',
+                                side, strength, _md(d1) + (' 日足の途中値' if _forming(d1, stamp) else ''),
+                                'ドル高は金の逆風、ドル安は追い風。5営業日で±0.7%以上で強',
+                                fresh=age_note(d1, stamp, 'equity'),
                                 viz=_spark(closes, True, 5, 'dxy.recent_closes'),
                                 bind=(f'dxy.recent_closes.{len(closes) - 1}.1', v1), digits=3, unit='index'))
     else:
@@ -620,6 +677,7 @@ def bias_rows(data, stamp, mode, source=None):
                             f'{change:+.{places}f} t', side, strength, _md(etf.get('as_of_date')),
                             '保有量の増加（設定超過）は追い風、減少（解約超過）は逆風。5営業日で±2t以上で強。20営業日は参考',
                             note=f'20営業日 {fmt(etf["change_20d_t"], sign=True)} t' if has_20 else '',
+                            fresh=age_note(etf.get('as_of_date'), stamp, 'equity'),
                             bind=('gold_etf.change_5d_t', etf['change_5d_t']),
                             digits=places, unit='t'))
     else:
@@ -655,6 +713,7 @@ def bias_rows(data, stamp, mode, source=None):
                               _md(cot_date),
                               '百分位90以上は買いの混み合い（反転注意）で下向き、10以下は上向き。どちらも弱（0.5票）で、'
                               '反転の確認ではない。週次で数日遅れる',
+                              fresh=cot_note(cot_date, stamp, COT_RELEASE_DATES, COT_RELEASE_DELAYED),
                               bind=('offchart_features.positioning.cot_gold_mm.percentile', p['percentile']), digits=places,
                               unit='百分位'))
     r = (data.get('retail_sentiment') or {}).get('XAUUSD') or {}
@@ -1285,7 +1344,7 @@ def liquidity_figure(data, stamp, mode, source=None):
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
                '翌取引日の終わりまで表示します。') +
               'NY 0時の始値は当日の参考値で、判定には使いません。'
-              '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、「個人62%ロング」は個人の建玉に占めるロングの割合です。'
+              '◆個人の平均建値はMyFXBookの個人口座の建玉の平均で、「個人◯%ロング」は個人の建玉に占めるロングの割合です。'
               '平均建値と比率は観測値です。損益の推定と未検証の注文・建玉価格帯は表示から除外しています。'
               f'平均建値は取得から{QUOTE_MAX_HOURS}時間以内、帯のGVZは観測日が{GVZ_MAX_AGE_DAYS}日以内のときだけ出し、'
               '古い・欠けているときは理由を図の下と制約に書きます。'
@@ -1415,6 +1474,10 @@ def calendar_shortfall(calendar):
         return 'failed', f'カレンダー取得失敗のため予定を確認できない（Investing.com: {why}）'
     if tabs:
         return 'incomplete', f'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ {"・".join(tabs)} を読めない）'
+    cut = [str(t) for t in calendar.get('truncated_tabs') or []]
+    if cut:  # the week's later rows stayed behind "Load more": its last days are unread, not empty
+        return 'incomplete', (f'カレンダー取得が不完全で、一部の予定を確認できない（Investing.com: 週タブ {"・".join(cut)} '
+                              'の続きを最後まで読み込めない）')
     if not calendar.get('tab_counts'):
         return 'unknown', 'カレンダーの取得範囲を確認できず、予定の抜けがないか分からない（Investing.com: 週タブごとの件数の記録なし）'
     return None

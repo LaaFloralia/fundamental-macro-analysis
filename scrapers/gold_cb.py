@@ -144,6 +144,7 @@ async def scrape_gold_cb() -> dict:
             "months": [{"period", "net_tonnes", "reporters", "partial", "top_movers", "excluded"}],
                        # 新しい順・最大 3 ヶ月 (partial=True は報告未出揃いの速報月)
             "cumulative_3m_t": float,      # 確定月 (partial 除く・最大 3 ヶ月) の純変化合計
+            "cumulative_months": [{"period", "net_tonnes", "reporters"}],  # その内訳 (新しい順)
             "regime": "net_buying" | "net_selling" | "neutral" | "unknown",
             "as_of_date": str | None,      # 最新集計月 ("2026-M05" 形式)
             "note": str,
@@ -190,6 +191,12 @@ async def scrape_gold_cb() -> dict:
         # 累計に使った確定月（表示用の months は速報月を含む直近 3 ヶ月なので、
         # 累計の対象月が表示リストに現れないことがある。読み手が検算できるよう明示する）
         "cumulative_periods": [m["period"] for m in confirmed],
+        # 累計の内訳（新しい順）。months が速報月を含むと累計の最古月が欠け、月別を足しても
+        # 累計にならない（2026-11-13: 累計は7〜9月、months は8〜10月）ため、対象月の値を別に持つ
+        "cumulative_months": [
+            {"period": m["period"], "net_tonnes": m["net_tonnes"], "reporters": m["reporters"]}
+            for m in confirmed
+        ],
         "regime": regime,
         "as_of_date": recent[0]["period"],
         "error": None,

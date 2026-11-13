@@ -286,7 +286,7 @@ scraped_data の `### FedWatch` ブロックにはレンジ別確率と**計算�
 
 | 項目 | 値 |
 |---|---|
-| 次回 FOMC 日（N 日後） | |
+| 次回 FOMC 日（N 日後） | 入力の `fomc_decision_date`（結果発表日）と `days_until_fomc_decision` をそのまま書く。会合期間は別に添えてよい。日数を暗算しない |
 | レートレンジ別確率 | |
 | 前週からの確率変化 | scraped_data の前週比行をそのまま引用（出所付記） |
 

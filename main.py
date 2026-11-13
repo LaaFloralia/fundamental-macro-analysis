@@ -22,6 +22,7 @@ from config import (
     INSTRUMENTS,
     OPEN_ORDER_SYMBOLS,
     FOMC_DATES,
+    FOMC_DECISION_OFFSET_DAYS,
     FOMC_SCHEDULE_WARN_DAYS,
     DEFAULT_SYMBOL,
     CONTEXT_SYMBOLS,
@@ -86,8 +87,10 @@ def _get_fomc_metadata(today: datetime = None) -> dict:
     Returns:
         {
             "is_fomc_week": bool,
-            "next_fomc_date": str (YYYY-MM-DD),
-            "days_until_fomc": int,
+            "next_fomc_date": str (YYYY-MM-DD),  # 会合初日
+            "days_until_fomc": int,              # 会合初日までの暦日
+            "fomc_decision_date": str,           # 結果発表日（会合2日目）
+            "days_until_fomc_decision": int,     # 結果発表日までの暦日
             "schedule_warning": str | None,  # 日程テーブル枯渇 90 日前からの警告
         }
     """
@@ -107,10 +110,11 @@ def _get_fomc_metadata(today: datetime = None) -> dict:
             f"（最終登録日 {last_fomc}）。次年度日程を config.py に追加してください。"
         )
 
-    # 次回FOMC日を特定
+    # 次回FOMC日を特定。日程表は会合初日なので、結果発表日（初日 + FOMC_DECISION_OFFSET_DAYS）が
+    # 過ぎるまでは同じ会合を「次回」とする（発表当日に翌会合へ飛ばさない）
     next_fomc = None
     for fd in fomc_dates:
-        if fd >= today_date:
+        if fd + timedelta(days=FOMC_DECISION_OFFSET_DAYS) >= today_date:
             next_fomc = fd
             break
 
@@ -123,6 +127,7 @@ def _get_fomc_metadata(today: datetime = None) -> dict:
         }
 
     days_until = (next_fomc - today_date).days
+    decision = next_fomc + timedelta(days=FOMC_DECISION_OFFSET_DAYS)
 
     # FOMC週判定: FOMC開催日を含む週の月曜〜金曜
     fomc_weekday = next_fomc.weekday()  # 0=月
@@ -134,6 +139,8 @@ def _get_fomc_metadata(today: datetime = None) -> dict:
         "is_fomc_week": is_fomc_week,
         "next_fomc_date": next_fomc.strftime("%Y-%m-%d"),
         "days_until_fomc": days_until,
+        "fomc_decision_date": decision.strftime("%Y-%m-%d"),
+        "days_until_fomc_decision": (decision - today_date).days,
         "schedule_warning": schedule_warning,
     }
 
@@ -1180,12 +1187,26 @@ def format_scraped_data(data: dict) -> str:
 
     # --- FedWatch（常時取得、Deep Bias 強化）---
     # 旧 is_fomc_week 分岐は撤廃。平時も次回 FOMC への利下げ確率を追跡する。
-    fomc_meta = _get_fomc_metadata()
+    # 保存済みJSONから入力を作り直しても同じ日数になるよう、収集時刻を基準日にする
+    try:
+        fomc_today = datetime.fromisoformat(str(data.get("timestamp")))
+    except ValueError:
+        fomc_today = None
+    fomc_meta = _get_fomc_metadata(fomc_today)
     lines.append("")
     lines.append("### FedWatch（常時取得 / Deep Bias 強化）")
     lines.append(f"is_fomc_week: {str(fomc_meta['is_fomc_week']).lower()}")
-    lines.append(f"next_fomc_date: {fomc_meta['next_fomc_date']}")
-    lines.append(f"days_until_fomc: {fomc_meta['days_until_fomc']}")
+    lines.append(f"next_fomc_date: {fomc_meta['next_fomc_date']}（会合初日）")
+    lines.append(f"days_until_fomc: {fomc_meta['days_until_fomc']}（会合初日まで）")
+    if fomc_meta.get("fomc_decision_date"):
+        lines.append(
+            f"fomc_decision_date: {fomc_meta['fomc_decision_date']}"
+            "（結果発表日。米東部14:00、JSTでは翌日の未明）"
+        )
+        lines.append(
+            f"days_until_fomc_decision: {fomc_meta['days_until_fomc_decision']}"
+            "（結果発表日までの暦日。「次回FOMC日（あと N 日）」はこの日付と日数をそのまま書き、暗算しない）"
+        )
 
     fedwatch = data.get("fedwatch")
     if fedwatch and isinstance(fedwatch, dict) and (

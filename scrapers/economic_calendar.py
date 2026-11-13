@@ -170,6 +170,48 @@ async def _scrape_week(page, week_label: str) -> list:
     return events
 
 
+LOAD_MORE = 'button:has-text("Load more")'
+LOAD_MORE_MAX = 12  # a week of all countries is 300-600 rows; the page adds about 200 per press
+
+
+async def _row_count(page) -> int:
+    return len(await page.query_selector_all("table tr"))
+
+
+async def _load_all(page) -> tuple[int, bool]:
+    """Press the week table's "Load more" until the whole week is listed. Returns (presses, truncated).
+
+    The page lists the first 200 occurrences of the week and hides the rest behind this button. Reading
+    only the first page lost the end of the week: the 2026-10-31 Weekly had no row after Thursday 21:00 JST
+    and so no employment report on 11/06, and the 2026-11-13 Daily stopped at Thursday 04:00 JST. `truncated`
+    is True when the button is still shown after the last press or a press added no row, so the caller can
+    say the week was not read to its end instead of treating the missing days as days without releases.
+    """
+    presses = 0
+    for _ in range(LOAD_MORE_MAX):
+        button = None
+        for candidate in await page.query_selector_all(LOAD_MORE):
+            if await candidate.is_visible():
+                button = candidate
+                break
+        if button is None:
+            return presses, False
+        before = await _row_count(page)
+        await button.scroll_into_view_if_needed()
+        await button.click()
+        presses += 1
+        for _ in range(16):  # up to 8 s for the next page of rows
+            await page.wait_for_timeout(500)
+            if await _row_count(page) > before:
+                break
+        else:
+            return presses, True
+    for candidate in await page.query_selector_all(LOAD_MORE):
+        if await candidate.is_visible():
+            return presses, True
+    return presses, False
+
+
 async def _load_with_retry(load, attempts: int = 2):
     """週タブの切替が効かず当日表示（休日は「No Events Scheduled」）だけを読む一時的な失敗に備え、
     イベントが0件なら読み直す。戻り値は (events, missing_tabs, body_text, 試行回数)。"""
@@ -207,10 +249,12 @@ async def scrape_economic_calendar() -> dict:
                 timezone_id="Asia/Tokyo",
                 ignore_https_errors=True,
             )
-            tab_counts = {}
+            tab_counts, load_more, truncated_tabs = {}, {}, []
 
             async def load_once():
                 tab_counts.clear()
+                load_more.clear()
+                truncated_tabs.clear()
                 page = await context.new_page()
                 try:
                     await page.goto(url, timeout=BROWSER_TIMEOUT, wait_until="domcontentloaded")
@@ -223,6 +267,9 @@ async def scrape_economic_calendar() -> dict:
                             continue
                         await button.click()
                         await page.wait_for_timeout(3000)
+                        load_more[label], truncated = await _load_all(page)
+                        if truncated:
+                            truncated_tabs.append(label)
                         week = await _scrape_week(page, label)
                         tab_counts[label] = len(week)  # a week tab with no ★★★ row is a failed read
                         events.extend(week)
@@ -235,6 +282,9 @@ async def scrape_economic_calendar() -> dict:
             result["events"] = events
             result["attempts"] = attempts
             result["tab_counts"] = dict(tab_counts)
+            result["load_more"] = dict(load_more)  # presses of "Load more" per week tab (0: the week fitted)
+            if truncated_tabs:
+                result["truncated_tabs"] = list(truncated_tabs)
             if missing_tabs:
                 result["missing_tabs"] = missing_tabs
             if not events:

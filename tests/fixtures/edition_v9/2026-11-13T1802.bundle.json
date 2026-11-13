@@ -1,0 +1,307 @@
+{
+  "schemaVersion": 9,
+  "kind": "daily",
+  "asOf": "2026-11-13T18:02:41.502727+09:00",
+  "reportDate": "2026-11-13",
+  "synthetic": false,
+  "dataPath": "2026-11-13T1802.data.json",
+  "dataSha256": "6cbda8c1b652d7a2fb7b6400ba6337316bcb3d2155b24305e9b6f4a789dfc184",
+  "sourcePath": "2026-11-13T1802.md",
+  "sourceSha256": "c118767ea897278fc9fba8cc85e86b5c05274808b6d83a459e40589612a3754a",
+  "summaryPath": "2026-11-13T1802.summary.json",
+  "summarySha256": "dbd2add436560ee332b521a267284df22d51bd3f3701fc32c15c47c87264ade4",
+  "figuresPath": "2026-11-13T1802.figures.json",
+  "figuresSha256": "7d46b77e35da2d416706754b85aea0d30f527f5cf6a0d5eff312d9b8c0799e4d",
+  "missing": [],
+  "limitations": [
+    "判断から除外した材料: 未検証の注文分布・損益推定、TradingViewの当日値、観測日が違う国際金利差、本文を見ていない見出しとX投稿、発表前記録のない指標差、閾値のないCommercials急変、欠測した現行レンジの政策確率、13日前の前回Weekly、前日の米株指数の異常値。"
+  ],
+  "bindings": [
+    {
+      "figure": "bias",
+      "label": "実質金利（米10年TIPS）",
+      "index": 0,
+      "path": "fred.DFII10.change_20obs",
+      "value": -0.1,
+      "digits": 2,
+      "unit": "pp",
+      "observedAt": "11/10"
+    },
+    {
+      "figure": "bias",
+      "label": "ドル指数DXY（20営業日）",
+      "index": 1,
+      "path": "dxy.recent_closes.20.1",
+      "value": 103.14,
+      "digits": 3,
+      "unit": "index",
+      "observedAt": "11/13"
+    },
+    {
+      "figure": "bias",
+      "label": "中銀の金購入（IMF報告国・3ヶ月）",
+      "index": 3,
+      "path": "gold_cb.cumulative_3m_t",
+      "value": 148.6,
+      "digits": 1,
+      "unit": "t",
+      "observedAt": "2026年10月分"
+    },
+    {
+      "figure": "bias",
+      "label": "米2年債利回り（当日）",
+      "index": 4,
+      "path": "us_yields.US2Y.change",
+      "value": -0.012,
+      "digits": 3,
+      "unit": "pp",
+      "observedAt": "11/13 18:02 JST"
+    },
+    {
+      "figure": "bias",
+      "label": "ドル指数DXY（当日）",
+      "index": 5,
+      "path": "dxy.change_pct",
+      "value": -0.01,
+      "digits": 2,
+      "unit": "%",
+      "observedAt": "記録 11/13 18:04 JST"
+    },
+    {
+      "figure": "bias",
+      "label": "指標の結果: 新規失業保険申請",
+      "index": 7,
+      "members": [
+        "macro_surprises.3"
+      ]
+    },
+    {
+      "figure": "bias",
+      "label": "GLD保有量（5営業日）",
+      "index": 8,
+      "path": "gold_etf.change_5d_t",
+      "value": 0.19,
+      "digits": 2,
+      "unit": "t",
+      "observedAt": "11/12"
+    },
+    {
+      "figure": "bias",
+      "label": "投機筋の買い越し（COT Managed Money）",
+      "index": 9,
+      "path": "offchart_features.positioning.cot_gold_mm.percentile",
+      "value": 33.3,
+      "digits": 1,
+      "unit": "百分位",
+      "observedAt": "11/03"
+    },
+    {
+      "figure": "bias",
+      "label": "個人のロング比率（MyFXBook）",
+      "index": 10,
+      "path": "retail_sentiment.XAUUSD.long_pct",
+      "value": 69.0,
+      "digits": 1,
+      "unit": "%",
+      "observedAt": "記録 11/13 18:04 JST"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前月高値（10月）",
+      "path": "xau_levels.levels.0.price",
+      "value": 4225.65,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.0.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前週高値（11/02週）",
+      "path": "xau_levels.levels.1.price",
+      "value": 4147.6,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.1.state",
+      "state": "swept"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前日高値（11/12）",
+      "path": "xau_levels.levels.2.price",
+      "value": 4000.94,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.2.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "アジア高値（当日）",
+      "path": "xau_levels.levels.3.price",
+      "value": 3923.92,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.3.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "新規失業保険申請 発表15分足高値（11/12 22:30）",
+      "path": "xau_levels.levels.4.price",
+      "value": 3916.19,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.4.state",
+      "state": "swept"
+    },
+    {
+      "figure": "liquidity",
+      "label": "London高値（当日・形成中）",
+      "path": "xau_levels.levels.5.price",
+      "value": 3901.54,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.5.state",
+      "state": "forming"
+    },
+    {
+      "figure": "liquidity",
+      "label": "新規失業保険申請 発表15分足安値（11/12 22:30）",
+      "path": "xau_levels.levels.6.price",
+      "value": 3899.55,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.6.state",
+      "state": "beyond"
+    },
+    {
+      "figure": "liquidity",
+      "label": "London安値（当日・形成中）",
+      "path": "xau_levels.levels.7.price",
+      "value": 3889.13,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.7.state",
+      "state": "forming"
+    },
+    {
+      "figure": "liquidity",
+      "label": "アジア安値（当日）",
+      "path": "xau_levels.levels.8.price",
+      "value": 3879.51,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.8.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前月安値（10月）",
+      "path": "xau_levels.levels.9.price",
+      "value": 3871.19,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.9.state",
+      "state": "swept"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前週安値（11/02週）",
+      "path": "xau_levels.levels.10.price",
+      "value": 3866.02,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.10.state",
+      "state": "swept"
+    },
+    {
+      "figure": "liquidity",
+      "label": "前日安値（11/12）",
+      "path": "xau_levels.levels.11.price",
+      "value": 3853.27,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00",
+      "state_path": "xau_levels.levels.11.state",
+      "state": "resting"
+    },
+    {
+      "figure": "liquidity",
+      "label": "現在値",
+      "path": "report_quote.close",
+      "value": 3895.34,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13T18:02:00+09:00",
+      "fetchedAt": "2026-11-13T09:02:42.392763+00:00"
+    },
+    {
+      "figure": "liquidity",
+      "label": "NY 0時の始値",
+      "path": "xau_levels.midnight_open",
+      "value": 3912.64,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13 08:00"
+    },
+    {
+      "figure": "liquidity",
+      "label": "個人ロングの平均建値",
+      "path": "retail_sentiment.XAUUSD.avg_long_entry",
+      "value": 4188.7,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13T09:04:32Z"
+    },
+    {
+      "figure": "liquidity",
+      "label": "個人ショートの平均建値",
+      "path": "retail_sentiment.XAUUSD.avg_short_entry",
+      "value": 3825.45,
+      "digits": 2,
+      "unit": "USD/oz",
+      "observedAt": "2026-11-13T09:04:32Z"
+    },
+    {
+      "figure": "calendar",
+      "label": "新規失業保険申請",
+      "index": 0,
+      "path": "macro_surprises.3"
+    },
+    {
+      "figure": "calendar",
+      "label": "FRB議長 発言",
+      "index": 1,
+      "path": "economic_calendar.events.11"
+    }
+  ],
+  "requiredFigures": [
+    "bias",
+    "liquidity",
+    "calendar"
+  ],
+  "figureIds": [
+    "bias",
+    "liquidity",
+    "calendar"
+  ],
+  "numericCheck": "passed",
+  "semanticReview": "pending",
+  "publicationReady": false,
+  "historicalRevision": false,
+  "validationMode": "current",
+  "semanticAuditRequired": true,
+  "semanticAuditSha256": "562e96e35053a98e4383d1ce91f0771235a3a5a17c32bcc208e8ed4731d765e3"
+}

@@ -36,6 +36,26 @@ def test_fomc_week_judgment_works_into_2027():
     assert meta["is_fomc_week"] is True
 
 
+def test_fomc_decision_day_and_days_are_given_by_code():
+    # 2026-11-13: 会合は 12/08-09。初日まで25日、結果発表日（12/09）まで26日
+    meta = _get_fomc_metadata(datetime(2026, 11, 13, 18, 2))
+    assert meta["next_fomc_date"] == "2026-12-08" and meta["days_until_fomc"] == 25
+    assert meta["fomc_decision_date"] == "2026-12-09" and meta["days_until_fomc_decision"] == 26
+    # 発表当日（会合2日目）はまだ同じ会合が次回。翌日に次の会合へ移る
+    meta = _get_fomc_metadata(datetime(2026, 12, 9, 18, 0))
+    assert meta["next_fomc_date"] == "2026-12-08" and meta["days_until_fomc_decision"] == 0
+    assert _get_fomc_metadata(datetime(2026, 12, 10, 9, 0))["next_fomc_date"] == "2027-01-26"
+
+
+def test_model_input_states_the_decision_day_from_the_collection_date():
+    from main import format_scraped_data
+
+    text = format_scraped_data({"timestamp": "2026-11-13T18:02:41.502727", "mode": "daily"})
+    assert "fomc_decision_date: 2026-12-09" in text
+    assert "days_until_fomc_decision: 26" in text
+    assert "days_until_fomc: 25（会合初日まで）" in text
+
+
 def test_fomc_exhaustion_warning_90_days():
     last = datetime.strptime(config.FOMC_DATES[-1], "%Y-%m-%d")
     # 最終登録日の 200 日前: 警告なし

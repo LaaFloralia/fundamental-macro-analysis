@@ -156,8 +156,9 @@ def test_daily_rows_compare_each_input_with_its_baseline_and_map_it_to_gold():
     assert news['kind'] == 'text' and news['symbol'] == '▽' and news['direction'] == '下向き・弱'
     assert news['display'] == '利上げ観測とドル高の見出しが続き、地政学の新材料はなし。'
     cb = rows['中銀の金購入（IMF報告国・3ヶ月）']
-    assert (cb['symbol'], cb['display'], cb['asof']) == ('▲', '+154.2 t（6〜8月）', '2026年08月分')
-    assert cb['note'] == '月別 6月 +44.6 t・7月 +68.5 t・8月 +41.1 t' and 'viz' not in cb  # the numbers say it all
+    assert (cb['symbol'], cb['display'], cb['asof']) == ('▲', '+154.2 t（6〜8月）', '2026年08月分まで')
+    assert cb['note'] == '内訳 6月 +44.6 t・7月 +68.5 t・8月 +41.1 t' and 'viz' not in cb  # the numbers say it all
+    assert real['fresh'] == '5日前の値（土日と10/12の米国の祝日を挟む）' and real['fresh'] in real['source_quote']
     us2y = rows['米2年債利回り（当日）']
     assert (us2y['symbol'], us2y['display'], us2y['change'], us2y['asof']) == ('▽', '4.802%', '+0.011pp', '10/13 22:11 JST')
     assert 'viz' not in us2y  # two points: the text carries both ends
@@ -922,7 +923,7 @@ def test_validation_rebuilds_every_figure_row_and_chip_from_the_collection(tmp_p
     # Levels without their stored bars cannot be rebuilt (test below); this one checks the other figures.
     del data['xau_levels']
     manifest, figures, source, summary = prepared(tmp_path, data, source=SOURCE.replace(DRAW_LINE, '方向: none'))
-    assert manifest['schemaVersion'] == 9
+    assert manifest['schemaVersion'] == 10
     bundle.check_regenerated(data, manifest, figures, source, summary)
     assert summary['as_of_label'] == '10/13（火）22:14〜22:20 JST 収集'
     assert 'データ収集: 2026-10-13T22:14:00+09:00〜2026-10-13T22:20:00+09:00（判定の基準は収集終了時刻）' in source
