@@ -95,7 +95,7 @@ def test_the_short_title_leaves_time_zone_window_and_top_importance_limit_to_the
         assert figure['title'] == '米国の重要指標' and 'subtitle' not in figure and 'kicker' not in figure
         assert figure['legend'].startswith('時刻はすべてJST。')
         assert scope is None or scope in figure['legend']
-        assert '重要度★3の行だけから取る' in figure['legend']
+        assert '重要度3（最高）の行だけから取る' in figure['legend']
         html = dash.event_section(figure)
         assert '<th scope="col">時刻（JST）</th>' in html and 'class="kicker"' not in html and 'class="sub"' not in html
 

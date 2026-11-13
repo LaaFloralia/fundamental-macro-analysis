@@ -115,8 +115,20 @@ def test_the_lead_reads_verdicts_then_reasons_then_the_next_release_and_levels()
 FRESH = '2営業日前の値（10/12は米国の祝日で休場）'
 
 
-def with_fresh(text=FRESH):
+def without_fresh():
+    """The sample edition with the board's own age notes taken out of the rows and of their source lines."""
     _, summary, figures, full = edition()
+    for item in figures[0]['items']:
+        if item.get('fresh'):
+            line = item['source_quote']
+            plain = line.replace(f'｜鮮度: {item.pop("fresh")}', '')
+            full = full.replace(line, plain, 1)
+            item['source_quote'] = plain
+    return summary, figures, full
+
+
+def with_fresh(text=FRESH):
+    summary, figures, full = without_fresh()
     item = figures[0]['items'][1]
     line = item['source_quote']
     quoted = f'{line}｜鮮度: {FRESH}'
@@ -133,8 +145,17 @@ def test_a_value_not_of_the_day_shows_its_quoted_words_with_the_open_circle():
     assert page.count('class="fresh"') == 1 and page.count(' is-fresh') == 1
     row = page[page.rindex('<tr', 0, page.index('class="fresh"')):page.index('</tr>', page.index('class="fresh"'))]
     assert row.index('class="asof"') < row.index('class="fresh"')  # beside the date
-    plain, *_ = edition()
+    summary, figures, full = without_fresh()
+    dash.validate(summary, figures, full)
+    plain, _ = dash.build(full, summary, figures, title='t', source_name='s.md')
     assert 'class="fresh"' not in plain and 'is-fresh' not in plain
+
+
+def test_every_age_note_of_the_board_is_on_the_page():
+    page, _, figures, _ = edition()
+    notes = [i['fresh'] for i in figures[0]['items'] if i.get('fresh')]
+    assert notes and page.count('class="fresh"') == len(notes)
+    assert all(dash.e(note) in page for note in notes)
 
 
 def test_a_fresh_note_that_its_line_does_not_say_is_rejected():

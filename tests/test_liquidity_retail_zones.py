@@ -196,7 +196,7 @@ def test_a_zone_crossing_the_band_edge_is_not_coloured_as_inside():
     assert classes == ['', ' part-band', ' in-band', ' part-band', ' part-band', '']
     # r13: a zone that crosses the edge is drawn as a tan (not teal) thick part of the trunk; no shadow is used.
     assert '.lv.part-band .lv-node::before{width:2px;margin-left:-1px;background:var(--laa-rule-warm)}' in dash.CSS
-    assert '帯の境をまたぐ価格帯は右端だけ色を付けます' in \
+    assert '帯の境をまたぐ価格帯は縦線が黄土色' in \
         board.liquidity_figure(with_order_book(sample()), NOW, 'daily', SOURCE)['figure']['legend']
 
 

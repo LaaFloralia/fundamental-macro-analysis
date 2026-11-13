@@ -17,6 +17,7 @@ Twelve Data の注意:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import re
 import sys
 from pathlib import Path
@@ -44,6 +45,27 @@ YAHOO_URLS = PREMARKET_YAHOO_URLS
 
 # Yahoo Chart API 用シンボル（公式・無料・無認証、HTML より安定）
 YAHOO_CHART_SYMBOLS = PREMARKET_YAHOO_CHART_SYMBOLS
+
+
+def _previous_close(meta: dict, timestamps, closes):
+    """(close of the session before the quoted one, its date) from the daily bars; (None, None) if unknown.
+
+    `meta.chartPreviousClose` is the close before the first bar of the requested range (5 days back), not
+    yesterday's. Using it gave NDX +6.23% on 2026-11-13 when the day-over-day change was -0.30%
+    (28,289.19 against 28,374.25). `meta.previousClose` is absent for the indices, so the previous close is
+    read from the dated bars: the last close before the bar of the session `regularMarketTime` falls in.
+    """
+    bars = [(t, c) for t, c in zip(timestamps or [], closes or []) if t is not None]
+    quoted = meta.get("regularMarketTime")
+    if not bars or quoted is None:
+        return meta.get("previousClose"), None
+    offset = meta.get("gmtoffset") or 0
+    day = lambda t: datetime.fromtimestamp(t + offset, timezone.utc).date()  # noqa: E731
+    earlier = [(t, c) for t, c in bars if day(t) < day(quoted) and c is not None]
+    if not earlier:
+        return meta.get("previousClose"), None
+    t, close = earlier[-1]
+    return close, day(t).isoformat()
 
 
 def _yahoo_chart_api(label: str, retries: int = 3) -> Optional[dict]:
@@ -92,7 +114,7 @@ def _yahoo_chart_api(label: str, retries: int = 3) -> Optional[dict]:
             low_v = lows[idx] if idx is not None else None
 
             current = meta.get("regularMarketPrice")
-            prev_close = meta.get("previousClose") or meta.get("chartPreviousClose")
+            prev_close, prev_date = _previous_close(meta, result.get("timestamp"), quote.get("close"))
             change = (current - prev_close) if (current is not None and prev_close is not None) else None
             change_pct = (
                 round(change / prev_close * 100, 2)
@@ -102,6 +124,7 @@ def _yahoo_chart_api(label: str, retries: int = 3) -> Optional[dict]:
             return {
                 "current": current,
                 "prev_close": prev_close,
+                "prev_close_date": prev_date,
                 "change": change,
                 "change_pct": change_pct,
                 "open": open_v,

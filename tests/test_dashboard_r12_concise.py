@@ -32,7 +32,7 @@ def test_a_sweep_and_a_break_read_apart():
 def test_retail_entries_read_as_share_and_pl_in_a_few_characters():
     words = {i['label']: i['state_word'] for i in liquidity()['items'] if i['kind'] == 'retail'}
     assert words == {'個人ロングの平均建値': '個人56%ロング', '個人ショートの平均建値': '個人44%ショート'}
-    assert '損益推定と未検証の注文・建玉価格帯は表示から除外しています。' in liquidity()['legend']
+    assert '損益の推定と未検証の注文・建玉価格帯は表示から除外しています。' in liquidity()['legend']
 
 
 def test_the_map_is_a_tree_with_a_node_per_row_and_a_trunk_on_both_band_edges():

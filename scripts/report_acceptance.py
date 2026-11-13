@@ -60,7 +60,7 @@ def compact(text):
 
 
 # Every cell the page shows (explanations open), so a dropped cell fails the browser check.
-FIGURE_TEXT = {'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'asof', 'note'),
+FIGURE_TEXT = {'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'asof', 'note', 'fresh'),
                'liquidity_map': ('label', 'price_text', 'pool', 'state_word', 'touched', 'distance_text', 'target'),
                'event_table': ('label', 'time', 'previous', 'forecast', 'actual', 'diff', 'direction', 'memo')}
 

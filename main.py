@@ -1295,8 +1295,10 @@ def format_scraped_data(data: dict) -> str:
                 continue
             cp = vals.get("change_pct")
             cur = vals.get("current")
+            base = f"（前日終値 {vals['prev_close_date']} 基準）" if vals.get("prev_close_date") else ""
+            change = f"前日比 {cp:+.2f}%{base}" if isinstance(cp, (int, float)) else "前日比 未取得（前日終値を確認できない）"
             lines.append(
-                f"- {sym}: 現在 {cur} | 前日比 {cp:+.2f}% (O {vals.get('open')} / H {vals.get('high')} / L {vals.get('low')})"
+                f"- {sym}: 現在 {cur} | {change} (O {vals.get('open')} / H {vals.get('high')} / L {vals.get('low')})"
             )
     elif pre and isinstance(pre, dict) and pre.get("error"):
         lines.append("")

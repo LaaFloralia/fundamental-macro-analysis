@@ -227,3 +227,28 @@ Owner request: give BTC the same geopolitics coverage as XAU. The BTC pool was t
 Live check (10/15 about 13:20 JST): 120 candidates, general 7/7 and official 3/3. Jev kept 5 macro headlines (dollar and Nasdaq on the hot CPI, Russia/Ukraine peace talks, and Houthi-Saudi clashes with Iranian attacks on ships at 0.51) beside 20 crypto items. In the first run the best macro headline scored 0.83 and the lowest kept crypto item 0.84, so without the places none would have been kept. A question naming military attacks did not change the scores beyond the run-to-run spread (about 0.02).
 
 Verification: repo `tests/` 1221 passed.
+
+## 2026-11-14: content audit, age of each material, page redrawn to the LAA design standard
+
+Owner request (2026-11-13): make the off-chart report correct, pleasant and easy to read. The published Daily 11/13 18:02 and Weekly 10/31 were audited against their stored collections and first-party sources (a read-only GPT Sol High audit is in the work folder of that day; its findings E1-I2 are named below).
+
+Errors found in the published editions (they stay as published; the next scheduled edition is drawn by this code):
+
+- Calendar cut at 200 rows. Investing.com lists the first 200 occurrences of a week and hides the rest behind "Load more". The Weekly 10/31 had nothing after Thursday 21:00 JST (no employment report on 11/06) and the Daily 11/13 18:02 said "no US release tonight" with PPI at 22:30 JST. `scrapers/economic_calendar._load_all` now presses the button to the end and records `load_more` per tab; a week that could not be read to its end is `truncated_tabs`, shown as an incomplete calendar (`offchart_board.calendar_shortfall`), never as a week without releases.
+- FOMC "12/09 (in 25 days)": 25 was the count to the first meeting day (12/08). `main._get_fomc_metadata` gives the decision date and its own count; the prompts say to copy both.
+- Central banks: the 3-month total was 7-9月 while the breakdown listed 8・9・10月. `gold_cb` returns `cumulative_months`; the row lists the months of the total and names the flash month as outside it.
+- NDX "+6.23%" (E1): Yahoo's `chartPreviousClose` is the close before the 5-day range. `premarket._previous_close` reads the previous session from the dated bars (-0.30% for that day); with no dated bar the change is absent, not computed from the range start.
+- Daily Tier B looked two calendar days ahead, so a Friday edition lost Tuesday's retail sales. It is now two business days (`us_events.AHEAD_WEEKDAYS`).
+
+Made visible, votes unchanged:
+
+- Age of a material (`scrapers/freshness.py`): a value two or more days old says why (weekend, US holiday by market); COT names the next release from the CFTC schedule copied into `config.COT_RELEASE_DATES` (2026 only: copy the next year's schedule when the CFTC publishes it, otherwise the row says the next release is unconfirmed). Shown as `fresh` beside the date with ○.
+- DXY: the 20-day row says when it is the forming daily bar; the same-day row says when the quoted previous close differs from the daily table's close (M1: 103.18 against 103.17 made a -0.01% weak vote).
+- FedWatch (E2): a range shown without a probability is named in the row and left out, never counted as 0%.
+- Prompts (E3, M2, M3): cancel conditions are written with off-chart observations, not with a price holding for N minutes or the GVZ band edge; the news row does not repeat the rate path; no causal story from the retail average entry. The "2.1x range at NFP/CPI" sentence now cites `docs/evaluations/offchart-review-20260923/event_study.json` (I2).
+
+Page (`scripts/offchart_dashboard.py`, r13): tokens of the LAA design standard 2026.11.2 (web) only; one teal panel for the overall verdict; votes as points on a rule; liquidity levels outside the shown range are placed above or below in price order; distance from the current price as a line; no red/green fills. `laa-design check` reports 0 on both rebuilt editions. Bundle `schemaVersion` 10; `tests/test_edition_v9_compat.py` keeps the published 11/13 edition drawable.
+
+Open: the Weekly's Fed "effective 9/17" (M4) comes from reference metadata the parent fills on the job side (not this repo); the comparison series behind the percentiles and the 60-day correlations are not stored with an edition (I1); the S&P manufacturing PMI appears on two dates in Investing.com's table (the first-party schedule returned 403); the publication banner of `hp_publication.display_html` still uses its own colours; DJI was rate-limited (429) during the live check of the previous-close fix. iPhone Safari was not checked (Chromium 1365 and 390 only).
+
+Verification: repo `tests/` 1834 passed; job-side `test_report_presentation.py`, `test_visual_blocks.py`, `test_parent_workflow.py`, `test_runner.py` 97 passed against this tree (job files unchanged); live calendar read three times (22 events, PPI 11/13 22:30 present).

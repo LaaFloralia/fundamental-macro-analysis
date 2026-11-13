@@ -416,6 +416,27 @@ def _expected_rate(rates, key):
     return sum(m * p for m, p in pairs) / total
 
 
+def _dxy_base_note(dxy, stamp):
+    """'' unless the quoted previous close differs from the daily table's close of the previous session.
+
+    The quote page and the historical table are two sources. On 2026-11-13 the quote gave 103.18 and the
+    table 103.17 for 11/12, so a -0.01% change (and a weak vote) came from the difference between the two,
+    not from a move (2026-11-14 audit). The vote rule is unchanged; the row says which base it used.
+    """
+    today = (stamp.astimezone(NEW_YORK) if stamp.tzinfo else stamp).date().isoformat()
+    closes = [c for c in dxy.get('recent_closes') or []
+              if isinstance(c, (list, tuple)) and len(c) == 2 and str(c[0]) < today and num(c[1]) is not None]
+    if not closes or num(dxy.get('current_price')) is None:
+        return ''
+    day, close = max(closes, key=lambda c: str(c[0]))
+    close = num(close)
+    if not close or abs(close - num(dxy['prev_close'])) < 0.005:
+        return ''
+    other = (num(dxy['current_price']) / close - 1) * 100
+    return (f'前日終値は現在値と同じ表示の値。日足の表の{_md(str(day))}終値は{fmt(close, 3)}で{fmt(abs(close - num(dxy["prev_close"])), 3)}違い、'
+            f'その基準なら{other:+.2f}%')
+
+
 def _fedwatch(data, mode, stamp):
     """(row, None) or (None, reason): change of the probability-weighted policy rate for the next
     FOMC (a fall prices easing). The baseline is the table's own column, else our history of the
@@ -469,6 +490,13 @@ def _fedwatch(data, mode, stamp):
     change, places, ep = shown_ends(raw, now, before, 3, threshold, scale=100)
     side, strength = judge(raw, threshold, -1)
     distribution = '・'.join(f'{r["range"]} {r["current"]:.1f}%' for r in rates)
+    # A range the table shows without a probability is left out, never counted as 0%: the row says so, because
+    # the weighted rate then covers only the ranges with a shown probability (2026-11-14 audit).
+    blank = [_clean(r.get('range')) for r in fw.get('unavailable_target_rates') or [] if num(r.get('current')) is None]
+    blank = [r for r in blank if r]
+    if blank:
+        distribution += (f'（{"・".join(blank)} は提供表で空欄。0%と見なさず計算から除外、'
+                         f'表示のある確率の合計 {sum(r["current"] for r in rates):.1f}%）')
     return row(GROUPS['short'][mode], label, f'期待 {fmt(now, ep)}%', f'{fmt(before, ep)}%（{origin}）', f'{change:+.{places}f}bp',
                side, strength, f'次回FOMC {_meeting(meeting)}',
                '確率で重み付けした政策金利（各レンジの中央値）の変化。低下は緩和寄りの織り込みで金に追い風、上昇は逆風。'
@@ -650,6 +678,7 @@ def bias_rows(data, stamp, mode, source=None):
                                 f'前日終値 {fmt(dxy["prev_close"], 3)}' if has_prev else '前日終値',
                                 f'{pct:+.{places}f}%', side, strength, f'記録 {_stamp(dxy.get("timestamp"))}',
                                 'ドル高は金の逆風、ドル安は追い風。前日比±0.3%以上で強',
+                                note=_dxy_base_note(dxy, stamp) if has_prev else '',
                                 bind=('dxy.change_pct', dxy['change_pct']), digits=places, unit='%'))
     result, reason = _fedwatch(data, mode, stamp)
     if result:
@@ -1329,16 +1358,16 @@ def liquidity_figure(data, stamp, mode, source=None):
         rows.append(f'流動性｜{band["label"]}: {fmt(band["lower"])}〜{fmt(band["upper"])}'
                     f'（GVZ {liq.get("gvz")}・{liq.get("gvz_as_of")}）')
     last_bar = _bar_span(lv.get('last_bar_utc'))
-    legend = ('名前付きの高値・安値と個人の平均建値を価格順（上ほど高い価格）に並べています。価格の右の縦線は現在値より上が赤、下が緑で、'
-              '濃い行が現在値です（画面を動かしても上端か下端に残ります）。価格の下の「差」は現在値との差（ドル）です。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
+    legend = ('名前付きの高値・安値と個人の平均建値を価格順（上ほど高い価格）に並べています。価格の右の縦線は価格の軸で、'
+              '数字の大きい行が現在値です（画面を動かしても上端か下端に残ります）。「差」は現在値との差（ドル）で、右の横線が長いほど現在値から遠い水準です。高値の上（BSL）と安値の下（SSL）は損切りが置かれやすいとされる流動性の候補で、'
               '注文そのものは観測していません。●未到達（確定足で一度も抜けていない）、✓掃引済み（一度抜けて、最新の終値は内側）、'
               '↗↘抜けたまま（最新の終値が外側で6時間未満。↗は高値の上、↘は安値の下）、×抜けて定着（6時間以上外側で終値）、◌形成中。'
               '形成期間や形成後に足が欠けた水準は、状態の後に欠測時間を付け、冒頭の直近候補から外します。'
               '判定は確定した1時間足（発表15分足の直後はその時間の残りを15分足）、日足の区切りはNY 17:00。'
               'セッションは各市場の現地時間で、アジア 東京9〜16時・London ロンドン8〜13時・NY ニューヨーク8〜13時'
               '（JSTでは夏時間 16〜21時・21〜翌2時、冬時間 17〜22時・22〜翌3時）。'
-              f'表示範囲は現在値±{span:g}%で、外側は下に一覧。帯は想定変動±1σ（GVZから換算、到達予測ではない）で、'
-              '色の付いた行が帯の内側です（帯の境をまたぐ価格帯は右端だけ色を付けます）。'
+              f'表示範囲は現在値±{span:g}%で、外側の水準は上にあるものを上、下にあるものを下に分けて並べます（横線の端が白抜きの丸）。帯は想定変動±1σ（GVZから換算、到達予測ではない）で、'
+              '縦線の太い部分が帯の内側です（帯の境をまたぐ価格帯は縦線が黄土色）。'
               + (f'計算に使った最終確定足は{last_bar}（Twelve Data 1時間足）。' if last_bar else '') +
               ('発表足の高値・安値は直近7日のTier A指標の発表15分足（なければ発表時刻を含む1時間足）です。' if weekly else
                '発表足の高値・安値は米重要指標（Tier A・B）の発表15分足（なければ発表時刻を含む1時間足）で、'
@@ -1591,7 +1620,7 @@ def event_figure(data, stamp, mode):
         notes.append(f'米指標: Investing.comの週タブ（{"・".join(calendar["missing_tabs"])}）が見つからず、その週の予定は表に入っていない')
     legend = ('時刻はすべてJST。米国の指標だけを2段階で選んでいます。Tier A＝FOMC・FRB議長・雇用統計・CPI、Tier B＝小売・GDP・PCE・PPI・ISM・耐久財・'
               'FOMC議事要旨・ミシガン大期待インフレ・新規失業保険申請・ADP・JOLTS。住宅・国債入札・在庫・地区連銀・S&P PMIなどは載せません。'
-              '予定はInvesting.comの重要度★3の行だけから取るため、提供元が★2以下としたTier A/Bの発表は載りません。'
+              '予定はInvesting.comの重要度3（最高）の行だけから取るため、提供元が重要度2以下としたTier A/Bの発表は載りません。'
               f'期間は{period}（JSTの日付単位）、{tier_scope("weekly" if weekly else "daily")}。カレンダーから消えた発表済みの指標も、記録した結果があれば載せます'
               '（カレンダーの取得に失敗したときも）。取得が失敗・不完全なとき、取得範囲を確認できないときは「該当なし」とせず、予定を確認できないと示します。'
               '発表済みの向きは系列ごとの「結果−予想」に米指標の一般則（予想より強い＝ドル・金利高で金の逆風）を当てたもの（△▽）。'
