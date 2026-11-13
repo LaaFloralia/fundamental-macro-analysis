@@ -197,6 +197,9 @@ def build_observations(data, mode='daily', source=None):
         if key not in present:
             missing.append(f'{key}: 図の作成に必要なデータが不足')
             limitations.append(_figure_gone(key, data))
+    # A percentile or correlation that the series stored with the collection does not reproduce is said on the page.
+    from scripts import evidence_check
+    limitations.extend(f'検算の不一致: {m}' for m in evidence_check.recompute(data)['mismatches'])
     limitations = list(dict.fromkeys(limitations))
     appendix = (APPENDIX + '\n'
                 f'データ収集: {start.isoformat()}〜{stamp.isoformat()}（判定の基準は収集終了時刻）。'

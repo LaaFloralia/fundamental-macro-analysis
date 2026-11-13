@@ -77,7 +77,7 @@ from scrapers.fred import fetch_fred_series
 from scrapers.news_triage import build_news, format_news_lines
 from scrapers.offchart_features import build_features, save_features
 from scrapers.positioning_history import (
-    append_snapshot, format_positioning_lines, load_history, snapshot_from_data,
+    append_snapshot, format_positioning_lines, load_history, positioning_comparison, snapshot_from_data,
 )
 
 
@@ -223,7 +223,8 @@ def enrich_offchart_inputs(results: dict, weekly: bool = False, now: datetime = 
     try:
         snapshot = snapshot_from_data(results, str(results.get("timestamp")))
         history = load_history()
-        results["positioning"] = {"snapshot": snapshot, "lines": format_positioning_lines(snapshot, history)}
+        results["positioning"] = {"snapshot": snapshot, "lines": format_positioning_lines(snapshot, history),
+                                  "comparison": positioning_comparison(snapshot, history)}
         saved = append_snapshot(snapshot)
         print(f"  [OK]    positioning_history: 記録={'あり' if saved else 'なし'}（履歴 {len(history)} 件）")
     except Exception as e:

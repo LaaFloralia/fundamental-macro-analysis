@@ -138,6 +138,10 @@ def build_correlations(xau_closes: dict[str, float], fred: dict) -> dict:
         xau_chg = _changes(xau_closes, common, "pct")
         oth_chg = _changes(other, common, mode)
         entry["n"] = len(xau_chg)
+        # The paired levels both windows were computed from, so the coefficients can be recomputed from the
+        # collection alone: [date, XAUUSD close, series value], the last 61 common dates (fewer if not available).
+        entry["change_mode"] = mode
+        entry["observations"] = [[d, xau_closes[d], other[d]] for d in common[-(LONG_WINDOW + 1):]]
         entry["period_20d"] = f"{common[-SHORT_WINDOW - 1]}〜{common[-1]}"
         entry["period_60d"] = (f"{common[-LONG_WINDOW - 1]}〜{common[-1]}"
                                if len(common) > LONG_WINDOW else None)
@@ -150,6 +154,22 @@ def build_correlations(xau_closes: dict[str, float], fred: dict) -> dict:
                 entry[k] = round(entry[k], 2)
         result["pairs"].append(entry)
     return result
+
+
+def recompute_pair(entry: dict) -> dict:
+    """{'r_20d', 'r_60d'} recomputed from a pair's stored `observations` with the same rules as above.
+
+    Empty when the pair carries no observations (collections before 2026-11-14, or a pair that was not computed).
+    """
+    rows = entry.get("observations") or []
+    if len(rows) < SHORT_WINDOW + 1:
+        return {}
+    dates = [r[0] for r in rows]
+    xau_chg = _changes({r[0]: r[1] for r in rows}, dates, "pct")
+    oth_chg = _changes({r[0]: r[2] for r in rows}, dates, entry.get("change_mode") or "abs")
+    short = _pearson(xau_chg[-SHORT_WINDOW:], oth_chg[-SHORT_WINDOW:])
+    long_ = _pearson(xau_chg[-LONG_WINDOW:], oth_chg[-LONG_WINDOW:]) if len(xau_chg) >= LONG_WINDOW else None
+    return {"r_20d": None if short is None else round(short, 2), "r_60d": None if long_ is None else round(long_, 2)}
 
 
 def format_correlation_lines(corr: dict) -> list[str]:

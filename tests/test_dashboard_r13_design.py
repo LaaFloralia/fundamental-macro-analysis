@@ -246,7 +246,7 @@ def browser_metrics(html, width):
               const top = s => document.querySelector(s).getBoundingClientRect().top;
               return {overflow: document.documentElement.scrollWidth > innerWidth + 1,
                       small: texts.filter(n => parseFloat(getComputedStyle(n).fontSize) < 12).length,
-                      taps: [...document.querySelectorAll('summary, #source-markdown')]
+                      taps: [...document.querySelectorAll('summary, a')]
                               .filter(n => n.getBoundingClientRect().height < 44).length,
                       order: [top('.off-above'), top('.liq-map > .ladder'), top('.off-below')],
                       fonts: [...new Set(texts.map(n => getComputedStyle(n).fontSize))]};
@@ -263,3 +263,9 @@ def test_the_page_fits_reads_and_orders_the_map_in_a_real_browser(width):
     m = browser_metrics(page, width)
     assert not m['overflow'] and m['small'] == 0 and m['taps'] == 0
     assert m['order'] == sorted(m['order'])  # outside-above, the shown range, outside-below
+
+
+def test_source_and_headline_links_are_tall_enough_to_tap():
+    # 2026-11-14: links in the source line were 18px tall. They sit in a wrapping row, each 44px high.
+    assert '.src{display:flex;flex-wrap:wrap;align-items:center;gap:0 8px;font-size:var(--laa-label)}' in dash.CSS
+    assert '.src a,.ni-title a{display:inline-flex;align-items:center;min-height:44px}' in dash.CSS

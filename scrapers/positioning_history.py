@@ -160,6 +160,31 @@ def backfill_cot_history(market_name: str, weeks: int = 156, path: Path = HISTOR
     return added
 
 
+def positioning_comparison(snapshot: dict, rows: list[dict]) -> dict:
+    """The series each percentile was ranked against, kept with the collection so it can be recomputed.
+
+    The history file grows after a collection, so a percentile could not be checked later from the
+    edition alone (2026-11-14 audit, I1). `series` is exactly what `percentile_rank` received: one value per
+    hour of the same source for the retail share, one per report week for COT. A percentile that could not
+    be given (too few samples or values) keeps its short series and `percentile` None.
+    """
+    now = snapshot.get("recorded_at", "")
+    out = {"rule": f"100*(未満の件数+同値の件数/2)/件数。{MIN_SAMPLES}件・{MIN_DISTINCT}種未満は百分位なし",
+           "retail": {}, "cot_gold_mm": None}
+    for symbol, r in (snapshot.get("retail") or {}).items():
+        hours = _retail_by_hour(rows, symbol, r["source"], now)
+        out["retail"][symbol] = {"source": r["source"], "value": r["long_pct"],
+                                 "percentile": percentile_rank(list(hours.values()), r["long_pct"]),
+                                 "series": [[hour, value] for hour, value in hours.items()]}
+    cot = snapshot.get("cot_gold_mm")
+    if cot:
+        weeks = _cot_by_week(rows, cot["report_date"])
+        out["cot_gold_mm"] = {"report_date": cot["report_date"], "value": cot["mm_net_pct_oi"],
+                              "percentile": percentile_rank(list(weeks.values()), cot["mm_net_pct_oi"]),
+                              "series": [[week, value] for week, value in weeks.items()]}
+    return out
+
+
 def positioning_numbers(snapshot: dict, rows: list[dict]) -> dict:
     """format_positioning_lines と同じ規則の数値版（自動売買などの機械利用向け）。"""
     now = snapshot.get("recorded_at", "")

@@ -874,7 +874,8 @@ details[open]>summary::before{content:"−"}
 .howto-body{padding:0 0 24px;max-width:54em;color:var(--laa-text-muted)}
 .howto-body p{margin:0 0 16px}.howto-body ul{margin:0 0 16px;padding-left:1.2em}.howto-body li+li{margin-top:8px}
 .rules b{font-weight:700;color:var(--laa-text)}
-.src{font-size:var(--laa-label)}
+.src{display:flex;flex-wrap:wrap;align-items:center;gap:0 8px;font-size:var(--laa-label)}
+.src a,.ni-title a{display:inline-flex;align-items:center;min-height:44px}
 details.limits{margin-top:72px}
 .note-line{margin:24px 0 0;font-size:var(--laa-label);color:var(--laa-text-muted)}
 .news{list-style:none;margin:0;padding:0;border-top:1px solid var(--laa-rule)}
