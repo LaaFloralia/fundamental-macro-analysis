@@ -41,7 +41,7 @@ def test_the_map_is_a_tree_with_a_node_per_row_and_a_trunk_on_both_band_edges():
     assert html.count('<span class="lv-node" aria-hidden="true"><span class="icon">') == len(figure['items'])
     assert 'ladder-head' not in html and 'class="band-edge side-above"' in html and 'class="band-edge side-below"' in html
     css = dash.CSS
-    assert '.lv-node{grid-area:node' in css and '.kind-current .lv-node{background:none}' in css
+    assert '.lv-node{grid-area:node' in css and '.kind-current .icon{background:var(--laa-accent)' in css
 
 
 def test_neutral_bias_rows_say_neutral_alone():
