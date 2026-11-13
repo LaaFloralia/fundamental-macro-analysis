@@ -92,7 +92,7 @@ def test_bias_board_is_one_table_per_horizon_with_its_heading_and_tally():
             in section)
     assert '右端が金への向き' not in section and 'class="sub"' not in section
     assert '右端の「向き」列が金（XAUUSD）への向きです' in figures[0]['legend'] and '▲▼は閾値以上' in figures[0]['legend']
-    assert '.horizon+.horizon{margin-top:40px}' in dash.CSS and '.horizon+.horizon{margin-top:28px}' in dash.CSS
+    assert '.horizon+.horizon{margin-top:48px}' in dash.CSS and '.horizon+.horizon{margin-top:32px}' in dash.CSS
 
 
 # ------------------------------------------------------------------ lead facts
@@ -140,7 +140,9 @@ def test_rows_carry_a_side_spine_above_or_below_the_current_price():
     assert classes == [('level', ' side-above'), ('zone', ' side-at'), ('current', ''), ('level', ' side-below'),
                        ('level', ' side-above')]  # the last one: the 表示範囲の外 list
     css = dash.CSS
-    assert '.lv.side-above{--trunk:var(--above)}' in css and '.lv.side-below{--trunk:var(--below)}' in css  # r12: the tree's trunk
+    # r13: one rule colour on both sides (the order tells the side); the band is the thick teal part of the trunk.
+    assert '.lv.in-band .lv-node::before{width:2px;margin-left:-1px;background:var(--laa-accent)}' in css
+    assert '--above' not in css and '--below' not in css
 
 
 def test_the_current_row_is_sticky_and_no_ancestor_clips_it():

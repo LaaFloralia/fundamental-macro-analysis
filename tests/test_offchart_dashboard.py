@@ -149,8 +149,10 @@ def test_a_mismatched_verdict_shows_its_rule_result_and_the_reports_reason():
     page, _ = dash.build(source, summary, result['figures'], title='t', source_name='s.md')
     tiles = page[page.index('class="tiles"'):page.index('class="conclusion"')]
     assert tiles.count('is-mismatch') == 2 and tiles.count('tile-detail') == 2  # 長期 and 総合 differ from the tally
-    assert '<span class="tile-origin">集計と異なる</span>' in tiles and f'<p class="tile-reason">{reason}</p>' in tiles
-    assert '原稿の判断' not in tiles
+    assert '<span class="tile-origin">集計と異なる</span>' in tiles and '原稿の判断' not in tiles
+    # r13: the reason follows the conclusion and the lead facts (it no longer comes before the conclusion).
+    lead = page[page.index('class="lead"'):page.index('id="bias"')]
+    assert lead.index('class="conclusion"') < lead.index('class="facts"') < lead.index(f'<p class="tile-reason">{reason}</p>')
     # Without a mismatch the tiles carry no rule detail; the counts sit in the group headers.
     source, summary, figures = edition()
     page, _ = dash.build(source, summary, figures, title='t', source_name='s.md')
@@ -241,7 +243,9 @@ def test_each_series_of_a_release_is_its_own_line_and_as_forecast_is_neutral():
             '<span class="vh">／</span><span class="ser s-neutral">CPI（前月比・9月） +0pp</span>'
             '<span class="vh">／</span><span class="ser s-negative">CPI（前年比・9月） +0.1pp</span></span>') in page
     css = dash.CSS
-    assert '.chg-series .ser{display:block}' in css and '.board .chg .s-neutral{color:var(--flat)}' in css
+    assert '.chg-series .ser{display:block}' in css and '.board .chg .s-neutral{color:var(--laa-text-muted)}' in css
+    # r13: each series carries its direction as a mark (not by colour alone), as in the US table.
+    assert '.ser.s-positive::before{content:"△"}' in css and '.ser.s-negative::before{content:"▽"}' in css
     # The browser check still finds the whole change text (the separator is in the text, out of sight).
     text = acceptance.compact(re.sub(r'<[^>]+>', '', page.replace('&amp;', '&')))
     assert [t for t in acceptance.shown_texts(summary, figures) if acceptance.compact(t) not in text] == []

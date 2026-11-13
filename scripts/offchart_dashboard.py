@@ -6,6 +6,10 @@ liquidity is (named levels with their sweep state), and which US releases to wat
 Every displayed figure string is verified against its quoted line in the Markdown appendix,
 and every number against the numbers of that line; the full Markdown is embedded only as a
 download link. Explanations sit in collapsed <details> blocks.
+
+The look follows the LAA design standard (laa-design, web, 2026.11.2): its token CSS verbatim, one teal face
+(the overall verdict), rules instead of boxes, direction told by symbol, word and place. Shapes drawn from the
+page's own values (vote points, the liquidity trunk and distance lines) are positions only and carry no text.
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ import re
 
 FIGURE_TYPES = ('bias_board', 'liquidity_map', 'event_table', 'news_list')
 ITEM_TEXT = {
-    'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'symbol', 'asof', 'note'),
+    'bias_board': ('label', 'display', 'baseline', 'change', 'direction', 'symbol', 'asof', 'note', 'fresh'),
     'liquidity_map': ('label', 'price_text', 'pool', 'state_word', 'touched', 'distance_text', 'target'),
     'event_table': ('date', 'time', 'label', 'status', 'previous', 'forecast', 'actual', 'diff', 'direction',
                     'symbol', 'memo'),
@@ -267,13 +271,12 @@ def validate(summary: dict, figures: list, source: str) -> list:
     return checked
 
 
-# ------------------------------------------------------------------ mini diagrams (decorative SVG)
+# ------------------------------------------------------------------ mini diagrams (decorative, drawn from the row)
 
 W, H = 112, 30
-COLOR = {'positive': 'var(--up)', 'negative': 'var(--down)', 'neutral': 'var(--flat)', 'caution': 'var(--flat)'}
 
 
-def _svg(body, label=''):
+def _svg(body):
     return (f'<svg class="viz" viewBox="0 0 {W} {H}" width="{W}" height="{H}" aria-hidden="true" '
             f'focusable="false">{body}</svg>')
 
@@ -288,22 +291,40 @@ def _scale(values, lo_pad=0.08):
 
 
 def viz_svg(viz, tone):
-    if not isinstance(viz, dict):
+    """The row's trend line (its own observations, its own scale); nothing for any other diagram."""
+    if not isinstance(viz, dict) or viz.get('type') != 'spark':
         return ''
-    color = COLOR.get(tone, 'var(--flat)')
-    kind = viz.get('type')
-    if kind == 'spark':
-        vals = [float(v) for v in viz.get('values') or []]
-        if len(vals) < 3:
-            return ''
-        y = _scale(vals)
-        step = (W - 8) / (len(vals) - 1)
-        pts = ' '.join(f'{4 + i * step:.1f},{y(v):.1f}' for i, v in enumerate(vals))
-        return _svg(f'<line x1="4" x2="{W - 4}" y1="{y(vals[0]):.1f}" y2="{y(vals[0]):.1f}" class="base"/>'
-                    f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.8" stroke-linejoin="round"/>'
-                    f'<circle cx="4" cy="{y(vals[0]):.1f}" r="2.2" class="dot0"/>'
-                    f'<circle cx="{W - 4}" cy="{y(vals[-1]):.1f}" r="3" fill="{color}"/>')
-    return ''
+    vals = [float(v) for v in viz.get('values') or []]
+    if len(vals) < 3:
+        return ''
+    y = _scale(vals)
+    step = (W - 8) / (len(vals) - 1)
+    pts = ' '.join(f'{4 + i * step:.1f},{y(v):.1f}' for i, v in enumerate(vals))
+    return _svg(f'<line x1="4" x2="{W - 4}" y1="{y(vals[0]):.1f}" y2="{y(vals[0]):.1f}" class="base"/>'
+                f'<polyline points="{pts}" fill="none" class="trend" stroke-width="1.5" stroke-linejoin="round"/>'
+                f'<circle cx="4" cy="{y(vals[0]):.1f}" r="2" class="dot0"/>'
+                f'<circle cx="{W - 4}" cy="{y(vals[-1]):.1f}" r="3" class="dot1"/>')
+
+
+# Each material's direction symbol as a point on one rule (down at the left, up at the right): strong at the ends,
+# weak half-way, neutral in the middle. Points of one place stack upwards. Drawn from the rows' own symbols only;
+# the tally (which merges rows of one factor) stays in words beside the horizon's table.
+VOTE_PLACE = {'▼': (-2, 's'), '▽': (-1, 'w'), '—': (0, 'n'), '△': (1, 'w'), '▲': (2, 's')}
+
+
+def votes_html(rows):
+    stack, marks = {}, []
+    for row in rows:
+        place = VOTE_PLACE.get(str(row.get('symbol') or '').strip())
+        if not place:
+            continue
+        k = stack.get(place[0], 0)
+        stack[place[0]] = k + 1
+        marks.append(f'<i class="v-{place[1]}" style="--x:{50 + place[0] * 22.5:g}%;--k:{k}"></i>')
+    if not marks:
+        return ''
+    return (f'<span class="votes" aria-hidden="true" style="--n:{max(stack.values())}"><span class="v-axis"></span>'
+            + ''.join(marks) + '</span>')
 
 
 # ------------------------------------------------------------------ sections
@@ -319,6 +340,7 @@ def _details(title, body):
 
 
 MISMATCH_MARK = '集計と異なる'
+TOTAL_LABEL = '総合'
 
 
 def _tile_origin(t):
@@ -332,29 +354,44 @@ def _tile_origin(t):
     return ''
 
 
-def tiles_html(figure, confidence=None):
-    """The per-horizon verdicts, shown first on the page (above the conclusion).
+def _tile(t, *, main=False, conf=None, rows=()):
+    origin = _tile_origin(t)
+    detail = f'<span class="tile-detail">{e(t["detail"])}</span>' if t.get('show_detail', t.get('mismatch')) else ''
+    head = (f'<span class="tile-head"><span class="tile-symbol" aria-hidden="true">{e(t["symbol"])}</span>'
+            f'<span class="tile-word">{e(t["direction"])}</span></span>')
+    cls = (f'tile{" tile-main" if main else ""} tone-{e(t.get("tone"))}'
+           f'{" is-mismatch" if t.get("mismatch") else ""}')
+    label = f'<span class="tile-label">{e(t["label"])}</span>'
+    conf_html = f'<span class="tile-conf">{e(conf)}</span>' if conf else ''
+    if main:
+        return f'<div class="{cls}">{label}{head}{origin}{detail}{conf_html}</div>'
+    info = f'<span class="tile-info">{origin}{detail}</span>' if origin or detail else ''
+    return f'<div class="{cls}">{label}{votes_html(rows)}{head}{info}</div>'
 
-    A tile repeats its rule result when the report's verdict differs from it (with the report's
-    reason below), when the horizon has no material, or when a material is missing. The report's
-    confidence word sits in the 総合 tile.
-    """
+
+def tiles_html(figure, confidence=None):
+    """The verdicts, first on the page: the overall one (総合, else the last) on the one teal face with the report's
+    confidence word, the horizons beside it as ruled rows, each with its materials' directions as points on a rule.
+
+    A tile repeats its rule result when the report's verdict differs from it, when the horizon has no material, or
+    when a material is missing (show_detail)."""
     if not figure or not figure.get('verdicts'):
         return ''
     conf = (confidence or {}).get('text')
-    tiles = ''.join(
-        f'<div class="tile tone-{e(t.get("tone"))}{" is-mismatch" if t.get("mismatch") else ""}">'
-        f'<span class="tile-label">{e(t["label"])}</span>'
-        f'<span class="tile-symbol" aria-hidden="true">{e(t["symbol"])}</span>'
-        f'<span class="tile-word">{e(t["direction"])}</span>'
-        + _tile_origin(t)
-        + (f'<span class="tile-detail">{e(t["detail"])}</span>' if t.get('show_detail', t.get('mismatch')) else '')
-        + (f'<span class="tile-conf">{e(conf)}</span>' if conf and t.get('label') == '総合' else '') + '</div>'
-        for t in figure['verdicts'])
-    reason = figure.get('reason')
-    note = f'<p class="tile-reason">{e(reason["text"])}</p>' if reason else ''
+    verdicts = figure['verdicts']
+    main = next((t for t in verdicts if t.get('label') == TOTAL_LABEL), verdicts[-1])
+    items = figure.get('items') or []
+    rest = ''.join(_tile(t, rows=[i for i in items if t.get('group') and i.get('group') == t['group']])
+                   for t in verdicts if t is not main)
     label = figure.get('tiles_label', '期間ごとの金の向き')
-    return f'<div class="{"tiles n4" if len(figure["verdicts"]) == 4 else "tiles"}" role="group" aria-label="{e(label)}">{tiles}</div>{note}'
+    return (f'<div class="tiles" role="group" aria-label="{e(label)}">{_tile(main, main=True, conf=conf)}'
+            + (f'<div class="tile-rest">{rest}</div>' if rest else '') + '</div>')
+
+
+def reason_html(figure):
+    """Why the report's verdict differs from the tally: a note after the conclusion, not ahead of it."""
+    reason = (figure or {}).get('reason')
+    return f'<p class="tile-reason">{e(reason["text"])}</p>' if reason else ''
 
 
 def _fig_head(figure, anchor):
@@ -366,6 +403,13 @@ def _fig_head(figure, anchor):
 BOARD_HEAD = ('<colgroup><col class="c-lbl"><col class="c-now"><col class="c-base"><col class="c-dir"></colgroup>'
               '<thead><tr><th scope="col">材料</th><th scope="col">現在</th><th scope="col">比較</th>'
               '<th scope="col">向き</th></tr></thead>')
+
+
+def _fresh(i):
+    """A value that is not the day's own (holiday, older observation): ○ and the row's own words."""
+    if not i.get('fresh'):
+        return ''
+    return f'<span class="fresh"><span class="mark" aria-hidden="true">○</span>{e(i["fresh"])}</span>'
 
 
 def bias_section(figure):
@@ -386,7 +430,7 @@ def bias_section(figure):
             else:
                 change = f'<span class="chg">{e(i["change"])}</span>' if i.get('change') not in (None, '', '—') else ''
                 if i.get('series'):
-                    # One line per series in its own colour; the separator stays in the text, out of sight.
+                    # One line per series with its own direction mark; the separator stays in the text, out of sight.
                     sep = '<span class="vh">／</span>'
                     change = '<span class="chg chg-series">' + sep.join(
                         f'<span class="ser s-{e(x["tone"])}">{e(x["text"])}</span>' for x in i['series']) + '</span>'
@@ -394,9 +438,10 @@ def bias_section(figure):
                           f'{viz_svg(i.get("viz"), i["tone"])}</td>'
                           f'<td class="cell-base"><span class="base-text">{e(i["baseline"])}</span>{change}</td>')
             body.append(
-                f'<tr class="tone-{e(i["tone"])}{" text-row" if i.get("kind") == "text" else ""}">'
+                f'<tr class="tone-{e(i["tone"])}{" text-row" if i.get("kind") == "text" else ""}'
+                f'{" is-fresh" if i.get("fresh") else ""}">'
                 f'<th scope="row"><span class="lbl">{e(i["label"])}</span>'
-                f'<span class="asof">{e(i["asof"])}</span>{note}</th>{middle}'
+                f'<span class="asof">{e(i["asof"])}</span>{_fresh(i)}{note}</th>{middle}'
                 f'<td class="cell-dir"><span class="dir-symbol" aria-hidden="true">{e(i["symbol"])}</span>'
                 f'<span class="dir-word">{e(i["direction"])}</span></td></tr>')
         blocks.append(f'<div class="horizon"><h3 class="hz-head" id="bias-h{n + 1}"><span class="hz-name">{e(group)}</span>'
@@ -437,8 +482,8 @@ def _band_class(i, lower, upper):
 
 
 def _side_class(i, price):
-    """The row's side of the current price for the left spine: above (warm), below (cool), or at (a zone that
-    contains the price, and the current row itself)."""
+    """The row's side of the current price: above, below, or at (a zone that contains the price; the current row
+    itself has none)."""
     if price is None or i.get('kind') == 'current':
         return ''
     low, high = _ends(i)
@@ -449,44 +494,87 @@ def _side_class(i, price):
     return ' side-at'
 
 
-def _ladder_row(i, band='', price=None):
+def _distance(i, price):
+    low, high = _ends(i)
+    return 0.0 if low <= price <= high else min(abs(low - price), abs(high - price))
+
+
+def _gauge(i, price, reach, half):
+    """How far the row is from the current price: a teal line on a thin rule, its length the distance over the
+    farthest shown row (or the band, if wider); the tan tick is the band's edge. Rows beyond the reach end in a ring.
+    Only a shape: the distance in numbers is the row's own 「差」 text."""
+    if price is None or not reach or i.get('kind') == 'current':
+        return ''
+    d = _distance(i, price)
+    tick = f'<b style="--b:{min(half / reach, 1) * 100:.1f}%"></b>' if half else ''
+    return (f'<span class="lv-gauge{" over" if d > reach * 1.0001 else ""}" aria-hidden="true" '
+            f'style="--d:{min(d / reach, 1) * 100:.1f}%">{tick}<i></i></span>')
+
+
+def _ladder_row(i, band='', price=None, gauge=''):
     pool = f'<span class="pool pool-{e(i["pool"].lower())}">{e(i["pool"])}</span>' if i.get('pool') else ''
     touched = f'<span class="touched">{e(i["touched"])}</span>' if i.get('touched') else ''
     target = f'<span class="target">{e(i["target"])}</span>' if i.get('target') else ''
     side = _side_class(i, price)
-    # A tree: the price on the left, the row's node (its state symbol) on the trunk, the level and its state on the right.
+    # A tree: the price on the left, the row's node (its state symbol) on the trunk, the level and its state on the
+    # right, then its distance in numbers and as a line.
     return (f'<li class="lv kind-{e(i["kind"])} state-{e(i["state"])}{side}{band}{" is-target" if target else ""}">'
             f'<span class="lv-price">{_price(i["price_text"])}</span>'
             f'<span class="lv-node" aria-hidden="true"><span class="icon">{e(i["icon"])}</span></span>'
             f'<span class="lv-name"><span class="lv-label">{e(i["label"])}</span>{pool}{target}</span>'
-            f'<span class="lv-dist">{e(i["distance_text"])}</span>'
+            f'<span class="lv-dist">{e(i["distance_text"])}</span>{gauge}'
             f'<span class="lv-state">{e(i["state_word"])}{touched}</span></li>')
 
 
 def liquidity_section(figure):
-    """The ladder (price order, the expected-move band as two edges), then the rows outside the shown range in the
-    same columns, then what could not be shown and why."""
+    """The map in price order, high at the top: the levels outside the shown range above it and below it (each
+    under 「表示範囲の外」), the shown range in between with the expected-move band as the thick part of the trunk and
+    its two edges; then what could not be shown and why."""
     band = figure.get('band') or {}
     lower, upper = band.get('lower'), band.get('upper')
-    price = next((i['position'] for i in figure['items'] if i.get('kind') == 'current'), None)
+    items = figure['items']
+    price = next((i['position'] for i in items if i.get('kind') == 'current'), None)
+    shown = [i for i in items if not i.get('offscale')]
+    reach = half = None
+    if price is not None:
+        far = [_distance(i, price) for i in shown if i.get('kind') != 'current']
+        half = max(upper - price, price - lower) if lower is not None and upper is not None else None
+        reach = max(far + ([half] if half else []), default=0) or None
+    gauge = lambda i: _gauge(i, price, reach, half)
     rows, upper_done, lower_done = [], False, False
     # The edge's price sits in the price column and its label right of the trunk (a full-width line crossed it).
     edge = lambda word, value: (f'<li class="band-edge {"side-above" if word == "上限" else "side-below"}">'
                                 f'<span class="be-value">{word} {value:,.2f}</span> '
                                 f'<span class="be-label">{e(band["label"])}</span></li>')
-    for i in [i for i in figure['items'] if not i.get('offscale')]:
+    for i in shown:
         if upper is not None and not upper_done and i['position'] <= upper:
             rows.append(edge('上限', upper))
             upper_done = True
         if lower is not None and not lower_done and i['position'] < lower:
+            if upper is not None and not upper_done:
+                rows.append(edge('上限', upper))
+                upper_done = True
             rows.append(edge('下限', lower))
             lower_done = True
-        rows.append(_ladder_row(i, _band_class(i, lower, upper), price))
+        rows.append(_ladder_row(i, _band_class(i, lower, upper), price, gauge(i)))
+    if upper is not None and not upper_done and lower is not None and not lower_done:
+        rows.append(edge('上限', upper))
     if lower is not None and not lower_done:
         rows.append(edge('下限', lower))
-    off = [i for i in figure['items'] if i.get('offscale')]
-    offscale = ('<div class="offscale"><span>表示範囲の外</span><ul class="ladder">'
-                + ''.join(_ladder_row(i, price=price) for i in off) + '</ul></div>') if off else ''
+    off = sorted((i for i in items if i.get('offscale')), key=lambda i: -_ends(i)[1])
+    above = [i for i in off if price is not None and _ends(i)[0] > price]
+    below = [i for i in off if i not in above]
+
+    def outside(group, where, arrow):
+        if not group:
+            return ''
+        return (f'<div class="off-wrap off-{where}"><div class="offscale"><span><span class="arrow" aria-hidden="true">'
+                f'{arrow}</span>表示範囲の外</span><ul class="ladder">'
+                + ''.join(_ladder_row(i, price=price, gauge=gauge(i)) for i in group) + '</ul></div></div>')
+    # In the document the shown range comes first (the reader's first look); on screen the outside rows sit where
+    # their prices are (CSS order), so every price on the map reads from high to low.
+    ladder = (f'<div class="liq-map"><ul class="ladder">{"".join(rows)}</ul>'
+              f'{outside(above, "above", "↑")}{outside(below, "below", "↓")}</div>')
     missing = ''.join(f'<p class="liq-missing">欠測: {e(m["text"])}</p>' for m in figure.get('missing') or [])
     cautions = ''.join(f'<p class="caution" role="note">{e(c["text"])}</p>' for c in figure.get('cautions') or [])
     cautions += ''.join(f'<p class="liq-notice" role="note">{e(c["text"])}</p>' for c in figure.get('notices') or [])
@@ -498,8 +586,7 @@ def liquidity_section(figure):
     howto = _details('水準の決め方と状態の意味' + ('・個人の平均建値' if aux else '') + '（開いて確認）',
                      f'<p>{e(figure.get("legend"))}</p>{aux_html}{_sources(figure)}')
     return (f'<section class="data-figure fig-liq" id="liquidity" aria-labelledby="liq-title">'
-            f'{_fig_head(figure, "liq-title")}{cautions}'
-            f'<ul class="ladder">{"".join(rows)}</ul>{offscale}{missing}{howto}</section>')
+            f'{_fig_head(figure, "liq-title")}{cautions}{ladder}{missing}{howto}</section>')
 
 
 def event_section(figure):
@@ -522,8 +609,9 @@ def event_section(figure):
             f'{" no-nums" if bare else ""}{" no-result" if pending else ""}">'
             f'<td class="ev-time">{"" if same else e(i["time"])}</td>'
             f'<th scope="row" class="ev-name">{tier}<span>{e(i["label"])}</span>{memo}</th>'
-            f'<td class="ev-num" data-k="前回">{e(i["previous"])}</td><td class="ev-num" data-k="予想">{e(i["forecast"])}</td>'
-            f'<td class="ev-num" data-k="結果">{e(i["actual"])}</td><td class="ev-diff">{e(i["diff"])}</td>'
+            f'<td class="ev-num ev-prev" data-k="前回">{e(i["previous"])}</td>'
+            f'<td class="ev-num ev-fcst" data-k="予想">{e(i["forecast"])}</td>'
+            f'<td class="ev-num ev-act" data-k="結果">{e(i["actual"])}</td><td class="ev-diff">{e(i["diff"])}</td>'
             f'<td class="cell-dir"><span class="dir-symbol" aria-hidden="true">{e(i["symbol"])}</span>'
             f'<span class="dir-word">{e(i["direction"])}</span></td></tr>')
     howto = _details('指標の選び方と向きの意味（開いて確認）', f'<p>{e(figure.get("legend"))}</p>{_sources(figure)}')
@@ -531,7 +619,8 @@ def event_section(figure):
     return (f'<section class="data-figure fig-events" id="calendar" aria-labelledby="ev-title">'
             f'{_fig_head(figure, "ev-title")}{cautions}'
             f'<div class="board-wrap"><table class="events"><thead><tr><th scope="col">時刻（JST）</th><th scope="col">指標</th>'
-            f'<th scope="col">前回</th><th scope="col">予想</th><th scope="col">結果</th><th scope="col">差・予測</th>'
+            f'<th scope="col" class="r">前回</th><th scope="col" class="r">予想</th><th scope="col" class="r">結果</th>'
+            f'<th scope="col">差・予測</th>'
             f'<th scope="col">{e(figure.get("direction_header", "金への向き"))}</th></tr></thead><tbody>{"".join(rows)}</tbody>'
             f'</table></div>{howto}</section>')
 
@@ -571,149 +660,282 @@ def news_section(figure):
 SECTIONS = {'bias_board': bias_section, 'liquidity_map': liquidity_section, 'event_table': event_section,
             'news_list': news_section}
 
-CSS = """
-:root{--ink:#22352f;--muted:#5d6863;--line:#dfe3dc;--paper:#fffefb;--canvas:#f3f2ec;--accent:#3f6650;
---up:#2c7a57;--down:#b0454f;--flat:#8b928d;--wash:#f1f4ee;--band:#eef3fb;--band-mark:#9db1d6;
---above:#d9a3a8;--below:#9cc5ae;--at:#c5cbc6;
-font:16px/1.7 "Hiragino Sans","Noto Sans JP","Yu Gothic",Meiryo,sans-serif;color:var(--ink);background:var(--canvas);
-font-variant-numeric:tabular-nums;font-synthesis:none}
-*{box-sizing:border-box}body{margin:0}a{color:var(--accent);text-underline-offset:.2em}
-.reports-back{display:block;max-width:1100px;margin:0 auto;padding:14px 20px;font-size:14px}
-main.dash{max-width:1100px;margin:0 auto 48px;background:var(--paper);border:1px solid var(--line);padding:32px 40px 24px;
-overflow-wrap:break-word}
-.mast{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;border-bottom:2px solid var(--ink);padding-bottom:14px}
-.eyebrow{display:block;color:var(--accent);font-size:.7rem;font-weight:700;letter-spacing:.1em}
-h1{font-size:1.6rem;margin:2px 0 0;line-height:1.3}h2{font-size:1.3rem;margin:0;line-height:1.4}
-.asof-chip{font-size:.95rem;font-weight:600;white-space:nowrap}
-.lead{margin:24px 0 0}
-.conclusion{margin:18px 0 0;padding:16px 20px;background:var(--wash);border-left:5px solid var(--accent);
-font-size:1.02rem;line-height:1.8;white-space:pre-line}
-.cl-split{display:grid;gap:10px;white-space:normal}.cl-row{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:12px;align-items:baseline}
-.cl-row dt{font-size:.78rem;font-weight:700;color:var(--muted);letter-spacing:.04em}.cl-row dd{margin:0}
-.cl-plain{grid-template-columns:minmax(0,1fr)}.cl-plain dt{display:none}
-.conf-line{margin:0;font-size:.85rem;font-weight:700;color:var(--muted)}
-.facts{margin:16px 0 0;padding:0;display:grid;gap:0}
-.kv{display:grid;grid-template-columns:7.5em minmax(0,1fr);gap:12px;align-items:baseline;padding:8px 4px;border-bottom:1px solid var(--line)}
-.kv:last-child{border-bottom:0}
-.kv dt{font-size:.78rem;font-weight:700;color:var(--muted)}.kv dd{margin:0;font-size:.92rem;min-width:0;overflow-wrap:anywhere}
-.kv-line{display:block}.kv-line+.kv-line{margin-top:2px}.kv-line b{font-weight:700}
-.data-figure{margin-top:64px}.fig-head{margin-bottom:14px}.fig-head .sub{margin:4px 0 0;color:var(--muted);font-size:.85rem}
-.tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.tiles.n4{grid-template-columns:repeat(4,minmax(0,1fr))}
-.tile{border:1px solid var(--line);border-top:5px solid var(--flat);background:#fff;padding:12px 16px;display:grid;
-grid-template-columns:auto 1fr;grid-template-areas:"label label" "sym word" "origin origin" "detail detail" "conf conf";column-gap:10px;align-items:center}
-.tile.tone-positive{border-top-color:var(--up)}.tile.tone-negative{border-top-color:var(--down)}
-.tile-label{grid-area:label;font-size:.8rem;font-weight:700;color:var(--muted)}
-.tile-symbol{grid-area:sym;font-size:2.2rem;line-height:1.1}.tone-positive .tile-symbol{color:var(--up)}
-.tone-negative .tile-symbol{color:var(--down)}.tone-neutral .tile-symbol{color:var(--flat)}
-.tile-word{grid-area:word;font-size:1.15rem;font-weight:700;line-height:1.35}
-.tile-origin{grid-area:origin;font-size:.72rem;color:var(--muted)}.tile-detail{grid-area:detail;font-size:.78rem;color:var(--muted);line-height:1.5;margin-top:2px}
-.tile-conf{grid-area:conf;font-size:.78rem;font-weight:700;color:var(--muted);margin-top:4px}
-.tile.is-mismatch .tile-origin{color:#8a5a00;font-weight:700}.tile-reason{margin:10px 0 0;font-size:.82rem;color:#5b4a1f;background:#fbf6e9;
-border-left:4px solid #c9a227;padding:6px 12px}
-.horizon+.horizon{margin-top:40px}
-.hz-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin:0 0 8px;font-size:1.05rem;line-height:1.4}
-.hz-name{font-weight:700}.grp-tally{font-weight:400;color:var(--muted);font-size:.8rem}
-.caution{margin:0 0 10px;padding:6px 12px;background:#fbf0ef;border-left:4px solid var(--down);font-size:.82rem}
-.liq-notice{margin:0 0 10px;padding:6px 12px;background:var(--wash);border-left:4px solid var(--flat);font-size:.82rem;color:var(--muted)}
-.liq-missing{font-size:.8rem;color:var(--muted);margin:10px 0 0}.aux{font-size:.8rem;color:var(--muted);margin:8px 0 0}.events tr.empty td{color:var(--muted);font-size:.86rem}
-.board-wrap{overflow-x:auto}
-table{border-collapse:collapse;width:100%}.board{table-layout:fixed}
-.board .c-lbl{width:31%}.board .c-now{width:22%}.board .c-base{width:30%}.board .c-dir{width:17%}th,td{text-align:left;vertical-align:middle;padding:10px 10px;border-bottom:1px solid var(--line)}
-thead th{font-size:.72rem;color:var(--muted);font-weight:600;border-bottom:1px solid var(--ink);padding-top:4px;padding-bottom:4px}
-tr.day th{background:var(--wash);font-size:.82rem;font-weight:700;padding:6px 10px}
-.board th[scope=row]{font-weight:600;min-width:13em}.lbl{display:block}.asof,.note{display:block;font-size:.72rem;color:var(--muted);font-weight:400}
-.note{color:var(--accent)}.now-text{display:block}.viz{display:block;margin-top:4px}.viz .base{stroke:#c9cfc9;stroke-width:1;stroke-dasharray:2 2}
-.viz .tick{stroke:#9aa29c;stroke-width:1}.viz .dot0{fill:#b9c0ba}.viz .track{fill:#e7ebe5}.viz .zone{fill:#d5dbd4}
-.viz .seg{fill:#cdd6d0}.viz .seg-focus{fill:var(--accent)}.viz .long{fill:#7f9f8c}.viz .short{fill:#c9a3a9}
-.cell-now{font-weight:700;overflow-wrap:anywhere}.nw{white-space:nowrap}.cell-text{font-size:.92rem;line-height:1.6}.cell-base{font-size:.85rem}.base-text{display:block;color:var(--muted)}
-.chg{font-weight:700}.cell-dir{white-space:nowrap}.dir-symbol{font-size:1.25rem;margin-right:6px;vertical-align:-2px}
-.tone-positive .dir-symbol,.tone-positive .chg{color:var(--up)}.tone-negative .dir-symbol,.tone-negative .chg{color:var(--down)}
-.tone-neutral .dir-symbol{color:var(--flat)}.chg-series .ser{display:block}.board .chg .s-positive{color:var(--up)}
-.board .chg .s-negative{color:var(--down)}.board .chg .s-neutral{color:var(--flat)}
-.vh{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}.dir-word{font-size:.88rem;font-weight:600}
-.ladder{list-style:none;margin:0;padding:0;--px:7rem;--node:30px;--gap:8px}
-.lv{--trunk:var(--line);display:grid;grid-template-columns:var(--px) var(--node) minmax(0,1fr);
-grid-template-areas:"price node name" "dist node state";column-gap:var(--gap);row-gap:0;align-items:baseline;padding:8px 10px 8px 0;font-size:.9rem}
-.lv.side-above{--trunk:var(--above)}.lv.side-below{--trunk:var(--below)}.lv.side-at{--trunk:var(--at)}
-.lv.in-band{background:var(--band)}.lv.part-band{box-shadow:inset -6px 0 0 var(--band-mark)}
-.lv-price{grid-area:price;text-align:right;font-weight:700}.lv-label{margin-right:6px}.lv-name{grid-area:name}
-.lv-node{grid-area:node;align-self:stretch;position:relative;margin:-8px 0;
-background:linear-gradient(var(--trunk),var(--trunk)) 100% calc(8px + .85em)/50% 2px no-repeat,linear-gradient(var(--trunk),var(--trunk)) 50% 0/3px 100% no-repeat}
-.lv-node .icon{position:absolute;left:50%;top:calc(8px + .85em);width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;
-background:var(--paper);border:2px solid var(--trunk);display:flex;align-items:center;justify-content:center;font-size:.68rem;line-height:1;
-font-weight:700;color:var(--ink)}
-.side-above .lv-node .icon{color:var(--down)}.side-below .lv-node .icon{color:var(--up)}
-.state-swept .lv-node .icon,.state-broken .lv-node .icon,.state-forming .lv-node .icon,.kind-reference .lv-node .icon{color:var(--flat)}
-.kind-retail .lv-node .icon,.kind-zone .lv-node .icon{color:#7a5c9e}.kind-zone .lv-node .icon{border-radius:6px;height:28px;margin-top:-14px}
-.kind-reference .lv-node .icon{border-style:dashed}
-.pool{display:inline-block;font-size:.68rem;font-weight:700;padding:0 6px;border-radius:3px;color:#fff;vertical-align:1px}
-.pool-bsl{background:var(--down)}.pool-ssl{background:var(--up)}
-.lv-dist{grid-area:dist;text-align:right;font-size:.78rem;color:var(--muted)}.lv>span{min-width:0;overflow-wrap:anywhere}
-.lv-state{grid-area:state;font-size:.82rem}.touched{display:block;font-size:.72rem;color:var(--muted)}
-.state-swept .lv-price,.state-broken .lv-price{color:var(--muted)}
-.kind-current{background:var(--ink)!important;color:#fff;border-radius:3px}
-.kind-current .lv-dist,.kind-current .touched{color:#dfe7e3}.kind-current .lv-node{background:none}
-.kind-current .lv-node .icon{background:#fff;border-color:#fff;color:var(--ink)}
-.ladder>.kind-current{position:-webkit-sticky;position:sticky;top:0;bottom:0;z-index:2;box-shadow:0 1px 6px rgba(0,0,0,.18)}
-.kind-reference{color:var(--muted);font-size:.82rem}
-.kind-draw,.is-target{outline:2px solid var(--accent);outline-offset:-2px}
-.target{display:inline-block;max-width:100%;margin-left:6px;font-size:.72rem;font-weight:700;color:var(--accent);overflow-wrap:anywhere}
-.band-edge{list-style:none;display:grid;grid-template-columns:var(--px) var(--node) minmax(0,1fr);column-gap:var(--gap);
-align-items:baseline;font-size:.72rem;color:#55709c;border-bottom:1px dashed var(--band-mark);padding:2px 10px 2px 0;
---trunk:var(--line);background:linear-gradient(var(--trunk),var(--trunk)) calc(var(--px) + var(--gap) + var(--node) / 2 - 1.5px) 0/3px 100% no-repeat}
-.be-value{grid-column:1;text-align:right;white-space:nowrap}.be-label{grid-column:3;min-width:0;overflow-wrap:anywhere}
-.band-edge.side-above{--trunk:var(--above)}.band-edge.side-below{--trunk:var(--below)}
-.offscale{margin-top:20px}.offscale>span{display:block;font-size:.78rem;font-weight:700;color:var(--muted);padding:0 10px 2px;
-border-bottom:1px solid var(--ink)}
-.events td,.events th{font-size:.88rem}.ev-time{white-space:nowrap;font-weight:600}.ev-name span{display:block}
-.ev-name{font-weight:600;min-width:12em}.memo{display:block;font-size:.74rem;color:var(--muted);font-weight:400}
-.tier{display:inline-block!important;font-size:.66rem;font-weight:700;padding:0 6px;border-radius:3px;margin-bottom:2px;background:var(--ink);color:#fff}
-.tier-b{background:#8d968f}.ev-num{white-space:nowrap}.ev-diff{font-size:.8rem}tr.released{background:#fbfbf8}
-details.howto,details.limits{margin-top:16px;border:1px solid var(--line);background:#fff}
-details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;padding:0 14px;font-size:.85rem;color:var(--accent);font-weight:600}
-.howto-body,.limits-body{padding:2px 16px 12px;font-size:.85rem;color:var(--muted)}.rules{padding-left:1.2em}
-.src{font-size:.78rem}.limits{margin-top:56px}.note-line{font-size:.78rem;color:var(--muted);margin:16px 0 0}
-.no-figures{margin:12px 0 0;padding:10px 14px;border:1px solid var(--line);background:#fff}
-.events tr.same-time td,.events tr.same-time th{border-top:0}
-.events tr.same-time{background:inherit}
-.news{list-style:none;margin:0;padding:0}
-.ni{display:grid;grid-template-columns:6.2em minmax(0,1fr) 7.5em;grid-template-areas:"time title dir" "time meta dir" "time eval dir";
-column-gap:12px;padding:10px 4px;border-bottom:1px solid var(--line);font-size:.9rem}
-.ni-time{grid-area:time;font-weight:600;white-space:nowrap}.ni-title{grid-area:title;font-weight:600;min-width:0;overflow-wrap:anywhere}
-.ni-title a{color:var(--ink)}.ni-meta{grid-area:meta;font-size:.76rem;color:var(--muted)}
-.ni-eval{grid-area:eval;font-size:.8rem;margin-top:2px;min-width:0;overflow-wrap:anywhere}.ni-dir{grid-area:dir;white-space:nowrap;text-align:right}
-.ni.tone-positive .dir-symbol{color:var(--up)}.ni.tone-negative .dir-symbol{color:var(--down)}.ni.tone-neutral .dir-symbol{color:var(--flat)}
-footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--line);margin-top:32px;padding-top:12px;
-font-size:.78rem;color:var(--muted)}
-@media(max-width:700px){
-main.dash{padding:18px 14px;border:0}.mast{align-items:flex-start;flex-direction:column;gap:4px}h1{font-size:1.3rem}
-h2{font-size:1.2rem}.data-figure{margin-top:44px}.horizon+.horizon{margin-top:28px}.limits{margin-top:40px}
-.conclusion{padding:12px 14px;font-size:.95rem}.cl-row{grid-template-columns:1fr;gap:0}
-.kv{grid-template-columns:5.6em minmax(0,1fr);gap:8px}.kv dd{font-size:.88rem}.kv-name{display:block;font-size:.82rem;color:var(--muted)}.kv-line+.kv-line{margin-top:8px}
-.tiles{gap:6px}.tiles.n4{grid-template-columns:repeat(2,minmax(0,1fr))}.tile{padding:8px 8px;grid-template-columns:1fr;
-grid-template-areas:"label" "sym" "word" "origin" "detail" "conf"}.tile-symbol{font-size:1.7rem}.tile-word{font-size:.92rem}
-.tile-detail{font-size:.7rem}.tile-conf{font-size:.72rem}
-.board thead,.events thead{display:none}.board,.board tbody,.events,.events tbody{display:block}
-.board tr{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"lbl dir" "now now" "base base";
-gap:2px 10px;padding:12px 4px;border-bottom:1px solid var(--line)}
-.board th[scope=row]{grid-area:lbl;border:0;padding:0;min-width:0}.board .cell-dir{grid-area:dir;border:0;padding:0;text-align:right}
-.board .cell-now{grid-area:now;border:0;padding:0}.board .cell-now .viz{display:inline-block;margin:0 0 0 10px;vertical-align:middle}
-.now-text{display:inline}
-.board .cell-base{grid-area:base;border:0;padding:0}.base-text{display:inline;margin-right:8px}
-.board .cell-text{grid-column:1/-1;grid-row:2;border:0;padding:0}
-.hz-head{border-bottom:1px solid var(--ink);padding-bottom:6px;margin-bottom:0}
-.offscale>span{border-bottom-color:var(--line)}.ladder{--px:5.6rem;--node:28px;--gap:6px}.lv{font-size:.86rem;padding:8px 4px 8px 0}
-.events tr{display:grid;grid-template-columns:3.4em minmax(0,1fr) auto;grid-template-areas:"time name dir" "time nums nums" "time diff diff";
-gap:2px 8px;padding:10px 4px;border-bottom:1px solid var(--line)}.events tr.day{display:block;padding:0}.events tr.day th{display:block}
-.events td,.events th{border:0;padding:0}.ev-time{grid-area:time}.ev-name{grid-area:name;min-width:0}.events .cell-dir{grid-area:dir;text-align:right}
-.ni{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"time dir" "title title" "meta meta" "eval eval";row-gap:2px}
-.ni-time{font-size:.8rem}.ev-num{display:inline-block;font-size:.8rem}.ev-num::before{content:attr(data-k) " ";color:var(--muted);font-size:.7rem}
-.events tr>.ev-num:nth-of-type(2){grid-column:2/4;grid-row:2}.events tr>.ev-num:nth-of-type(3){grid-column:2/4;grid-row:2;margin-left:6.5em}
-.events tr>.ev-num:nth-of-type(4){grid-column:2/4;grid-row:2;margin-left:13em}.ev-diff{grid-area:diff}
-.events tr.no-nums .ev-num,.events tr.no-nums .ev-diff{display:none}
-.events tr.no-result>.ev-num:nth-of-type(4),.events tr.no-result .ev-diff{display:none}
+# The LAA design standard's web values, pasted from `laa-design tokens --css web` (standard 2026.11.2) and not
+# edited; the page's size class is laa-web-1280, and under 700 px the same class takes the web-390 values.
+TOKENS_CSS = """
+/* laa-design tokens --css web（基準 2026.11.2）。値を書き換えない。 */
+:root {
+  --laa-bg: #F6F2E9;
+  --laa-surface: #FFFDF8;
+  --laa-wash: #EBE6DC;
+  --laa-text: #213536;
+  --laa-text-muted: #596968;
+  --laa-accent: #00585E;
+  --laa-on-accent: #F6F2E9;
+  --laa-rule: #D7D5CC;
+  --laa-rule-warm: #B99B7A;
+  --laa-selection: #DFEAE5;
+  --laa-attention: #6C244C;
+  --laa-font-heading: "Georgia", "Times New Roman", "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+  --laa-font-body: "Georgia", "Times New Roman", "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+  --laa-font-label: "Georgia", "Times New Roman", "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+  --laa-font-number: "Iowan Old Style", "Hiragino Mincho ProN", "Yu Mincho", "Georgia", serif;
+  --laa-font-code: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+  --laa-space-hair: 4px;
+  --laa-space-small: 8px;
+  --laa-space-base: 16px;
+  --laa-space-block: 24px;
+  --laa-space-section: 32px;
+  --laa-space-group: 48px;
+  --laa-space-page: 72px;
+  --laa-rule-line: 1px solid #D7D5CC;
+  --laa-line-body: 1.75;
+  --laa-line-heading: 1.3;
+  --laa-label-tracking: 0.11em;
+  --laa-t-quick: 120ms;
+  --laa-t-base: 220ms;
+  --laa-t-gentle: 300ms;
+  --laa-t-slow: 420ms;
 }
-@media print{.reports-back,details{display:none}main.dash{border:0}.ladder>.kind-current{position:static}}
+/* web-1280 */ .laa-web-1280 { --laa-margin: 68px; --laa-display: 40px; --laa-title: 34px; --laa-heading: 24px; --laa-subheading: 18px; --laa-lead: 16px; --laa-body: 15px; --laa-small: 14px; --laa-label: 12px; --laa-mark: 24px; --laa-figure-1: 21px; --laa-figure-2: 34px; --laa-figure-3: 55px; }
+/* web-390 */ .laa-web-390 { --laa-margin: 20px; --laa-display: 34px; --laa-title: 28px; --laa-heading: 20px; --laa-subheading: 18px; --laa-lead: 16px; --laa-body: 15px; --laa-small: 14px; --laa-label: 12px; --laa-mark: 20px; --laa-figure-1: 21px; --laa-figure-2: 34px; --laa-figure-3: 55px; }
+@media(max-width:700px){.laa-web-1280{--laa-margin:20px;--laa-display:34px;--laa-title:28px;--laa-heading:20px;--laa-subheading:18px;--laa-lead:16px;--laa-body:15px;--laa-small:14px;--laa-label:12px;--laa-mark:20px;--laa-figure-1:21px;--laa-figure-2:34px;--laa-figure-3:55px}}
+"""
+
+# Paper, ink and one teal face; rules instead of boxes. Four text sizes (display, heading, body, label) and the
+# smallest figure size for the current price. Direction is told by symbol, word and place, never by colour alone.
+CSS = TOKENS_CSS + """
+:root{background:var(--laa-bg);color:var(--laa-text);color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--laa-bg);color:var(--laa-text);font-family:var(--laa-font-body);font-size:var(--laa-body);
+line-height:var(--laa-line-body);font-synthesis:none;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
+a{color:var(--laa-accent);text-underline-offset:.2em;text-decoration-thickness:1px}
+.lv-price,.be-value,.now-text,.chg,.ev-time,.ev-num,.kv-line b,.lv-dist,.ni-time{font-family:var(--laa-font-number);
+font-variant-numeric:lining-nums tabular-nums}
+.reports-back{display:flex;align-items:center;max-width:1280px;min-height:44px;margin:0 auto;padding:0 var(--laa-margin);
+font-size:var(--laa-label);color:var(--laa-text-muted)}
+main.dash{max-width:1280px;margin:0 auto;padding:24px var(--laa-margin) 72px;overflow-wrap:break-word}
+.eyebrow{display:block;font-size:var(--laa-label);line-height:var(--laa-line-heading);letter-spacing:var(--laa-label-tracking);
+color:var(--laa-text-muted)}
+h1{margin:12px 0 0;font-family:var(--laa-font-heading);font-size:var(--laa-display);font-weight:400;line-height:1.15;letter-spacing:0}
+h2{margin:0;font-family:var(--laa-font-heading);font-size:var(--laa-heading);font-weight:400;line-height:var(--laa-line-heading)}
+.asof-chip{margin:12px 0 0;color:var(--laa-text-muted)}
+.lead{margin-top:48px}
+.tiles{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);column-gap:48px;align-items:stretch}
+.tile-main{display:flex;flex-direction:column;align-items:flex-start;padding:24px 32px;background:var(--laa-accent);
+color:var(--laa-on-accent)}
+.tile-label{font-size:var(--laa-label);line-height:var(--laa-line-heading);letter-spacing:var(--laa-label-tracking);color:var(--laa-text-muted)}
+.tile-head{display:flex;align-items:baseline;gap:12px;font-family:var(--laa-font-heading);font-size:var(--laa-heading);
+line-height:var(--laa-line-heading)}
+.tile-symbol{flex:none}
+.tile-origin{display:block;font-size:var(--laa-label);line-height:1.5;color:var(--laa-attention)}
+.tile-detail{display:block;font-size:var(--laa-label);line-height:1.5;color:var(--laa-text-muted)}
+.tile-main .tile-label,.tile-main .tile-origin,.tile-main .tile-detail{color:var(--laa-on-accent)}
+.tile-main .tile-head{margin:16px 0 24px;font-size:var(--laa-display);line-height:1.15}
+.tile-main .tile-origin{margin-bottom:4px}
+.tile-conf{align-self:stretch;margin-top:auto;padding-top:16px;border-top:1px solid var(--laa-rule-warm)}
+.tile-main .tile-detail+.tile-conf,.tile-main .tile-origin+.tile-conf{margin-top:24px}
+.tile-rest{display:flex;flex-direction:column;border-top:1px solid var(--laa-rule)}
+.tile-rest .tile{flex:1;display:grid;grid-template-columns:3.5em 12rem minmax(0,1fr);grid-template-areas:"label head votes" "label info info";
+column-gap:24px;align-content:center;align-items:center;padding:16px 0;border-bottom:1px solid var(--laa-rule)}
+.tile-rest .tile-label{grid-area:label}
+.tile-rest .tile-head{grid-area:head}
+.tile-info{grid-area:info;padding-top:8px}
+.votes{grid-area:votes;position:relative;z-index:0;display:block;height:calc(16px + var(--n) * 10px);margin:0 24px;max-width:320px}
+.votes::before{content:"";position:absolute;left:0;right:0;bottom:8px;height:1px;background:var(--laa-rule)}
+.votes::after{content:"";position:absolute;z-index:-1;left:50%;bottom:4px;width:1px;height:9px;background:var(--laa-rule-warm)}
+.v-axis{position:absolute;left:0;right:0;bottom:0;height:16px}
+.v-axis::before,.v-axis::after{position:absolute;bottom:3px;font-size:var(--laa-label);line-height:1;color:var(--laa-text-muted)}
+.v-axis::before{content:"▼";right:calc(100% + 8px)}
+.v-axis::after{content:"▲";left:calc(100% + 8px)}
+.votes i{position:absolute;left:var(--x);bottom:calc(4px + var(--k) * 10px);width:8px;height:8px;margin-left:-4px;border-radius:50%}
+.votes .v-s{background:var(--laa-accent)}
+.votes .v-w{background:var(--laa-bg);border:1.5px solid var(--laa-accent)}
+.votes .v-n{background:var(--laa-text-muted)}
+.conclusion{margin:48px 0 0}
+p.conclusion{padding:16px 0;border-top:1px solid var(--laa-rule);border-bottom:1px solid var(--laa-rule);white-space:pre-line}
+.cl-split{border-top:1px solid var(--laa-rule)}
+.cl-row,.kv{display:grid;grid-template-columns:8em minmax(0,46em);column-gap:24px;align-items:baseline;padding:16px 0;
+border-bottom:1px solid var(--laa-rule)}
+.cl-row dt,.kv dt{font-size:var(--laa-label);color:var(--laa-text-muted)}
+.cl-row dd{margin:0;min-width:0}
+.cl-plain{grid-template-columns:minmax(0,46em)}.cl-plain dt{display:none}
+.facts{margin:0;padding:0}
+.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.kv-line{display:block}.kv-line+.kv-line{margin-top:4px}.kv-line b{font-weight:700}
+.tile-reason{margin:24px 0 0;padding:0 0 0 16px;max-width:54em;border-left:1px solid var(--laa-attention)}
+.conf-line{margin:24px 0 0}
+.data-figure{margin-top:72px;padding-top:24px;border-top:1px solid var(--laa-rule-warm)}
+.fig-head{margin-bottom:24px}.fig-head .sub{margin:8px 0 0;color:var(--laa-text-muted)}
+.horizon+.horizon{margin-top:48px}
+.hz-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;margin:0 0 8px;font-size:var(--laa-body);font-weight:400;
+line-height:var(--laa-line-heading)}
+.hz-name{font-weight:700}.grp-tally{font-size:var(--laa-label);color:var(--laa-text-muted)}
+.caution,.liq-notice,.liq-missing,.no-figures{margin:0 0 16px;padding:0 0 0 16px;max-width:54em;border-left:1px solid var(--laa-attention)}
+.liq-notice{border-left-color:var(--laa-accent);color:var(--laa-text-muted)}
+.liq-missing{margin:24px 0 0}
+.aux{font-size:var(--laa-label)}
+.board-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+.board{table-layout:fixed}
+.board .c-lbl{width:30%}.board .c-now{width:21%}.board .c-base{width:29%}.board .c-dir{width:20%}
+th,td{padding:16px 16px 16px 0;text-align:left;vertical-align:top;border-bottom:1px solid var(--laa-rule)}
+thead th{padding:0 16px 8px 0;font-size:var(--laa-label);font-weight:400;line-height:var(--laa-line-heading);
+color:var(--laa-text-muted);border-bottom:1px solid var(--laa-rule-warm)}
+th.r{text-align:right}
+.board th[scope=row]{font-weight:400}
+.lbl{display:block}
+.asof,.note,.fresh{display:block;font-size:var(--laa-label);line-height:1.5;color:var(--laa-text-muted)}
+.asof{margin-top:4px}.fresh{color:var(--laa-attention)}.fresh .mark{margin-right:4px}
+.now-text{display:block}.nw{white-space:nowrap}
+.viz{display:block;margin-top:8px}
+.viz .base{stroke:var(--laa-rule);stroke-width:1;stroke-dasharray:2 2}
+.viz .trend{stroke:var(--laa-accent)}.viz .dot0{fill:var(--laa-rule-warm)}.viz .dot1{fill:var(--laa-accent)}
+.base-text{display:block;font-size:var(--laa-label);line-height:1.5;color:var(--laa-text-muted)}
+.chg{display:block;margin-top:4px}
+.chg-series .ser{display:block}
+.ser::before{display:inline-block;width:1.4em;color:var(--laa-accent)}
+.ser.s-positive::before{content:"△"}.ser.s-negative::before{content:"▽"}
+.ser.s-neutral::before{content:"—";color:var(--laa-text-muted)}
+.board .chg .s-neutral{color:var(--laa-text-muted)}
+.cell-dir{white-space:nowrap}
+.dir-symbol{display:inline-block;width:1.4em;color:var(--laa-accent)}
+.tone-neutral .dir-symbol{color:var(--laa-text-muted)}
+.vh{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.liq-map{display:flex;flex-direction:column}
+.liq-map>.ladder{order:2}.off-above{order:1;margin-bottom:24px}.off-below{order:3;margin-top:24px}
+.ladder{list-style:none;margin:0;padding:0;--px:7.5rem;--node:24px;--gap:16px}
+.lv{position:relative;display:grid;grid-template-columns:var(--px) var(--node) minmax(0,28rem) minmax(0,1fr) 5.5rem 7.5rem;
+grid-template-areas:"price node name state dist gauge";column-gap:var(--gap);align-items:baseline;padding:12px 0;
+border-bottom:1px solid var(--laa-rule)}
+.lv>span{min-width:0;overflow-wrap:anywhere}
+.lv-price{grid-area:price;text-align:right}
+.lv-node{grid-area:node;align-self:stretch;position:relative;margin:-12px 0 -13px}
+.lv-node::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;margin-left:-.5px;background:var(--laa-rule)}
+.lv.in-band .lv-node::before{width:2px;margin-left:-1px;background:var(--laa-accent)}
+.lv.part-band .lv-node::before{width:2px;margin-left:-1px;background:var(--laa-rule-warm)}
+.lv-node .icon{position:absolute;left:50%;top:15px;width:20px;height:20px;margin-left:-10px;display:flex;align-items:center;
+justify-content:center;border:1px solid var(--laa-rule);border-radius:50%;background:var(--laa-bg);font-size:var(--laa-label);
+line-height:1;color:var(--laa-text)}
+.state-swept .lv-price,.state-broken .lv-price,.state-forming .lv-price,.kind-reference .lv-price,
+.state-swept .icon,.state-broken .icon,.state-forming .icon,.kind-reference .icon{color:var(--laa-text-muted)}
+.kind-reference .icon{border-style:dashed}
+.kind-zone .icon{height:28px;top:11px;border-radius:4px}
+.is-target .icon,.kind-draw .icon{border:2px solid var(--laa-accent);color:var(--laa-accent)}
+.lv-name{grid-area:name}.lv-label{margin-right:8px}
+.pool{display:inline-block;font-size:var(--laa-label);letter-spacing:var(--laa-label-tracking);color:var(--laa-text-muted)}
+.target{display:block;max-width:100%;font-size:var(--laa-label);line-height:1.5;color:var(--laa-accent);overflow-wrap:anywhere}
+.lv-state{grid-area:state;font-size:var(--laa-label)}
+.touched{display:block;color:var(--laa-text-muted)}
+.kind-reference .lv-label,.kind-reference .lv-state{color:var(--laa-text-muted)}
+.lv-dist{grid-area:dist;text-align:right;font-size:var(--laa-label);color:var(--laa-text-muted)}
+.lv-gauge{grid-area:gauge;position:relative;align-self:start;height:9px;margin-top:9px}
+.lv-gauge::before{content:"";position:absolute;left:0;right:0;top:4px;height:1px;background:var(--laa-rule)}
+.lv-gauge i{position:absolute;left:0;top:3.5px;width:var(--d);height:2px;background:var(--laa-accent)}
+.lv-gauge i::after{content:"";position:absolute;right:-3px;top:-2px;width:6px;height:6px;border-radius:50%;background:var(--laa-accent)}
+.lv-gauge.over i::after{background:var(--laa-bg);border:1.5px solid var(--laa-accent)}
+.lv-gauge b{position:absolute;left:var(--b);top:0;width:1px;height:9px;background:var(--laa-rule-warm)}
+.kind-current{margin-top:-1px;background:var(--laa-bg);border-top:1px solid var(--laa-accent);border-bottom:1px solid var(--laa-accent)}
+.kind-current .lv-price{color:var(--laa-accent);font-size:var(--laa-figure-1);line-height:var(--laa-line-heading)}
+.kind-current .lv-label{color:var(--laa-accent)}
+.kind-current .icon{background:var(--laa-accent);border-color:var(--laa-accent);color:var(--laa-on-accent)}
+.ladder>.kind-current{position:-webkit-sticky;position:sticky;top:0;bottom:0;z-index:2}
+.band-edge{position:relative;display:grid;grid-template-columns:var(--px) var(--node) minmax(0,1fr);column-gap:var(--gap);
+align-items:baseline;padding:8px 0;font-size:var(--laa-label);line-height:1.5;color:var(--laa-accent);border-bottom:1px solid var(--laa-rule-warm)}
+.band-edge.side-below{margin-top:-1px;border-top:1px solid var(--laa-rule-warm);border-bottom-color:var(--laa-rule)}
+.be-value{grid-column:1;text-align:right;white-space:nowrap}
+.be-label{grid-column:3;min-width:0;overflow-wrap:anywhere;color:var(--laa-text-muted)}
+.band-edge::before,.band-edge::after{content:"";position:absolute;left:calc(var(--px) + var(--gap) + var(--node) / 2 - .5px);
+width:1px;background:var(--laa-rule)}
+.band-edge::before{top:0;height:50%}.band-edge::after{top:50%;bottom:-1px}
+.band-edge.side-above::after,.band-edge.side-below::before{width:2px;margin-left:-.5px;background:var(--laa-accent)}
+.offscale>span{display:block;padding:8px 0;font-size:var(--laa-label);line-height:1.5;color:var(--laa-text-muted);
+border-bottom:1px solid var(--laa-rule)}
+.offscale .arrow{margin-right:8px}
+.offscale .lv-node::before{width:0;margin-left:0;background:none;border-left:1px dashed var(--laa-rule)}
+.events td,.events th{padding:12px 16px 12px 0}
+.events thead th{padding:0 16px 8px 0}
+.events tr.day th{padding:24px 0 8px;font-size:var(--laa-label);font-weight:700;line-height:1.5}
+.ev-time{white-space:nowrap}
+.ev-name{font-weight:400;min-width:12em}.ev-name>span{display:block}
+.tier{font-size:var(--laa-label);line-height:1.5;letter-spacing:var(--laa-label-tracking);color:var(--laa-text-muted)}
+.tier-a{color:var(--laa-accent)}
+.memo{font-size:var(--laa-label);line-height:1.5;color:var(--laa-text-muted)}
+.ev-num{text-align:right;white-space:nowrap}
+.events tr.empty td{color:var(--laa-text-muted)}
+.events tr.same-time td,.events tr.same-time th{padding-top:4px}
+details.howto,details.limits{margin-top:24px;border-top:1px solid var(--laa-rule);border-bottom:1px solid var(--laa-rule)}
+.data-figure>details.howto{margin-top:0;border-top:0}
+.data-figure>.caution+details.howto,.data-figure>.liq-missing+details.howto{margin-top:24px;border-top:1px solid var(--laa-rule)}
+details>summary{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer;list-style:none;color:var(--laa-accent)}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:"+";width:1em;font-family:var(--laa-font-number)}
+details[open]>summary::before{content:"−"}
+.howto-body{padding:0 0 24px;max-width:54em;color:var(--laa-text-muted)}
+.howto-body p{margin:0 0 16px}.howto-body ul{margin:0 0 16px;padding-left:1.2em}.howto-body li+li{margin-top:8px}
+.rules b{font-weight:700;color:var(--laa-text)}
+.src{font-size:var(--laa-label)}
+details.limits{margin-top:72px}
+.note-line{margin:24px 0 0;font-size:var(--laa-label);color:var(--laa-text-muted)}
+.news{list-style:none;margin:0;padding:0;border-top:1px solid var(--laa-rule)}
+.ni{display:grid;grid-template-columns:6.5em minmax(0,1fr) 8em;grid-template-areas:"time title dir" "time meta dir" "time eval dir";
+column-gap:16px;padding:16px 0;border-bottom:1px solid var(--laa-rule)}
+.ni-time{grid-area:time;white-space:nowrap}.ni-title{grid-area:title;min-width:0;overflow-wrap:anywhere}
+.ni-title a{color:var(--laa-text)}.ni-meta{grid-area:meta;font-size:var(--laa-label);color:var(--laa-text-muted)}
+.ni-eval{grid-area:eval;margin-top:4px;font-size:var(--laa-label);min-width:0;overflow-wrap:anywhere}
+.ni-dir{grid-area:dir;white-space:nowrap;text-align:right}
+footer{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px 24px;margin-top:48px;padding-top:8px;
+border-top:1px solid var(--laa-rule);font-size:var(--laa-label);color:var(--laa-text-muted)}
+#source-markdown{display:inline-flex;align-items:center;min-height:44px;font-size:var(--laa-body)}
+@media(max-width:700px){
+main.dash{padding-top:8px}
+.lead{margin-top:32px}
+.tiles{grid-template-columns:minmax(0,1fr);row-gap:24px}
+.tile-main{margin:0 calc(-1 * var(--laa-margin));padding:24px var(--laa-margin)}
+.tile-rest .tile{grid-template-columns:3.5em minmax(0,1fr);grid-template-areas:"label head" ". votes" ". info";row-gap:8px;column-gap:16px}
+.votes{margin:0 24px;max-width:none}
+.tile-info{padding-top:0}
+.conclusion{margin-top:32px}
+.cl-row,.kv{grid-template-columns:minmax(0,1fr);row-gap:4px}
+.data-figure{margin-top:48px}
+.horizon+.horizon{margin-top:32px}
+.hz-head{margin:0;padding-bottom:8px;border-bottom:1px solid var(--laa-rule-warm)}
+.board thead,.events thead{display:none}
+.board,.board tbody,.events,.events tbody{display:block}
+.board tr{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"lbl dir" "now now" "base base";gap:4px 16px;
+padding:16px 0;border-bottom:1px solid var(--laa-rule)}
+.board th[scope=row]{grid-area:lbl;min-width:0;padding:0;border:0}
+.board .cell-dir{grid-area:dir;padding:0;border:0;text-align:right}
+.board .cell-now{grid-area:now;padding:0;border:0}
+.board .cell-now .viz{display:inline-block;margin:0 0 0 16px;vertical-align:middle}
+.now-text{display:inline}
+.board .cell-base{grid-area:base;padding:0;border:0}
+.base-text{display:inline;margin-right:8px}
+.chg{display:inline}.chg-series{display:block}
+.board .cell-text{grid-column:1/-1;grid-row:2;padding:0;border:0}
+.ladder{--px:5.25rem;--node:24px;--gap:8px}
+.lv{grid-template-columns:var(--px) var(--node) minmax(0,1fr);grid-template-areas:"price node name" "dist node state" "gauge node state"}
+.lv-gauge{margin-top:6px}
+.events tr{position:relative;display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 16px;padding:12px 0 12px calc(3.5em + 12px);
+border-bottom:1px solid var(--laa-rule)}
+.events tr::after{content:"";order:3;flex-basis:100%;height:0}
+.events td,.events th{padding:0;border:0}
+.ev-time{position:absolute;left:0;top:12px}
+.ev-name{order:1;flex:1 1 0;min-width:0}
+.events .cell-dir{order:2;flex:none;text-align:right}
+.ev-num{order:4;font-size:var(--laa-label)}
+.ev-num::before{content:attr(data-k) " ";color:var(--laa-text-muted)}
+.ev-diff{order:5;flex-basis:100%}
+.events tr.day,.events tr.empty{display:block;padding:0;border:0}
+.events tr.day::after,.events tr.empty::after{display:none}
+.events tr.day th{display:block;padding:24px 0 8px;border-bottom:1px solid var(--laa-rule)}
+.events tr.empty td{display:block;padding:12px 0}
+.events tr.no-nums .ev-num,.events tr.no-nums .ev-diff{display:none}
+.events tr.no-result .ev-act,.events tr.no-result .ev-diff{display:none}
+.events tr.same-time{padding-top:4px}
+.ni{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"time dir" "title title" "meta meta" "eval eval";row-gap:4px}
+}
+@media print{.reports-back,details{display:none}.ladder>.kind-current{position:static}}
 """
 
 
@@ -756,7 +978,10 @@ def build(source: str, summary: dict, figures: list, *, title: str, source_name:
     if confidence.get('text') and not tiles:
         # No tiles to carry it (no bias board): the word stays above the conclusion.
         tiles = f'<p class="conf-line">{e(confidence["text"])}</p>'
-    lead_html = conclusion_html(conclusion.get('text'), conclusion.get('rows')) + chips_html(summary.get('chips') or [])
+    # Verdicts, then why (the conclusion), then the next release and the nearest levels, then why a verdict differs
+    # from the tally.
+    lead_html = (conclusion_html(conclusion.get('text'), conclusion.get('rows')) + chips_html(summary.get('chips') or [])
+                 + reason_html(board))
     sections = ''.join(SECTIONS[f['type']](f) for f in figures)
     limits = summary.get('limitations') or []
     limits_html = ''
@@ -768,9 +993,9 @@ def build(source: str, summary: dict, figures: list, *, title: str, source_name:
     digest = hashlib.sha256(source.encode('utf-8')).hexdigest()
     encoded = base64.b64encode(source.encode('utf-8')).decode('ascii')
     document = f'''<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="{e(title)}"><title>{e(title)}</title><style>{CSS}</style></head>
+<html lang="ja" class="laa-web-1280"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><meta name="description" content="{e(title)}"><title>{e(title)}</title><style>{CSS}</style></head>
 <body><main class="dash">
-<header class="mast"><div><span class="eyebrow">{e(summary.get('eyebrow', 'REPORT'))}</span><h1>{e(summary.get('short_title', title))}</h1></div><div class="asof-chip">{e(summary.get('as_of_label', ''))}</div></header>
+<header class="mast"><span class="eyebrow">{e(summary.get('eyebrow', 'REPORT'))}</span><h1>{e(summary.get('short_title', title))}</h1><p class="asof-chip">{e(summary.get('as_of_label', ''))}</p></header>
 <section class="lead" aria-label="結論">{tiles}{lead_html}</section>
 {sections}
 {limits_html}
