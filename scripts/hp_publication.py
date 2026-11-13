@@ -214,12 +214,17 @@ def validate_edition(edition_path, root=ROOT, now=None):
 
 
 def display_html(source, as_of):
-    """A reversible static dating notice; original reviewed HTML stays intact."""
+    """A reversible static dating notice; original reviewed HTML stays intact.
+
+    Colours and typeface are the LAA design standard's web values (rule, wash, text; Georgia with Hiragino
+    Mincho), written as literals because the notice is also put on pages drawn before the standard.
+    """
     date = stamp(as_of).astimezone(ZoneInfo('Asia/Tokyo')).strftime('%Y年%m月%d日 %H:%M JST')
     banner = ('<!-- hp-latest-completed:start -->'
               '<aside aria-label="資料の基準日時" style="box-sizing:border-box;margin:0;'
-              'padding:14px 20px;border-bottom:1px solid #ccc;background:#f5f2eb;'
-              'color:#222;font:14px/1.7 sans-serif;text-align:center;overflow-wrap:anywhere">'
+              'padding:14px 20px;border-bottom:1px solid #D7D5CC;background:#EBE6DC;'
+              'color:#213536;font:14px/1.7 Georgia,\'Times New Roman\',\'Hiragino Mincho ProN\',\'Yu Mincho\',serif;'
+              'text-align:center;overflow-wrap:anywhere">'
               '<strong>最新の完成版 · 資料基準 ' + html_escape.escape(date) + '</strong><br>'
               'この資料は記載日時の分析です。次版の確認が完了すると更新します。'
               '</aside><!-- hp-latest-completed:end -->')
